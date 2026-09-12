@@ -297,6 +297,19 @@ be undone (e.g., a compensating record when an external side effect already occu
 plan that conflates the two — attempting to "roll back" something already externally observable —
 is treated as a design defect.
 
+**Fallback behavior.** A fallback is distinct from a retry and from a rollback/compensation: it is
+a different, lower-risk or degraded way of achieving a stage's intent when the primary approach has
+been judged unable to succeed as attempted — not a repetition of the same operation (that is a
+retry) and not an undo of an effect (that is rollback or compensation). A fallback is only taken
+after the primary approach's failure has been classified per this principle's failure
+classification, and only when a defined fallback path exists for that stage; a stage with no
+defined fallback path that cannot succeed goes to safe-stop instead of inventing an ad hoc
+degraded behavior. Every fallback path is declared in advance as part of the stage's design (not
+improvised at run time), states explicitly what capability or guarantee is reduced relative to the
+primary path, and is recorded in the run's audit trail with the reason the primary path was judged
+unable to succeed and which fallback path was taken. A fallback outcome is never presented as
+equivalent to a primary-path success without that reduction being disclosed.
+
 **Safe-stop conditions.** For every stage and every long-running operation, the conditions under
 which the system must stop rather than continue are defined explicitly: exhausted retries,
 detection of a non-recoverable state, or an unresolved human approval gate (Principle III). A
@@ -314,9 +327,9 @@ after a delay) can be resumed from its persisted state (Principle II) without re
 that already completed and without silently skipping work that didn't. Resumption is itself a
 recorded event.
 
-Evidence of every one of the above — success, failure, retry attempts, compensation actions,
-recovery, and latency — is captured as part of the run's audit trail, not reconstructed after the
-fact from memory or inferred from logs that weren't designed to support it.
+Evidence of every one of the above — success, failure, retry attempts, fallback actions,
+compensation actions, recovery, and latency — is captured as part of the run's audit trail, not
+reconstructed after the fact from memory or inferred from logs that weren't designed to support it.
 
 ### Principle IX — Observability and Auditability
 

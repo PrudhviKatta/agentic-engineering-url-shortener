@@ -1,5 +1,11 @@
 server:
   port: 8080
+  # Loopback-only binding (Task 10 corrective batch — plan.md Section 8 / codex-recommend.md
+  # Finding #7): narrows ADR-010's disclosed no-authentication surface to the local machine only.
+  # This does not reverse ADR-010's no-auth decision; it is a network-level containment measure on
+  # top of it, per plan.md Section 8's "approval-state enforcement with self-asserted actor
+  # identity" characterization of the approval endpoint's actual posture.
+  address: 127.0.0.1
 
 spring:
   application:
@@ -14,7 +20,10 @@ spring:
       # Prototype-only convenience: auto-evolves the schema from entities on
       # every boot. Never use ddl-auto=update in production; a real deployment
       # needs Flyway/Liquibase-managed migrations. Documented limitation, not
-      # an oversight — see docs/assessment/final_engineering_summary.md.
+      # an oversight — planned to be recorded in docs/assessment/final_engineering_summary.md
+      # (Task 47 deliverable; does not exist yet as of this corrective batch — see
+      # tasks.md T047). Corrected by the Task 10 corrective batch (codex-recommend.md
+      # Minor findings): this comment previously implied that file already existed.
       ddl-auto: update
     show-sql: false
     open-in-view: false

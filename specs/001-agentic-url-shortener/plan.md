@@ -4,18 +4,33 @@
 
 **Status: DRAFT — pending whatever human review this plan itself calls for.** This document is
 authored by an agent acting under the project's SpecKit lifecycle. It is not approved merely by
-existing, and no downstream artifact (ADRs beyond ADR-001/002, `tasks.md`, implementation) may cite
-it as ratified until a human reviewer records approval, in the same spirit as `spec.md`'s own
-Human Gate 2 framing. Where this plan makes a technology or architecture choice that is not one of
-the two already-Accepted ADRs (ADR-001 language/framework, ADR-002 persistence), it is phrased as
-**"proposed for ADR at Task 7"**, not as an already-settled decision — Task 7 is where the human
-candidate accepts or rejects each one individually.
+existing, and this plan document itself may not be cited as ratified until a human reviewer
+records approval, in the same spirit as `spec.md`'s own Human Gate 2 framing — this plan-approval
+gate remains open as of this writing and is not affected by the correction below. **Historical
+note, corrected by the Task 10 corrective batch** (`codex-recommend.md` Finding #12): at the time
+this plan was authored (Task 6), every technology/architecture choice beyond ADR-001/002 was
+phrased as "proposed for ADR at Task 7," since Task 7 had not yet run. Task 7 has since run: the
+human candidate reviewed and accepted ADR-003 through ADR-010, without amendment, on 2026-09-13
+(`docs/governance/human-gates-log.md`, "Human Gate 4" rows) — see Section 12's technology table
+below for their current status. Accepting those eight ADRs is a separate, already-closed gate from
+this plan document's own still-open plan-approval gate referenced above.
+
+**Delegated technical-review decision (2026-09-13): REQUEST AMENDMENTS.** Codex reviewed the status
+block and all fourteen numbered sections as a delegated technical reviewer, not as a human
+approver. This plan remains unapproved and implementation remains blocked. Required corrections
+include: align the planned executable graph with the specification's twelve-stage graph; preserve
+SCN-B's seven parallel impact-analysis branches and join rather than reducing them to one stage;
+use the constitution's definition of fallback instead of labeling retry, compensation, or
+safe-stop as fallback; version workflow-step and approval instances across replans; close the
+workflow creation/inspection/audit contract gaps; and remove known, intentionally untested metric
+defects from the delivery plan.
 
 **Authority.** This plan sits directly beneath `docs/governance/constitution.md` (v1.0.0, Ratified)
 and `specs/001-agentic-url-shortener/spec.md` (approved with clarifications CLR-1..17) and directly
-above the ADRs Task 7 will formalize and the task breakdown `tasks.md` (Task 9) will produce. It
-must not contradict either upstream artifact; every requirement/clarification it touches is cited
-by ID so a reviewer can check that claim directly rather than take it on faith.
+above the ADRs Task 7 has since formalized (ADR-003 through ADR-010, all Accepted 2026-09-13 — see
+Section 12) and the task breakdown `tasks.md` (Task 9) has produced. It must not contradict either
+upstream artifact; every requirement/clarification it touches is cited by ID so a reviewer can
+check that claim directly rather than take it on faith.
 
 **Provenance note (disclosed, not concealed).** A separate, far more granular document — the
 controller's own execution runbook, `docs/engineering-runbook.md`
@@ -463,6 +478,28 @@ nothing has recovered yet" are different, non-interchangeable claims.
   (`POST /workflows/{id}/approvals/{step}`) — the one endpoint whose call *releases a governance
   gate* — is exactly as unauthenticated as `GET /healthz`. Documented here directly, not left for
   a reviewer to discover.
+- **Precise characterization of the approval endpoint's posture (added by the Task 10 corrective
+  batch — `pre_implementation_analysis.md` Section 10 / `codex-recommend.md` Finding #7).** This
+  system enforces **approval-state**, not **human identity**. Concretely: the workflow logic
+  itself cannot be bypassed — `entryApproval`/`exitApproval` are designed as real, to-be-tested
+  gates that no agent code path is designed to satisfy on its own authority (ADR-006) — but the
+  endpoint does not verify that the network caller invoking it is the intended human reviewer. Any
+  caller able to reach the process can supply a decision and a self-asserted `actor` string
+  (`approvals.decided_by`; `data-model.md` Section 6). The correct phrase for this system's
+  behavior, used consistently from this point forward wherever this endpoint's behavior is
+  characterized in this document, is **"approval-state enforcement with self-asserted actor
+  identity,"** not "authorized human approval enforcement" — the latter would overclaim a property
+  (verified human identity) this design does not provide and ADR-010 does not claim to provide.
+- **Network-level containment measure (added by the Task 10 corrective batch, same source as
+  above).** The server will be bound to loopback only — `server.address: 127.0.0.1`, already
+  present in the tracked `src/main/resources/application.yml` (a configuration line, not a task
+  deliverable — it takes effect the moment the application boots) — so that, regardless of the
+  above, no caller outside the local machine can reach any endpoint, including the approval
+  endpoint. This is a containment measure, not a reversal of ADR-010's no-authentication decision:
+  it narrows the no-auth surface from "any network caller that can reach the process" to "any
+  process on the local machine," which is the deployment boundary this entire prototype already
+  assumes (Section 1.4's trust-boundary framing). ADR-010 itself remains Accepted, unchanged, and
+  is not being reopened by this addition.
 - **Secrets management:** no secrets exist in this design (no external API keys, no credentials —
   H2 file-mode requires none). `application.yml` contains no secret material; if any were ever
   added, constitution Principle V's "no secrets in logs" rule and `AuditRecorder`'s payload
@@ -499,6 +536,39 @@ nothing has recovered yet" are different, non-interchangeable claims.
   SEC-002 SSRF guard), `compliance` (COMP-001 audit-trail presence), `licensing` (LIC-001
   dependency license review, advisory) — the four policies defined in
   `src/main/resources/policies/v1.yaml` per research.md D7.
+- **Seven-domain disclosure (added by the Task 10 corrective batch — closes MEDIUM-1 in
+  `pre_implementation_analysis.md` Section 10 / `codex-recommend.md` Finding #11; required by
+  `compliance.md` COMP-CHK-012 [MANDATORY]).** Constitution Principle VI names, "at minimum,"
+  seven policy-guardrail domains. Every one of the seven is mapped below to either a concrete
+  `PolicyEngine` check or the specific alternative mechanism that covers it — none is a silent
+  omission:
+  - **Security** → `SEC-001`/`SEC-002`, concrete `PolicyEngine` checks (above).
+  - **Compliance** → `COMP-001` (audit-trail presence), a concrete `PolicyEngine` check, scoped
+    narrowly to audit-trail presence rather than a broader compliance-program check (a disclosed
+    scope decision, not an expansion claim).
+  - **Software licensing** → `LIC-001`, a concrete (advisory) `PolicyEngine` check.
+  - **Audit retention** → not a `PolicyEngine` check in this iteration; covered instead by CLR-17's
+    disclosed 90-day retention placeholder (`spec.md` Section 13.1/13.2), explicitly non-binding
+    and approved by the human candidate as a temporary assumption pending a real compliance-derived
+    figure (`docs/governance/human-gates-log.md`).
+  - **Approved dependencies** → not a `PolicyEngine` check in this iteration; covered instead by
+    the manual dependency-scan approach named in Section 8 above and formalized as a documented
+    task-level recommendation at T045 (`SECURITY.md`'s `mvn org.owasp:dependency-check-maven:check`
+    guidance, no CI configured — a disclosed limitation, not a hidden gap).
+  - **Privacy** → not a `PolicyEngine` check in this iteration; this prototype's domain (a URL
+    shortener with no user accounts, no PII fields, no authentication) has no personal data to
+    govern beyond the long/short URL pair itself, so no dedicated privacy policy check applies —
+    disclosed here as the specific reason for the absence, not a silent gap. Any future iteration
+    that adds account data would need a real `PRIV-*` policy at that point.
+  - **Change control** → not a `PolicyEngine`-evaluated category in this iteration; covered instead
+    by REQ-030's own mechanism, `ImpactAnalysisStage` (Section 11.2's SCN-B insertion) plus
+    `replan()`'s versioned, audited change record (Section 3.4) — a separate mechanism from
+    `PolicyEngine`, by design, since change control here is a workflow-structural property
+    (an inserted approval-gated stage), not a per-stage evaluated check.
+
+  This mapping is additive documentation only — it changes no `PolicyEngine` behavior, adds no new
+  policy ID, and reverses no ADR; it satisfies `compliance.md` COMP-CHK-012's specific requirement
+  that the mapping be stated in one place, by inspection.
 - **Versioned policy model:** a single `version` string (e.g. `"1.0.0"`) per policy file; every
   `policy_evaluations` row records the version active at evaluation time (`data-model.md` Section
   7) so a later policy-file edit cannot silently reinterpret history.
@@ -514,8 +584,10 @@ nothing has recovered yet" are different, non-interchangeable claims.
   schema, orchestration state definition, security control, or release criterion (REQ-030) must
   carry a recorded impact analysis and approval before taking effect — realized concretely by
   SCN-B's `ImpactAnalysisStage` pattern (Section 11.2) for code-level brownfield changes, and by
-  this plan's own "proposed for ADR at Task 7" framing for architecture-level changes not yet
-  accepted.
+  this plan's general "proposed for ADR" framing for any future architecture-level change not yet
+  accepted (the specific ADR-003 through ADR-010 changes this plan originally flagged this way have
+  since been reviewed and Accepted at Task 7, 2026-09-13 — see Section 12; the framing itself
+  remains this plan's standing mechanism for any *subsequent* architecture change).
 - **Policy exception workflow:** `WorkflowEngine.grantPolicyException(workflowId, policyId,
   reason, scope, approvingAuthority, compensatingControl, expiry)` persists a `policy_exceptions`
   row; `retrySafeStopped(workflowId)` re-evaluates the previously safe-stopped step, which now
@@ -680,27 +752,38 @@ not assume they are already covered by the existing `LinkControllerContractTest`
 ## 12. Technology Decisions
 
 Full per-decision rationale lives in `research.md`. This table is the summary the source material's
-Section 12 asks for, restated from the runbook's own Architecture Decisions table (its exact
-phrasing preserved where it already correctly frames provisional status) with this plan's status
-column added to distinguish the two already-Accepted ADRs from the eight still pending Task 7:
+Section 12 asks for, restated from the runbook's own Architecture Decisions table, with this
+plan's own Status column added. At authoring time (Task 6) that column distinguished the two
+already-Accepted ADRs from the eight still pending Task 7; see the correction immediately below
+for its current, post-Task-7 state.
+
+**Status column corrected by the Task 10 corrective batch** (`pre_implementation_analysis.md` /
+`codex-recommend.md` Finding #12): Task 7 (the ADR Generation Gate) has since run and the human
+candidate has accepted all eight of ADR-003 through ADR-010, without amendment, on 2026-09-13 (see
+`docs/governance/human-gates-log.md`, "Human Gate 4" rows). The table below previously listed them
+as "Proposed for ADR at Task 7," which was accurate when this plan was authored at Task 6 but is
+now stale; it is corrected here to their current Accepted status. This correction is about
+ADR-003..010's own acceptance status, a gate that has already closed — it does not change or
+close this plan document's own separate, still-pending plan-approval status (see this document's
+own top-of-file Status line, left as-is).
 
 | # | Decision question | Selected/proposed option | Status | Rationale (short) |
 |---|---|---|---|---|
 | ADR-001 | Language/framework | Java 21 (LTS) + Spring Boot 3.3 | **Accepted** (2026-09-13) | Static typing + Spring test slices fit a state-machine-heavy orchestration engine; explicit human directive |
 | ADR-002 | Persistence | H2 embedded, file-mode, via Spring Data JPA | **Accepted** (2026-09-13) | Idiomatic Spring Boot embedded DB; zero-infra; `@DataJpaTest`-native |
-| ADR-003 | Short-code generation | Base62 encoding of `short_links.id` | Proposed for ADR at Task 7 | Deterministic, collision-free by construction; no retry loop needed |
-| ADR-004 | Orchestration model | Custom in-process `WorkflowEngine` over an explicit `DependencyGraph` | Proposed for ADR at Task 7 | Satisfies every required orchestration characteristic without disproportionate infra |
-| ADR-005 | External orchestration product (Temporal/Camunda/Activiti) | Rejected | Proposed for ADR at Task 7 | Infra/ops burden disproportionate to a local 2–3 day prototype |
-| ADR-006 | Human approval mechanism | Synchronous `POST /workflows/{id}/approvals/{step}` | Proposed for ADR at Task 7 | Explicit, auditable, non-inferred act; no UI in scope |
-| ADR-007 | Policy engine format | Versioned YAML, Jackson-parsed | Proposed for ADR at Task 7 | Human-readable, diffable, versioned without a DB migration |
-| ADR-008 | Concurrency for parallel stages | `ExecutorService` + `Future.get()` per batch | Proposed for ADR at Task 7 | Proves real parallel fan-out without reactive-wide rewrite |
-| ADR-009 | Rollback vs. compensation | Transaction-abort rollback / registered-action compensation | Proposed for ADR at Task 7 | Matches Principle VIII's required distinction; matches CLR-14 |
-| ADR-010 | Authentication | None enforced; documented trusted-caller-only | Proposed for ADR at Task 7 | Matches CLR-10's already-confirmed specification decision |
+| ADR-003 | Short-code generation | Base62 encoding of `short_links.id` | **Accepted** (2026-09-13) | Deterministic, collision-free by construction; no retry loop needed |
+| ADR-004 | Orchestration model | Custom in-process `WorkflowEngine` over an explicit `DependencyGraph` | **Accepted** (2026-09-13) | Satisfies every required orchestration characteristic without disproportionate infra |
+| ADR-005 | External orchestration product (Temporal/Camunda/Activiti) | Rejected | **Accepted** (2026-09-13) | Infra/ops burden disproportionate to a local 2–3 day prototype |
+| ADR-006 | Human approval mechanism | Synchronous `POST /workflows/{id}/approvals/{step}` | **Accepted** (2026-09-13) | Explicit, auditable, non-inferred act; no UI in scope |
+| ADR-007 | Policy engine format | Versioned YAML, Jackson-parsed | **Accepted** (2026-09-13) | Human-readable, diffable, versioned without a DB migration |
+| ADR-008 | Concurrency for parallel stages | `ExecutorService` + `Future.get()` per batch | **Accepted** (2026-09-13) | Proves real parallel fan-out without reactive-wide rewrite |
+| ADR-009 | Rollback vs. compensation | Transaction-abort rollback / registered-action compensation | **Accepted** (2026-09-13) | Matches Principle VIII's required distinction; matches CLR-14 |
+| ADR-010 | Authentication | None enforced; documented trusted-caller-only | **Accepted** (2026-09-13) | Matches CLR-10's already-confirmed specification decision |
 
-Task 7 (the ADR Generation Gate, immediately following this plan) is where each of the eight
-"Proposed" rows above is formally drafted as its own ADR document and routed to the human
-candidate for explicit accept/reject — per the project's own guardrail, no agent may self-approve
-an ADR (see ADR-001/002's own "Governance" sections for the precedent this plan follows).
+Task 7 (the ADR Generation Gate) has run: each of the eight rows above was formally drafted as its
+own ADR document and routed to the human candidate for explicit accept/reject — per the project's
+own guardrail, no agent may self-approve an ADR (see ADR-001/002's own "Governance" sections for
+the precedent this plan follows) — and all eight were accepted without amendment on 2026-09-13.
 
 ---
 

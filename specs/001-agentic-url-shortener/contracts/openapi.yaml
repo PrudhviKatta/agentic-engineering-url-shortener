@@ -3,17 +3,23 @@ info:
   title: Agentic URL Shortener & Orchestration API
   version: "0.1.0"
   description: |
-    DRAFT contract produced at the `/speckit.plan` stage (Task 6). Not yet implemented, not yet
-    independently reviewed. Covers two independently inspectable surfaces sharing one process
-    (constitution Principle VII):
+    Contract produced at the `/speckit.plan` stage (Task 6), corrected by the Task 10 corrective
+    batch (see `docs/assessment/pre_implementation_analysis.md`, `codex-recommend.md`). Not yet
+    implemented (no Java production code exists beyond the Spring Boot entry point). It has since
+    been independently reviewed twice pre-implementation (Task 10's own `/speckit.analyze` +
+    Independent Reviewer Gate, and an external Codex review); both reviews' additive corrections
+    are reflected in this document. Covers two independently inspectable surfaces sharing one
+    process (constitution Principle VII):
 
     * **URL-shortener domain** (`/links`, `/r/{code}`) — REQ-001..010, REQ-021.
     * **Orchestration engine** (`/workflows/**`) — REQ-011..020, REQ-025, REQ-026.
     * **Operational** (`/healthz`, `/readyz`, `/metrics`) — REQ-010, REQ-022, REQ-025, REQ-026.
 
-    No authentication is enforced on any endpoint in this iteration (CLR-10; ADR-010 proposed).
-    All endpoints are documented as trusted-caller-only. This is a disclosed assumption, not an
-    oversight — see `plan.md` Section 8 (Security).
+    No authentication is enforced on any endpoint in this iteration (CLR-10; ADR-010, Accepted
+    2026-09-13 — see `docs/governance/human-gates-log.md`). All endpoints are documented as
+    trusted-caller-only. This is a disclosed assumption, not an oversight — see `plan.md`
+    Section 8 (Security), which also documents the loopback-only network binding
+    (`server.address: 127.0.0.1`) that narrows this no-auth surface to the local machine.
 
     Compatibility rule for this iteration: this is version `0.1.0` of a pre-release contract: any
     breaking change before the first tagged release requires an updated `research.md` entry
@@ -177,19 +183,20 @@ paths:
       operationId: createWorkflow
       summary: Create a new Workflow Run from an ingested requirement (REQ-011)
       description: |
-        **Plan-level design decision, flagged for Task 7/9 implementation attention:** the
-        execution runbook's current reference implementation only exercises workflow creation
-        through `ScenarioRunner` (a CLI harness) calling `WorkflowEngine.submit(feature, stages,
-        correlationId)` directly — no generic HTTP creation endpoint exists there yet, because
-        each of the three mandatory scenarios (Section 11) uses a scenario-specific, hand-built
-        stage list. This contract formalizes the HTTP-facing shape REQ-011 requires ("the system
-        MUST allow a new Workflow Run to be created... via a new requirement input") so that the
-        capability is not only reachable from a CLI demo. The implementing task must instantiate
-        the baseline 12-node stage graph (`plan.md` Section 3) for a generic `feature`/
-        `requirementText` pair, or reject with `501` for a request that does not match one of the
-        three demonstrated scenario shapes if generic instantiation is descoped under the
-        Section 4 scope-control rules — either outcome must be an explicit, documented choice at
-        implementation time, not a silent gap.
+        **Plan-level design decision — mandatory, full implementation, no stub path (corrected by
+        the Task 10 corrective batch; `pre_implementation_analysis.md` §Section 7 HIGH-1 /
+        `codex-recommend.md` Finding #4).** REQ-011 requires that the system MUST allow a new
+        Workflow Run to be created "via a new requirement input" as an externally reachable
+        capability — the execution runbook's `ScenarioRunner` CLI harness calling
+        `WorkflowEngine.submit(feature, stages, correlationId)` directly does not by itself satisfy
+        this. This operation formalizes that HTTP-facing shape and MUST instantiate the baseline
+        12-node stage graph (`plan.md` Section 3) for the supplied `feature`/`requirementText`
+        pair and persist it in inspectable form. A human decision has already fixed this as a
+        must-implement capability, not an optional one: **there is no `501`/not-implemented escape
+        hatch for this operation** — every accepted request either produces `201` with a
+        persisted, instantiated graph, or a documented `4xx` rejection of genuinely invalid input
+        (Section "Responses" below). Descoping generic instantiation is not an available choice at
+        implementation time.
       requestBody:
         required: true
         content:
@@ -208,12 +215,6 @@ paths:
                 $ref: '#/components/schemas/WorkflowCreatedResponse'
         '422':
           description: Requirement input unreadable/absent (REQ-016 safe-stop at Stage 1).
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '501':
-          description: Generic instantiation not implemented for this iteration (see description above).
           content:
             application/json:
               schema:
@@ -426,14 +427,19 @@ components:
 
     CreateWorkflowRequest:
       type: object
-      required: [feature]
+      required: [feature, requirementText]
       properties:
         feature:
           type: string
           description: Free-text label for the requirement/feature this run executes against.
         requirementText:
           type: string
-          description: The ingested requirement text (Stage 1, Section 3.1) — captured verbatim with provenance.
+          description: |
+            The ingested requirement text (Stage 1, Section 3.1) — captured verbatim with
+            provenance. Required (Task 10 corrective batch, `pre_implementation_analysis.md`
+            §Section 7 HIGH-1 / `codex-recommend.md` Finding #4): REQ-011 requires that a
+            Workflow Run be created "via a new requirement input," so a request with no
+            requirement text does not satisfy the operation this endpoint exists for.
 
     WorkflowCreatedResponse:
       type: object
@@ -453,13 +459,38 @@ components:
       type: string
       enum: [PENDING, RUNNING, WAITING_APPROVAL, SUCCEEDED, FAILED, RETRYING, ROLLED_BACK, COMPENSATED, SAFE_STOPPED, INVALIDATED, SKIPPED]
 
+    # Corrected by the Task 10 corrective batch (pre_implementation_analysis.md Section 10 /
+    # codex-recommend.md Finding #5): REQ-012 requires exposing each stage's inputs, outputs, and
+    # decision lineage, plus the workflow's correlation ID and current plan version, from
+    # persisted state. `WorkflowStateResponse` previously omitted all of these.
+    DecisionLineageEntry:
+      type: object
+      required: [actor, decision, rationale]
+      properties:
+        actor: { type: string, description: "Matches WorkflowContext.decisions[].actor (data-model.md workflow_instances.context_json)." }
+        decision: { type: string, description: "Matches WorkflowContext.decisions[].decision." }
+        rationale: { type: string, description: "Matches WorkflowContext.decisions[].rationale." }
+        recordedAt: { type: string, format: date-time, nullable: true }
+
     WorkflowStateResponse:
       type: object
-      required: [id, status, steps]
+      required: [id, status, steps, correlationId, planVersion]
       properties:
         id: { type: string }
         status:
           $ref: '#/components/schemas/WorkflowStatus'
+        correlationId:
+          type: string
+          description: "REQ-012/REQ-025 — workflow_instances.correlation_id, from persisted state."
+        planVersion:
+          type: integer
+          format: int32
+          description: "REQ-012/REQ-018 — workflow_instances.plan_version, from persisted state."
+        decisionLineage:
+          type: array
+          description: "REQ-012 — the workflow's accumulated decision lineage, from workflow_instances.context_json.decisions[]."
+          items:
+            $ref: '#/components/schemas/DecisionLineageEntry'
         steps:
           type: array
           items:
@@ -472,6 +503,16 @@ components:
               startedAt: { type: string, format: date-time, nullable: true }
               endedAt: { type: string, format: date-time, nullable: true }
               retryCount: { type: integer, format: int32, minimum: 0 }
+              inputs:
+                type: object
+                additionalProperties: true
+                nullable: true
+                description: "REQ-012 — this step's recorded inputs from persisted state (workflow_steps.depends_on plus the upstream context artifacts it consumed). Flexible JSON object, shape varies per stage."
+              outputs:
+                type: object
+                additionalProperties: true
+                nullable: true
+                description: "REQ-012 — this step's recorded outputs from persisted state (workflow_steps.result). Flexible JSON object, shape varies per stage."
 
     ApprovalRequest:
       type: object
@@ -481,13 +522,33 @@ components:
         actor: { type: string, description: "Self-asserted identity — no authentication enforced this iteration (CLR-10)." }
         reason: { type: string }
 
+    # Corrected by the Task 10 corrective batch (pre_implementation_analysis.md Section 10 /
+    # codex-recommend.md Finding #10): AuditEventResponse previously omitted the correlation
+    # identifier (REQ-025), the affected artifact/state (REQ-026), a concrete actor identity
+    # distinct from actorType, and the structured payload already planned in
+    # data-model.md workflow_events.payload.
     AuditEventResponse:
       type: object
-      required: [actorType, action, timestamp]
+      required: [workflowId, actorType, actorId, action, timestamp]
       properties:
+        workflowId:
+          type: string
+          description: "REQ-025 — the correlation/workflow identifier this event belongs to (workflow_events.workflow_id)."
         actorType: { type: string, enum: [agent, human, orchestrator] }
+        actorId:
+          type: string
+          description: "REQ-025/REQ-026 — concrete actor identity, distinct from actorType (e.g. a stage/class name for an agent, or the self-asserted human actor string from approvals.decided_by/policy_exceptions.approving_authority). Self-asserted, not verified — no authentication is enforced this iteration (CLR-10)."
         action: { type: string }
         timestamp: { type: string, format: date-time }
+        affectedArtifact:
+          type: string
+          nullable: true
+          description: "REQ-026 — the artifact/state this event acted on (e.g. a workflow_steps row name, a policy_id, an approvals gate name). Null only for events with no single affected artifact."
+        payload:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: "Structured event detail, matching data-model.md workflow_events.payload (e.g. a policy evaluation's reason, a replan's old/new stage list)."
         result: { type: string, nullable: true }
         reason: { type: string, nullable: true }
 

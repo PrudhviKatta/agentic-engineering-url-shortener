@@ -1,6 +1,13 @@
 # Implementation Tasks: Agentic Software Engineering System — URL Shortener
 
-**Feature branch**: `001-agentic-url-shortener`
+**Feature branch**: none created — despite the `001-agentic-url-shortener` feature name used
+throughout this SpecKit artifact set, all work to date has been performed directly on `main`, and
+no `001-agentic-url-shortener` branch has ever existed in this repository. **Corrected by the Task
+10 corrective batch** (`pre_implementation_analysis.md` / `codex-recommend.md` Minor findings):
+this line previously implied a branch strategy that was never followed. Actual practice: every
+commit in this repository's history (`git log --oneline`) has landed directly on `main`; Tasks
+11+ should continue that actual practice rather than a branch name that exists only in this
+document's own metadata.
 **Stage**: `/speckit.tasks` (Task 9 of the controller's 48-task runbook)
 **Source**: this document transcribes Phases 2–12 (runbook Task 11 through Task 48) of
 `docs/engineering-runbook.md` into SpecKit's task format.
@@ -47,13 +54,19 @@ every task:
    (T030–T034), and replanning (T035), and all three scenarios (T039–T041) block on all of the
    above (§14.5); stop condition = if T020–T026 are not green by end of Day 1, cut SCN-C's replan
    depth (§14.6) before cutting any governance/audit task — see T041's guardrail.
-2. **API/schema deliverable group.** Contract generation: `contracts/openapi.yaml` (Task 6,
-   pre-existing) + T017/T018/T019/T026/T038 (the concrete endpoints). Schema versioning:
-   `data-model.md` (Task 6) + T012/T021 (entity/table shape) + T024's `contextJson` column addition
-   (an explicit, tested schema change to an already-shipped entity). Compatibility review: T043
-   (traceability matrix cross-checks every endpoint against `openapi.yaml`). Examples: T039–T041's
-   `docs/scenarios/*.md` each paste real `GET /workflows/{id}/audit` output. Contract tests:
-   `LinkControllerContractTest` (T017–T019), `WorkflowControllerContractTest` (T026),
+2. **API/schema deliverable group.** **Corrected by the Task 10 corrective batch**
+   (`pre_implementation_analysis.md` Section 7 HIGH-1 / `codex-recommend.md` Findings #4, #9): this
+   group previously claimed `POST /workflows` and `GET /links/{code}` were already covered by
+   T017–T019/T026; they were not — no task implemented or contract-tested either operation. T017a
+   and T026a (added below) now close that gap. Contract generation: `contracts/openapi.yaml`
+   (Task 6, pre-existing, corrected by Task 10) + T017/T017a/T018/T019/T026/T026a/T038 (the
+   concrete endpoints). Schema versioning: `data-model.md` (Task 6, corrected by Task 10 with
+   `plan_version`/`step_instance_id`, see Section 3 there) + T012/T021 (entity/table shape) +
+   T024's `contextJson` column addition (an explicit, tested schema change to an already-shipped
+   entity). Compatibility review: T043 (traceability matrix cross-checks every endpoint against
+   `openapi.yaml`). Examples: T039–T041's `docs/scenarios/*.md` each paste real
+   `GET /workflows/{id}/audit` output. Contract tests: `LinkControllerContractTest`
+   (T017–T019, T017a), `WorkflowControllerContractTest` (T026, T026a),
    `MetricsControllerContractTest` (T038). Documentation: T045 (`README.md`). Change-control
    approval: REQ-030, enforced by T029 (policy exceptions) and T035 (replan versioning).
 3. **MTTR instrumentation and reporting group.** Timestamps: `RecoveryEvent`'s three `Instant`
@@ -93,6 +106,7 @@ every task:
 | Safe-stop evidence | T028, T033, T034 (`WorkflowEngineSafeStopTest`) |
 | Resume evidence | T023 (`approve()` resumes), T029 (`retrySafeStopped()`) |
 | Replanning evidence | T035 (`WorkflowEngineReplanningTest`), T041 (`AmbiguousScenarioTest`) |
+| Stage-boundary-violation evidence (REQ-031) | **T036a** (`WorkflowEngineStageBoundaryTest`) — added by the Task 10 corrective batch, see T036a's entry |
 | Measured demonstration metrics | T037/T038 (`MttrReport`, `ReliabilitySummary`, `isDemonstrationData`) |
 | Limitations | T045 (`SECURITY.md`), T047 (final summary §19) |
 | Residual risks | ADR-010 (unchanged), T047 |
@@ -297,6 +311,45 @@ T047, T048. See each task's entry for the specific justification.
   creation"`.
 - **Human approval**: false.
 
+### T017a: `GET /links/{code}` metadata endpoint (contract test first)
+
+**Added by the Task 10 corrective batch** (`pre_implementation_analysis.md` Section 7 HIGH-1 /
+`codex-recommend.md` Findings #4, #9): `plan.md` Section 2.1 specified this endpoint as a
+plan-level design addition with its own implementation obligation, and `contracts/openapi.yaml`
+already defines it (`operationId: getLinkMetadata`), but no task in the original transcription
+implemented or contract-tested it — `tasks.md`'s own cross-reference table incorrectly implied
+T017–T019 already covered it. This task closes that gap.
+
+- **Objective**: Expose read-only link metadata lookup over HTTP, distinct from the
+  redirect-performing `GET /r/{code}` (T018) and from the analytics endpoint (T019) — this
+  endpoint never writes `redirect_count`/`last_accessed_at` and never redirects.
+- **REQ/SCN/ADR**: REQ-004 (resolution — metadata analog), REQ-012 (inspection-without-mutation
+  pattern, by analogy to the orchestration engine's own read-only inspection endpoints); SCN-A,
+  SCN-B; no new ADR.
+- **Files**: Modify `api/LinkController.java` (add `GET /links/{code}`); Test
+  `api/LinkControllerContractTest.java` (extend).
+- **Prerequisites**: T017 (same controller/test file; needs `ShortLinkJpaRepository.findByCode`
+  from T012 and `LinkResponse` from T017).
+- **Parallel**: false — same file, same test class as T017/T018/T019.
+- **Expected artifact**: `GET /links/{code}` → `200 {code, longUrl, shortUrl, expiresAt}` for a
+  known code (including an already-expired one — this endpoint reports metadata, it does not
+  enforce expiration); `404 {"error":{"reason":"short_code_not_found"}}` for an unknown code.
+  Never updates `redirect_count`/`last_accessed_at` (that remains exclusively `GET /r/{code}`'s
+  job, T018) and never issues a redirect.
+- **TDD**: yes.
+- **Validation command**: `./mvnw test -Dtest=LinkControllerContractTest`
+- **Doc impact**: matches `contracts/openapi.yaml`'s `GET /links/{code}` operation (Task 6,
+  corrected by Task 10); no schema change needed.
+- **Traceability update**: REQ-004/012 rows gain `T017a`; closes the API/schema deliverable
+  group's `GET /links/{code}` gap flagged by Task 10's corrective batch.
+- **Risk/guardrail**: do not let this endpoint's handler share code with `GET /r/{code}`'s
+  redirect-performing path in a way that risks accidentally incrementing analytics counters or
+  issuing a redirect from this endpoint — the two must remain observably distinct per
+  `contracts/openapi.yaml`'s own description of the split.
+- **Completion criteria**: test passes; `git commit -m "feat(api): expose read-only link metadata
+  lookup"`.
+- **Human approval**: false.
+
 ### T018: Redirect resolution + expiration behavior
 
 - **Objective**: Add `GET /r/{code}` — 307 on success, 404 unknown code, 410 expired — recording a
@@ -305,8 +358,9 @@ T047, T048. See each task's entry for the specific justification.
 - **Files**: Modify `api/LinkController.java` (add `GET /r/{code}`); Create
   `persistence/RedirectEventJpaRepository.java`; Test `api/LinkControllerContractTest.java`
   (extend).
-- **Prerequisites**: T017 (modifies the same controller and test file T017 created).
-- **Parallel**: false — same file, same test class as T017 and T019; strictly sequential.
+- **Prerequisites**: T017a (modifies the same controller and test file T017/T017a created; see
+  Task 10 corrective batch note at T017a).
+- **Parallel**: false — same file, same test class as T017/T017a and T019; strictly sequential.
 - **Expected artifact**: 307 redirect with `Location` header on success; 404/410 via
   `ResponseStatusException`.
 - **TDD**: yes.
@@ -392,10 +446,16 @@ marked `parallel: true` against another task in this block.
 - **Prerequisites**: T020 (uses `StepStatus`/`WorkflowStatus` enums in the entities).
 - **Parallel**: false (resolves T020's forward reference; see T020's guardrail).
 - **Expected artifact**: `WorkflowContext.recordDecision(actor, decision, rationale)`,
-  `addArtifact(name, value)`; `WorkflowStepJpaRepository.findByWorkflowIdAndName(...)`.
+  `addArtifact(name, value)`; `WorkflowStepJpaRepository.findByWorkflowIdAndPlanVersionAndName(...)`
+  — **corrected by the Task 10 corrective batch** (`data-model.md` Section 3 post-Task-10 note /
+  `codex-recommend.md` Finding #6): `WorkflowStepEntity` must carry a `plan_version` field (default
+  `1` at `submit()`, incremented copies inserted by `replan()`), and uniqueness lookups must be
+  scoped to `(workflowId, planVersion, name)`, not `(workflowId, name)` alone — the original
+  `findByWorkflowIdAndName(...)` signature is superseded by this corrected one.
 - **TDD**: yes.
 - **Validation command**: `./mvnw test -Dtest=WorkflowContextTest`
-- **Doc impact**: extends `data-model.md`'s schema (Task 6) with the concrete JPA shape.
+- **Doc impact**: extends `data-model.md`'s schema (Task 6, corrected by Task 10 with
+  `plan_version`) with the concrete JPA shape.
 - **Traceability update**: REQ-011/012/017/028 rows gain `T021`.
 - **Risk/guardrail**: none new.
 - **Completion criteria**: test passes; `git commit -m "feat(orchestration): add workflow state
@@ -444,9 +504,16 @@ marked `parallel: true` against another task in this block.
   `WorkflowEngineExecutionTest.java` (update its `engine()` helper for the new constructor arg).
 - **Prerequisites**: T022.
 - **Parallel**: false.
-- **Expected artifact**: `WorkflowEngine.approve(workflowId, stepName, decision, actor, reason)`;
-  `"rejected"` always sets the workflow `FAILED` (and the step `FAILED` if entry-gated, or leaves
-  it `SUCCEEDED` if exit-gated, since the handler already ran).
+- **Expected artifact**: `WorkflowEngine.approve(workflowId, stepInstanceId, decision, actor,
+  reason)` — **corrected by the Task 10 corrective batch** (`data-model.md` Section 6 post-Task-10
+  note / `codex-recommend.md` Finding #6): `ApprovalEntity` must carry `planVersion` and a
+  `stepInstanceId` foreign-key-shaped reference to the specific `WorkflowStepEntity` row it
+  governs, not only a bare `stepName` string, so a decision made under one plan version cannot be
+  read as governing a same-named gate reintroduced by a later replan (ADR-006's own "blocks a
+  branch for that plan version" rule). `stepName` is retained on the entity for human-legible
+  display only; `stepInstanceId` is the authoritative reference the engine checks. `"rejected"`
+  always sets the workflow `FAILED` (and the step `FAILED` if entry-gated, or leaves it
+  `SUCCEEDED` if exit-gated, since the handler already ran).
 - **TDD**: yes.
 - **Validation command**: `./mvnw test -Dtest=WorkflowEngineApprovalTest,WorkflowEngineExecutionTest`
   (both — Task 22's suite is an explicit regression target here).
@@ -519,13 +586,22 @@ marked `parallel: true` against another task in this block.
   `api/WorkflowControllerContractTest.java`.
 - **Prerequisites**: T023 (uses the 4-arg `WorkflowEngine` constructor and `approve()`).
 - **Parallel**: `true` with T025 (see T025's entry).
-- **Expected artifact**: `GET /workflows/{id}` → state+steps; `GET /workflows/{id}/audit` →
-  event list; `POST /workflows/{id}/approvals/{step}` → invokes `WorkflowEngine.approve`.
+- **Expected artifact**: `GET /workflows/{id}` → state+steps, **including, per the Task 10
+  corrective batch's schema correction (`contracts/openapi.yaml` `WorkflowStateResponse`,
+  `codex-recommend.md` Finding #5): the workflow's `correlationId` and `planVersion` at the top
+  level, `decisionLineage` (from `context_json.decisions[]`), and each step's `inputs`/`outputs`
+  (from `workflow_steps.depends_on`/context artifacts and `workflow_steps.result`
+  respectively)** — all read from persisted state, not reconstructed narratively; `GET
+  /workflows/{id}/audit` → event list, **including, per the same corrective batch
+  (`AuditEventResponse`, `codex-recommend.md` Finding #10), each event's `workflowId`, a concrete
+  `actorId` distinct from `actorType`, `affectedArtifact`, and structured `payload`**; `POST
+  /workflows/{id}/approvals/{step}` → invokes `WorkflowEngine.approve`.
 - **TDD**: yes.
 - **Validation command**: `./mvnw test -Dtest=WorkflowControllerContractTest`
-- **Doc impact**: matches `openapi.yaml`'s workflow-inspection operations; feeds `SECURITY.md`
-  (T045)'s disclosure of this endpoint's unauthenticated status.
-- **Traceability update**: REQ-012/013/019/026 rows gain `T026`.
+- **Doc impact**: matches `openapi.yaml`'s workflow-inspection operations (Task 6, corrected by
+  Task 10 per the fields above); feeds `SECURITY.md` (T045)'s disclosure of this endpoint's
+  unauthenticated status.
+- **Traceability update**: REQ-012/013/019/025/026 rows gain `T026`.
 - **Risk/guardrail**: `POST /workflows/{id}/approvals/{step}` is, per ADR-006's own Consequences
   section and ADR-010's Context, **the single highest-severity unauthenticated endpoint in the
   system** — "the only path that releases a blocked branch," with `actor`/`decidedBy` self-
@@ -539,6 +615,53 @@ marked `parallel: true` against another task in this block.
   ("security-sensitive decisions" are human-owned) and Principle V ("undocumented trade-offs are
   indistinguishable from oversights") both bear on directly. Flagging ensures the exposure is
   visible before scenario tasks (T039–T041) start calling it in anger.
+
+### T026a: `POST /workflows` — generic Workflow Run creation over HTTP (contract test first)
+
+**Added by the Task 10 corrective batch** (`pre_implementation_analysis.md` Section 7 HIGH-1 /
+`codex-recommend.md` Findings #4, #9): `plan.md` Section 2.1 flagged `POST /workflows` as a
+plan-level design addition with its own implementation obligation, `contracts/openapi.yaml`
+already defines it (`operationId: createWorkflow`), but no task in the original transcription
+implemented or contract-tested it, and REQ-011's "the system MUST allow a new Workflow Run to be
+created... via a new requirement input" is not satisfied by `ScenarioRunner`'s CLI-only creation
+path alone. This task closes that gap. Per Fix 2's contract correction, **there is no `501`
+stub path** — this task must deliver full generic graph instantiation, not a documented
+not-implemented response.
+
+- **Objective**: Expose generic Workflow Run creation over HTTP: given a `feature`/
+  `requirementText` pair, instantiate and persist the baseline 12-node stage graph (`plan.md`
+  Section 3.2) and return its assigned `id`/`status`/`correlationId`/`planVersion`.
+- **REQ/SCN/ADR**: REQ-011 (workflow creation as an externally reachable capability); SCN-A,
+  SCN-B, SCN-C (all three scenarios' workflows must be creatable through this same generic path,
+  not only through `ScenarioRunner`); ADR-004 (orchestration model).
+- **Files**: Modify `observability/WorkflowController.java` (add `POST /workflows`); Create
+  `observability/dto/{CreateWorkflowRequest,WorkflowCreatedResponse}.java`; Test
+  `api/WorkflowControllerContractTest.java` (extend).
+- **Prerequisites**: T026 (same controller and test file `WorkflowController`/
+  `WorkflowControllerContractTest` T026 created); T020/T021 (`DependencyGraph`,
+  `StageDefinition`, the baseline stage graph shape) for the graph this endpoint instantiates.
+- **Parallel**: false — same file, same test class as T026; strictly sequential.
+- **Expected artifact**: `POST /workflows` with a `requirementText`-bearing body → `201
+  {id, status, correlationId, planVersion}` with a persisted, inspectable 12-node graph
+  (verifiable immediately afterward via `GET /workflows/{id}`, T026); `422` for unreadable/absent
+  requirement input (REQ-016 safe-stop at Stage 1). No `501` response exists for this operation.
+- **TDD**: yes — including a positive contract test asserting the created workflow's persisted
+  step count/shape matches the baseline graph, not merely that `201` was returned.
+- **Validation command**: `./mvnw test -Dtest=WorkflowControllerContractTest`
+- **Doc impact**: matches `contracts/openapi.yaml`'s `POST /workflows` operation (Task 6,
+  corrected by Task 10 — `requirementText` required, no `501` path).
+- **Traceability update**: REQ-011 row gains `T026a`; closes the API/schema deliverable group's
+  `POST /workflows` gap flagged by Task 10's corrective batch; this is now REQ-011's
+  externally-reachable-creation evidence source (previously only `ScenarioRunner`, T025, covered
+  creation, and only via CLI).
+- **Risk/guardrail**: do not special-case this endpoint's instantiation logic separately from
+  `ScenarioRunner`'s (T025) — both must build the same baseline graph from the same
+  `DependencyGraph`/`StageDefinition` machinery, or the two creation paths will silently drift.
+- **Completion criteria**: test passes; `git commit -m "feat(api): implement generic workflow
+  creation over HTTP"`.
+- **Human approval**: false — this task implements the mechanism ADR-006/ADR-010's
+  human-accepted design already covers; it does not itself expose a new class of risk beyond what
+  T026's human-approval checkpoint already covered for this controller.
 
 ---
 
@@ -777,9 +900,15 @@ marked `parallel: true` against another task in this block.
   depends on T024's context persistence and T023's exit-gate mechanics).
 - **Parallel**: false.
 - **Expected artifact**: `replan(workflowId, fromStage, newStages, actor, reason)` marks reachable
-  steps `INVALIDATED`, inserts new `PENDING` steps, increments `instance.planVersion`, records a
-  `"replanned"` event with `{fromVersion, toVersion, fromStage}`.
-- **TDD**: yes.
+  steps `INVALIDATED`, inserts new `PENDING` steps **stamped with the newly-incremented
+  `plan_version`** (corrected by the Task 10 corrective batch, `data-model.md` Section 4/6
+  post-Task-10 note / `codex-recommend.md` Finding #6 — every step row this method inserts must
+  carry the `plan_version` it was created under, and any new `ApprovalEntity` rows this replan's
+  downstream gates create must carry both `planVersion` and the new step's `stepInstanceId`, never
+  only its `stepName`), increments `instance.planVersion`, records a `"replanned"` event with
+  `{fromVersion, toVersion, fromStage}`.
+- **TDD**: yes — include a test asserting an approval decided under `planVersion=1` cannot be read
+  as governing a same-named gate re-created at `planVersion=2` by this method.
 - **Validation command**: `./mvnw test -Dtest=WorkflowEngineReplanningTest`
 - **Doc impact**: none yet (feeds `docs/scenarios/ambiguous.md` in T041).
 - **Traceability update**: REQ-018/030 rows gain `T035`; this is the replanning-evidence and
@@ -821,6 +950,62 @@ marked `parallel: true` against another task in this block.
   no behavior change is intended.
 - **Completion criteria**: test passes, orchestration suite regresses clean; `git commit -m
   "feat(observability): consolidate audit event recording"`.
+- **Human approval**: false.
+
+### T036a: Stage-boundary violation test (REQ-031's own named negative evidence)
+
+**Added by the Task 10 corrective batch** (`pre_implementation_analysis.md` Section 7 HIGH-2 /
+`codex-recommend.md` Finding #8): REQ-031's own Evidence line names "a stage-boundary violation
+test in which an out-of-scope agent action is rejected," restated identically in `plan.md`'s
+traceability table (Section 13) and required as `[MANDATORY]` by `orchestration.md` ORCH-CHK-015
+and `autonomy.md` AUTO-CHK-006 — but no task in the original transcription created this test; T039
+exercises the happy-path stage-attribution property, not this negative case. This task closes
+that gap, sequenced before T046 (convergence) so REQ-031 has real negative evidence before the
+release-readiness gate runs.
+
+- **Objective**: Prove that a stage handler given a stage-scoped capability cannot perform an
+  action outside that scope, that the attempt is rejected **before** any side effect commits, and
+  that the rejected attempt is itself recorded in the audit trail — not silently dropped.
+- **REQ/SCN/ADR**: REQ-031 (controlled autonomy — negative criterion); no dedicated SCN (this is
+  a cross-cutting orchestration-engine property, not a scenario narrative); ADR-004 (orchestration
+  model, since stage-scoping is a property of `StageHandler`/`WorkflowEngine`'s execution
+  boundary).
+- **Files**: Test `orchestration/WorkflowEngineStageBoundaryTest.java`. No new production class is
+  expected by default; if the existing `StageHandler`/`WorkflowEngine` boundary does not already
+  reject an out-of-scope write, the minimal enforcement needed to make this test pass (e.g.
+  scoping a stage handler's persistence access so it cannot address another stage's
+  `workflow_steps` row directly) belongs in `orchestration/WorkflowEngine.java` or a new
+  `orchestration/StageScopeViolationException.java`, added here as the fix this test drives, per
+  TDD (constitution Principle IV) — not deferred to a later task.
+- **Prerequisites**: T022 (stage execution), T023 (approval/gate mechanics needed to construct a
+  realistic multi-stage graph), T024 (context propagation, so the test can assert no context
+  corruption from a rejected attempt), T036 (`AuditRecorder`, so the rejected attempt's audit
+  event can be asserted directly against the consolidated recorder rather than an ad-hoc
+  `recordEvent` call site).
+- **Parallel**: `true` with T037 — disjoint files, no shared interface.
+- **Expected artifact**: a test that (1) constructs a stage handler holding a capability scoped to
+  its own stage's `workflow_steps` row, (2) has that handler attempt to write a **different**
+  stage's `workflow_steps` row directly (an out-of-scope action), (3) asserts the write is
+  rejected and no persisted state changed as a result (the attempted row is unchanged — rejection
+  happens before any side effect commits), and (4) asserts a `workflow_events` row exists
+  recording the rejected attempt (`actorType`, the offending `action`, a non-null `reason`,
+  `result` indicating rejection) via `AuditRecorder` (T036).
+- **TDD**: yes — write the test first; if the current `WorkflowEngine` design already prevents
+  cross-stage writes structurally (e.g. because stage handlers never receive a repository
+  reference broad enough to address another stage's row), the test should still exist to prove
+  that boundary explicitly and pin it against regression, per REQ-031's own evidence requirement.
+- **Validation command**: `./mvnw test -Dtest=WorkflowEngineStageBoundaryTest`
+- **Doc impact**: feeds T043's traceability matrix (REQ-031's Evidence column) and T047's final
+  summary; no `openapi.yaml`/`data-model.md` change.
+- **Traceability update**: REQ-031 row gains `T036a` as its stage-boundary-violation evidence
+  source, closing the gap `pre_implementation_analysis.md` Section 7 HIGH-2 and
+  `codex-recommend.md` Finding #8 both named.
+- **Risk/guardrail**: if this test reveals that no scoping mechanism currently exists to reject an
+  out-of-scope write (i.e., any stage handler can already address any `workflow_steps` row), the
+  correct fix is a real, minimal scope-enforcement mechanism added in this task — not narrowing
+  the test until it passes trivially against an unenforced design.
+- **Completion criteria**: test passes; `git commit -m "test(orchestration): verify stage-boundary
+  violations are rejected before commit and audited"`.
 - **Human approval**: false.
 
 ### T037: MTTR and reliability metrics computation
@@ -1114,9 +1299,9 @@ marked `parallel: true` against another task in this block.
 - **REQ/SCN/ADR**: REQ-020 (release-readiness outcome), REQ-029 (testability); all REQs
   indirectly (this is the release gate).
 - **Files**: Create `docs/assessment/convergence_report.md`.
-- **Prerequisites**: T045 (last doc task) — and, transitively, every implementation task T011–T041
-  and every doc task T042–T045, since this report's content is the actual, current state of all of
-  them.
+- **Prerequisites**: T045 (last doc task) — and, transitively, every implementation task
+  T011–T041 (including `T017a`, `T026a`, `T036a`, added by the Task 10 corrective batch) and every
+  doc task T042–T045, since this report's content is the actual, current state of all of them.
 - **Parallel**: false.
 - **Expected artifact**: pasted real output from
   `JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home ./mvnw test`; each of
@@ -1206,12 +1391,27 @@ marked `parallel: true` against another task in this block.
 
 ## Summary
 
-38 tasks (T011–T048) transcribed from the runbook's Phases 2–12, with no gaps. Sequential-blocking
-groups: T011–T019 (URL-shortener domain, mostly sequential after the T014/T015/T016 parallel
-trio), T020–T026 (orchestration engine core, strictly sequential), T027 (independent) →
-T028–T029 (sequential, depend on the full engine), T030–T032 (mutually parallel) → T033–T034
-(sequential fan-in), T035 (replanning, depends on the full Phase 4–6 engine), T036–T038
-(observability, T036/T037 parallel, T038 depends on T037), T039–T041 (three scenarios, T039/T041
-and T040/T041 parallel-safe pairs, T040 depends on T039), T042–T048 (fully sequential convergence
-chain). Seven tasks carry `human-approval: true`: T015, T026, T029, T040, T046, T047, T048 — see
-each task's own entry above and the Task 9 report for the per-task justification.
+**Updated by the Task 10 corrective batch.** 38 tasks (T011–T048) were originally transcribed from
+the runbook's Phases 2–12. Three tasks — `T017a`, `T026a`, `T036a` — were added post-Task-10 to
+close two HIGH findings both Task 10's own `/speckit.analyze` + Independent Reviewer Gate
+(`docs/assessment/pre_implementation_analysis.md` Section 7) and an external Codex review
+(`codex-recommend.md`, Findings #4, #8, #9) independently confirmed: `POST /workflows` and
+`GET /links/{code}` had no implementing/contract-testing task despite being contract-mandated
+(`T017a`, `T026a`), and REQ-031's own named stage-boundary-violation test had no implementing task
+(`T036a`). This brings the total to 41 tasks. Letter-suffixed IDs (rather than a full renumbering)
+were used deliberately so every pre-existing `T0NN` cross-reference elsewhere in this document, in
+`plan.md`'s traceability table, and in `pre_implementation_analysis.md` itself stays valid without
+a repository-wide renumbering pass.
+
+Sequential-blocking groups: T011–T019 (URL-shortener domain, mostly sequential after the
+T014/T015/T016 parallel trio; `T017a` inserted between T017 and T018, same file/test class,
+strictly sequential), T020–T026 (orchestration engine core, strictly sequential), `T026a`
+(sequential immediately after T026, same file/test class), T027 (independent) → T028–T029
+(sequential, depend on the full engine), T030–T032 (mutually parallel) → T033–T034 (sequential
+fan-in), T035 (replanning, depends on the full Phase 4–6 engine), T036–T038 (observability,
+T036/T037 parallel, T038 depends on T037; `T036a` inserted after T036, parallel with T037,
+depending on T022–T024/T036), T039–T041 (three scenarios, T039/T041 and T040/T041 parallel-safe
+pairs, T040 depends on T039), T042–T048 (fully sequential convergence chain). Seven tasks carry
+`human-approval: true`: T015, T026, T029, T040, T046, T047, T048 — see each task's own entry above
+and the Task 9 report for the per-task justification. `T017a`, `T026a`, and `T036a` are all
+`human-approval: false` (see each task's own entry for the specific reasoning).

@@ -119,7 +119,7 @@ without reconstructing anything from an agent transcript.
 |---|---|---|---|
 | `id` | `BIGINT` | No | Primary key, `IDENTITY`. |
 | `workflow_id` | `VARCHAR(64)` | No | Logical reference to `workflow_instances.id`. |
-| `name` | `VARCHAR(128)` | No | Stage name (e.g. `design`, `implementation`, `impact_analysis`). Unique per `(workflow_id, name)` in practice (enforced by application logic via `findByWorkflowIdAndName`, not a DB unique constraint, since a replan may retire a name and reintroduce a versioned variant, e.g. `decomposition_v2`). |
+| `name` | `VARCHAR(128)` | No | Stage name (e.g. `design`, `implementation`, `impact_analysis`). **Corrected post-Task-10 (see closing note below):** unique per `(workflow_id, plan_version, name)`, not `(workflow_id, name)` alone — a replan may retire a name at one `plan_version` and legitimately reintroduce the same name at a later `plan_version` (in addition to, or instead of, an explicitly versioned variant like `decomposition_v2`); the `plan_version` column above is what makes those rows distinguishable. Enforced by application logic via `findByWorkflowIdAndPlanVersionAndName`, not a DB unique constraint. |
 | `status` | `VARCHAR(32)` | No | Enum `StepStatus`: `PENDING, RUNNING, WAITING_APPROVAL, SUCCEEDED, FAILED, RETRYING, ROLLED_BACK, COMPENSATED, SAFE_STOPPED, INVALIDATED, SKIPPED`. This is the full node-transition vocabulary Section 3 of `plan.md` maps onto. |
 | `sequence` | `INT` | No | Topological-batch ordering hint for display; the authoritative execution order is the `DependencyGraph`'s computed batches, not this column alone. |
 | `depends_on` | `CLOB` (JSON list) | Yes | Serialized `List<String>` of predecessor stage names — the persisted edge list for this node. |
@@ -127,6 +127,7 @@ without reconstructing anything from an agent transcript.
 | `ended_at` | `TIMESTAMP` | Yes | Null until the stage reaches a terminal per-step outcome. |
 | `retry_count` | `INT` | No | Default `0`. Incremented once per failed attempt (REQ-014); the reliability-metrics layer (`plan.md` Section 7) reads this directly rather than re-deriving it from event logs. |
 | `result` | `CLOB` (JSON map) | Yes | Serialized `Map<String,Object>` — the stage handler's output, merged into the run's context artifacts. This is the durable record of "outputs" for the node table in `plan.md` Section 3. |
+| `plan_version` | `INT` | No | **Added post-Task-10 (see closing note below).** The `workflow_instances.plan_version` value active when this step row was created or replaced (by `submit()` or by `replan()`). Without this column, a step and its replan-produced replacement cannot be reliably distinguished, and `(workflow_id, name)` alone is not a safe uniqueness assumption once a replan can reintroduce a retired stage name. Uniqueness for a live step is over `(workflow_id, plan_version, name)`, not `(workflow_id, name)` alone. |
 
 ---
 
@@ -163,7 +164,9 @@ REQ-013). Distinguishes a *requested* gate (row exists, `decision` null) from a 
 |---|---|---|---|
 | `id` | `BIGINT` | No | Primary key, `IDENTITY`. |
 | `workflow_id` | `VARCHAR(64)` | No | Logical reference to `workflow_instances.id`. |
-| `step_name` | `VARCHAR(128)` | No | Which `workflow_steps.name` this gate blocks (an entry gate blocks the stage itself; an exit gate blocks its dependents — see `plan.md` Section 3). |
+| `plan_version` | `INT` | No | **Added post-Task-10 (see closing note below).** The `workflow_instances.plan_version` this gate was requested/decided under. Required so a decision made against one plan version cannot be (mis)read as governing a different plan version's reintroduced gate of the same step name — directly implements ADR-006's own stated rule that a rejection blocks a branch "for that plan version." |
+| `step_instance_id` | `BIGINT` | No | **Added post-Task-10 (see closing note below).** Logical reference to the specific `workflow_steps.id` row this gate instance governs — not merely a `step_name` string. Replaces the prior bare-`step_name` reference so an approval is unambiguously scoped to one concrete step instance, not any row that happens to share its name across plan versions. |
+| `step_name` | `VARCHAR(128)` | No | Which `workflow_steps.name` this gate blocks (an entry gate blocks the stage itself; an exit gate blocks its dependents — see `plan.md` Section 3). Retained alongside `step_instance_id` for human-legible display; `step_instance_id` is the authoritative reference. |
 | `requested_at` | `TIMESTAMP` | No | Set when the gate is first reached. |
 | `decided_at` | `TIMESTAMP` | Yes | Null while pending. REQ-013's negative criterion ("never treats an unanswered gate as approved") is enforced by the engine never proceeding on a row with `decided_at IS NULL` — there is no timeout-based auto-transition anywhere in the codebase. |
 | `decision` | `VARCHAR(16)` | Yes | `approved` \| `rejected`. Null while pending. |
@@ -206,7 +209,7 @@ Section 2.1, "Exception"; constitution Section 4.2). Existence of an unexpired r
 | `reason` | `VARCHAR(1024)` | No | Why the exception is being requested/granted — never optional (constitution Principle VI: exceptions require recorded rationale). |
 | `scope` | `VARCHAR(255)` | No | The bounded scope of the exception (e.g. `"implementation stage"`) — an exception is never workflow-wide by default. |
 | `approving_authority` | `VARCHAR(128)` | No | Who granted it. Same self-asserted-identity caveat as `approvals.decided_by` (no auth enforced this iteration). |
-| `compensating_control` | `VARCHAR(1024)` | Yes | The offsetting control accepted in lieu of the failed mandatory policy (constitution Section 4.2 requires this be recorded, not merely implied). |
+| `compensating_control` | `VARCHAR(1024)` | **No** | **Corrected post-Task-10 (see closing note below) — changed from nullable to NOT NULL.** The offsetting control accepted in lieu of the failed mandatory policy. Constitution Principle VI requires every approved policy exception to record a compensating control; a nullable column allowed that requirement to be silently skipped at the schema level rather than enforced by it. |
 | `approved_at` | `TIMESTAMP` | No | When the exception was granted. |
 | `expiry` | `TIMESTAMP` | No | Mandatory expiry — an exception is never open-ended (constitution Section 4.2, "time-limited"). `hasApprovedUnexpiredException` checks `expiry.isAfter(now)` on every re-evaluation, so an expired exception silently stops covering the policy again rather than needing an explicit revocation step. |
 
@@ -219,7 +222,10 @@ Section 2.1, "Exception"; constitution Section 4.2). Existence of an unexpired r
   before `submit()`/`replan()` persists anything (`UnknownDependencyException`/`CycleException`).
 - `approvals` and `policy_evaluations`/`policy_exceptions` rows always reference a `step_name`/
   `stage_name` that exists in `workflow_steps` for the same `workflow_id` — no orphaned gate or
-  evaluation record.
+  evaluation record. **Post-Task-10 addition:** `approvals.step_instance_id` must further reference
+  the exact `workflow_steps.id` row current as of `approvals.plan_version` — an approval never binds
+  to a step name in the abstract, only to the specific plan-versioned instance it was requested
+  against.
 - `workflow_events` is the union of every state-changing write to `workflow_instances`,
   `workflow_steps`, `approvals`, `policy_evaluations`, and `policy_exceptions` — every write to one
   of those five tables has a corresponding `workflow_events` row in the same logical operation
@@ -228,3 +234,24 @@ Section 2.1, "Exception"; constitution Section 4.2). Existence of an unexpired r
 - `short_links`/`redirect_events` and the six orchestration tables are never joined in a query —
   the domain and the orchestration engine are independently inspectable per constitution Principle
   VII.
+
+---
+
+## Post-Task-10 Corrective Note
+
+The `workflow_steps.plan_version` column, the `approvals.plan_version`/`approvals.step_instance_id`
+columns, and the change of `policy_exceptions.compensating_control` from nullable to `NOT NULL`
+were **not** part of the original Task 6 draft of this document. They were added by the Task 10
+corrective batch to close a real, independently-confirmed gap: both Task 10's own
+`/speckit.analyze` + Independent Reviewer Gate (`docs/assessment/pre_implementation_analysis.md`)
+and an external Codex review (`codex-recommend.md`, Findings #6 and #11) found that, without a
+`plan_version` column, a `workflow_steps` row created before a replan and its replacement row
+created after cannot be reliably distinguished, `(workflow_id, step_name)` alone is not a safe
+uniqueness assumption once a replan can reintroduce a retired stage name, and an approval could not
+be unambiguously scoped to the plan version and specific step instance it governed — directly
+undercutting ADR-006's own stated rule that a rejection blocks a branch "for that plan version."
+Similarly, a nullable `compensating_control` allowed constitution Principle VI's "every approved
+exception records a compensating control" requirement to be satisfied only by convention, not by
+the schema itself. None of these changes reverses an Accepted ADR or a `spec.md` requirement — they
+make already-agreed decisions (ADR-006's plan-version-scoped rejection rule; Principle VI's
+compensating-control requirement) representable in the schema that is supposed to implement them.

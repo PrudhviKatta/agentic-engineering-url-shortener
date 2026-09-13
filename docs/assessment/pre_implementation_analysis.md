@@ -398,28 +398,42 @@ it is still cheap to fix, is:
 Each of the twenty named anti-patterns was checked against the current artifact set. Findings stated
 explicitly, including confirmed-absent cases, per this task's instructions not to skip silently.
 
+**Corrective note (Task 10 corrective batch, prompted by the external Codex review,
+`codex-recommend.md` Finding #3):** the table below previously described several of these findings
+using "Absent" language that read as a runtime/testing claim (e.g. "`X` exists," "`Y` is tested,"
+"`Z` enforces..."), even though this is a pre-implementation, documentation-only gate — no Java
+production code exists in this repository beyond the Spring Boot entry point, and nothing has
+executed. The wording below has been corrected uniformly: every row now states either (a) the
+anti-pattern is not exhibited **by the design as specified**, citing the exact upstream
+design/ADR/plan artifact, or (b) the question is not yet assessable because no code exists yet to
+assess. No row concludes that a mechanism "exists," "works," "is tested," or "is enforced" in a
+runtime sense — that conclusion is only available once Tasks 11+ actually build and exercise the
+code. The underlying design-level judgment (which artifact was checked, and whether *that document*
+exhibits the anti-pattern) is unchanged from the original scan; only the runtime-implying phrasing
+is corrected.
+
 | # | Anti-pattern | Finding |
 |---|---|---|
-| 1 | Simple linear chaining | **Absent.** `DependencyGraph`/`topologicalBatches()` (ADR-004) with real fan-out (Stage 6→{7,9}, 7→{8,10}) and a join (Stage 11) — `orchestration.md` ORCH-CHK-001/004/005 test for exactly this. |
-| 2 | Missing parallel execution | **Absent.** `ExecutorService` + `Future.get()` per batch (ADR-008); T022's test is required to demonstrate genuine time-overlap, not fast-sequential disguise. |
-| 3 | Missing synchronization | **Absent.** Stage 11 is a true join of three branches (`plan.md` §3.3); ORCH-CHK-004. |
-| 4 | Missing persistent state | **Absent.** State persisted via JPA after every batch, not only at terminal states (ADR-004; ORCH-CHK-006). |
-| 5 | Missing context propagation | **Absent** (as designed) **— note:** this was a genuine, disclosed gap T022 left open on purpose, closed by T024 (`context_json` reload across resume). Correctly sequenced, not silently missing. |
-| 6 | Missing decision lineage | **Absent.** `WorkflowContext.recordDecision`/`context_json.decisions[]` (ORCH-CHK-008). |
-| 7 | Unenforced approval | **Absent** as a mechanism defect — `entryApproval`/`exitApproval`, the blocked-batch re-halt guard (ADR-006), and the replan-before-approve ordering rule are all real, tested mechanisms. **Distinct, already-disclosed residual risk** (not this anti-pattern): the approval endpoint itself is unauthenticated (ADR-010) — logically enforced, but not identity-verified. Already named as the project's single largest security caveat; not a silent gap. |
-| 8 | Unbounded retry | **Absent.** Declared `maxRetries`, `RetryExecutor` rethrows on exhaustion (REL-CHK-001). |
-| 9 | Undefined timeout | **Absent.** `TimeoutExecutor.withTimeout`, `StageDefinition.timeoutSeconds` (default 30s), declared per stage. |
-| 10 | Rollback without feasibility | **Absent.** CLR-14 explicitly designates the served-redirect case as rollback-infeasible → compensation-only; ADR-009 Option A (naive rollback-everything) is explicitly rejected for exactly this reason. |
-| 11 | Missing compensation | **Absent** as a design gap — `CompensationRegistry` exists and a stage lacking a registered action falls through to safe-stop (fail-safe, not silent no-op). **Disclosed limitation** (not this anti-pattern): no code path in T011–T048 ever produces `StepStatus.ROLLED_BACK` — already named three times in `tasks.md` (T032, T033's evidence row, the closing Summary) as an intentional, disclosed gap, not an oversight. |
-| 12 | Missing safe-stop | **Absent.** CLR-13's closed two-condition enumeration; T034 is a dedicated convergence test proving no third path exists. |
-| 13 | Missing resume | **Absent.** `runFrom` reloads `context_json` and re-derives from persisted step status (REQ-017; T024). |
-| 14 | Missing replanning | **Absent.** `WorkflowEngine.replan()` (T035), exercised again by T041 under a race condition. |
-| 15 | Missing audit evidence | **Absent.** `AuditRecorder`, six-field schema, `workflow_events` (T036; OBS-CHK-003). |
-| 16 | Claims without validation | **Found — see CRITICAL-1 and HIGH-1.** `plan.md`'s own Authority line claims `spec.md` is "approved" when Section 12 says otherwise; `tasks.md`'s own cross-reference table claims two endpoints are covered by tasks that do not implement them. Both are unvalidated claims already present in committed documents, not merely a risk to watch for. |
-| 17 | Weak brownfield analysis | **Absent.** SCN-B is grounded in a real, disclosed pre-existing defect (IPv6 ULA gap in `Inet6Address.isSiteLocalAddress()`), gated by a mandatory impact-analysis approval before implementation, covering all seven named impact dimensions (`brownfield.md` checklist). |
-| 18 | Silent ambiguity resolution | **Absent.** All nine original ambiguities (AMB-1..9) plus eight newly-surfaced gaps have an explicit CLR resolution or an explicit, owned deferral (AMB-7, later dispositioned via CLR-17 with a named human approval). Two resolutions (CLR-4, CLR-15) that exceeded the literal brief scope were self-flagged and separately human-reconfirmed — a stronger-than-required practice, not a weaker one. |
+| 1 | Simple linear chaining | **Not yet assessable — no code exists.** The DESIGN does not exhibit this anti-pattern where specified: `plan.md` §3.1/§3.2 and ADR-004 specify `DependencyGraph`/`topologicalBatches()` with real fan-out (Stage 6→{7,9}, 7→{8,10}) and a join (Stage 11), and `orchestration.md` ORCH-CHK-001/004/005 name the tests that will have to prove this once T020/T022 are implemented. Whether the eventual code actually avoids linear chaining is unverifiable until then. |
+| 2 | Missing parallel execution | **Not yet assessable — no code exists.** The DESIGN specifies genuine parallel execution: `ExecutorService` + `Future.get()` per batch (ADR-008, `plan.md` §3.1); T022's planned test is required to demonstrate genuine time-overlap, not fast-sequential disguise, once written. |
+| 3 | Missing synchronization | **Not yet assessable — no code exists.** The DESIGN specifies Stage 11 as a true join of three branches (`plan.md` §3.3); ORCH-CHK-004 names the test this will require once T022 is implemented. |
+| 4 | Missing persistent state | **Not yet assessable — no code exists.** The DESIGN specifies state persisted via JPA after every batch, not only at terminal states (ADR-004; `data-model.md` §3–4; ORCH-CHK-006). |
+| 5 | Missing context propagation | **Not applicable to the design as sequenced** — this is a genuine, disclosed gap `plan.md`/`tasks.md` describe T022 as leaving open on purpose, to be closed by T024 (`context_json` reload across resume). The design discloses the gap and its planned closure explicitly; it is not a silent omission. Whether T022/T024's actual code closes it as designed is unverifiable until they are implemented. |
+| 6 | Missing decision lineage | **Not yet assessable — no code exists.** The DESIGN specifies `WorkflowContext.recordDecision`/`context_json.decisions[]` (`plan.md` §4; ORCH-CHK-008) as the mechanism; T021 is the task that will implement it. |
+| 7 | Unenforced approval | **Not yet assessable — no code exists.** The DESIGN does not exhibit this anti-pattern where specified: `entryApproval`/`exitApproval`, the blocked-batch re-halt guard, and the replan-before-approve ordering rule are specified as real, testable mechanisms (ADR-006; `plan.md` §3.1/§3.4; T023/T035). **Distinct, already-disclosed residual risk** (not this anti-pattern, and separately not a runtime claim): the approval endpoint is *designed* to be unauthenticated (ADR-010) — logically gated by workflow state, but not identity-verified. Already named as the project's single largest disclosed security caveat; not a silent gap. See Fix 5's addition to `plan.md` §8 for the precise wording this project now uses for that endpoint's posture. |
+| 8 | Unbounded retry | **Not yet assessable — no code exists.** The DESIGN specifies a declared `maxRetries` and a `RetryExecutor` that rethrows on exhaustion (`plan.md` §6; REL-CHK-001); T030 is the implementing task. |
+| 9 | Undefined timeout | **Not yet assessable — no code exists.** The DESIGN specifies `TimeoutExecutor.withTimeout` and `StageDefinition.timeoutSeconds` (default 30s), declared per stage (`plan.md` §3.2/§6); T031 is the implementing task. |
+| 10 | Rollback without feasibility | **Not yet assessable — no code exists.** The DESIGN does not exhibit this anti-pattern where specified: CLR-14 explicitly designates the served-redirect case as rollback-infeasible → compensation-only, and ADR-009 explicitly rejects naive rollback-everything (Option A) for exactly this reason. Whether the eventual `CompensationRegistry` code honors this is unverifiable until T032/T033 are implemented. |
+| 11 | Missing compensation | **Not yet assessable — no code exists.** The DESIGN specifies a `CompensationRegistry` (ADR-009; `plan.md` §3.4/§6) under which a stage lacking a registered action is designed to fall through to safe-stop (fail-safe, not silent no-op); T032/T033 are the implementing tasks. **Disclosed limitation** (not a runtime claim): the design as currently scoped has no task in T011–T048 that ever produces `StepStatus.ROLLED_BACK` — already named three times in `tasks.md` (T032, T033's evidence row, the closing Summary) as an intentional, disclosed scope decision, not an oversight. |
+| 12 | Missing safe-stop | **Not yet assessable — no code exists.** The DESIGN specifies CLR-13's closed two-condition enumeration as the sole safe-stop trigger set; T034 is the planned dedicated convergence test intended to prove no third path exists once T028/T033/T034 are implemented. |
+| 13 | Missing resume | **Not yet assessable — no code exists.** The DESIGN specifies `runFrom` reloading `context_json` and re-deriving from persisted step status (REQ-017; `plan.md` §3.4); T024 is the implementing task. |
+| 14 | Missing replanning | **Not yet assessable — no code exists.** The DESIGN specifies `WorkflowEngine.replan()` (`plan.md` §3.4; T035), to be exercised again by T041 under a race condition once both are implemented. |
+| 15 | Missing audit evidence | **Not yet assessable — no code exists.** The DESIGN specifies an `AuditRecorder`, a six-field event schema, and a `workflow_events` table (`data-model.md` §5; T036; OBS-CHK-003) as the mechanism; none of it has been built or exercised yet. |
+| 16 | Claims without validation | **Found — see CRITICAL-1 and HIGH-1.** `plan.md`'s own Authority line claims `spec.md` is "approved" when Section 12 says otherwise; `tasks.md`'s own cross-reference table claims two endpoints are covered by tasks that do not implement them. Both are unvalidated claims already present in committed documents, not merely a risk to watch for. (This finding is itself about documentation-level claims, not runtime behavior, so it required no rewording.) |
+| 17 | Weak brownfield analysis | **Not yet assessable as executed evidence, but the DESIGN does not exhibit this anti-pattern where specified.** SCN-B's design (`plan.md` §11.2) is grounded in a real, disclosed pre-existing defect (IPv6 ULA gap in `Inet6Address.isSiteLocalAddress()`), gated by a mandatory impact-analysis approval before implementation, covering all seven named impact dimensions per the `brownfield.md` checklist. Whether T040's actual implementation and `docs/scenarios/brownfield.md` deliver on this design is unverifiable until T040 runs. |
+| 18 | Silent ambiguity resolution | **Absent — this is a documentation-level, already-executed finding, not a runtime claim.** All nine original ambiguities (AMB-1..9) plus eight newly-surfaced gaps have an explicit CLR resolution or an explicit, owned deferral (AMB-7, later dispositioned via CLR-17 with a named human approval), recorded directly in `spec.md`/`human-gates-log.md` today. Two resolutions (CLR-4, CLR-15) that exceeded the literal brief scope were self-flagged and separately human-reconfirmed — a stronger-than-required practice, not a weaker one. |
 | 19 | Implementation tasks not preceded by tests | **Not yet verifiable (correctly so).** Every task in `tasks.md` is marked `TDD: yes` with an explicit "observed to fail first" expectation, and `tdd.md`'s checklist is honestly self-labeled `UNVERIFIED/PENDING` rather than pre-emptively claimed satisfied. This is the correct pre-implementation state, not a finding of absence or presence. |
-| 20 | Tasks inconsistent with ADRs | **Absent**, with the two HIGH exceptions in Section 7 being tasks-vs-*plan* gaps rather than tasks-vs-*ADR* gaps. `tasks.md`'s own "Task 7 reconciliation" section explicitly checked ADR alignment and found none needed. |
+| 20 | Tasks inconsistent with ADRs | **Absent — this is a documentation-level, already-executed finding, not a runtime claim.** The two HIGH exceptions in Section 7 are tasks-vs-*plan* gaps rather than tasks-vs-*ADR* gaps; `tasks.md`'s own "Task 7 reconciliation" section explicitly checked ADR alignment and found none needed. This conclusion is verifiable today by reading the documents directly — it draws no inference about code that does not yet exist. |
 | — | Documentation disconnected from planned behavior | **Found — see HIGH-1.** `plan.md`/`contracts/openapi.yaml` describe two endpoints as planned, implementation-obligating behavior; `tasks.md` does not implement them and its own summary table asserts they are already covered. |
 
 ---
@@ -474,17 +488,20 @@ Stage 11 (Release-readiness) is designed as a synchronization join of Stages 8, 
 not sequential completion that merely looks parallel.
 
 **4. How is state persisted and resumed?**
-`WorkflowInstanceEntity`/`WorkflowStepEntity`/`WorkflowEventEntity` via Spring Data JPA over H2
-(ADR-002/004), persisted after every batch. Resumption is `WorkflowEngine.runFrom` reloading
-`context_json` and re-deriving the next batch from persisted `workflow_steps.status`, never
-re-executing a `SUCCEEDED` step (`plan.md` §3.4, T024). This closes a gap T022 explicitly and
-disclosedly left open on its own first pass — a sign of honest incremental design, not a
-hidden defect.
+Not yet implemented (no code exists). *Designed* to be: `WorkflowInstanceEntity`/
+`WorkflowStepEntity`/`WorkflowEventEntity` via Spring Data JPA over H2 (ADR-002/004), persisted
+after every batch. Resumption is designed as `WorkflowEngine.runFrom` reloading `context_json` and
+re-deriving the next batch from persisted `workflow_steps.status`, never re-executing a `SUCCEEDED`
+step (`plan.md` §3.4, T024). This design closes a gap T022 explicitly and disclosedly leaves open
+on its own first pass, per `tasks.md` — a sign of honest incremental design, not a hidden defect.
+Whether T021–T024's actual code delivers this is unverifiable until those tasks are implemented.
 
 **5. How is decision lineage preserved?**
-`WorkflowContext.recordDecision(actor, decision, rationale)`, appended to `context_json.decisions[]`,
-persisted with the workflow instance (`plan.md` §4, T021). `orchestration.md` ORCH-CHK-008 requires
-every branch taken to carry a decision record, not merely a resulting state transition.
+Not yet implemented (no code exists). *Designed* to be preserved via
+`WorkflowContext.recordDecision(actor, decision, rationale)`, appended to `context_json.decisions[]`
+and persisted with the workflow instance (`plan.md` §4, T021). `orchestration.md` ORCH-CHK-008
+names the test that will be required, once T021 exists, to prove every branch taken carries a
+decision record rather than merely a resulting state transition.
 
 **6. Which actions require human approval?**
 Enumerated explicitly in `plan.md` §5's Human-in-the-Loop table: unresolved ambiguity (Stage 3→4),
@@ -504,38 +521,48 @@ verified as the intended human. This is disclosed, not hidden, but it is a real 
 real deployment of this exact code, correctly named as a residual risk rather than a closed matter.
 
 **8. Are retry boundaries explicit?**
-Yes: `StageDefinition.maxRetries`, declared per stage, `RetryExecutor.withBoundedRetry` rethrows
-immediately on exhaustion (CLR-12, `plan.md` §6, `reliability.md` REL-CHK-001).
+Not yet implemented (no code exists). *Designed* to be explicit: `StageDefinition.maxRetries`,
+declared per stage, with `RetryExecutor.withBoundedRetry` specified to rethrow immediately on
+exhaustion (CLR-12, `plan.md` §6, `reliability.md` REL-CHK-001). T030 is the implementing task;
+whether the built code honors this bound is unverifiable until then.
 
 **9. Where is timeout behavior defined?**
-`StageDefinition.timeoutSeconds` (default 30s per `StageDefinition.of`'s stated default), enforced
-per-attempt via `TimeoutExecutor.withTimeout` independently of the retry loop (`plan.md` §6, T031).
+Not yet implemented (no code exists). *Designed* as `StageDefinition.timeoutSeconds` (default 30s
+per `StageDefinition.of`'s stated default), specified to be enforced per-attempt via
+`TimeoutExecutor.withTimeout` independently of the retry loop (`plan.md` §6, T031). T031 is the
+implementing task.
 
 **10. Is rollback technically feasible?**
-Only where genuinely reversible: an in-transaction, not-yet-committed effect rolls back for free via
-transaction abort (ADR-009). Where it is not feasible — a served redirect, CLR-14's confirmed case —
-the design correctly refuses to claim rollback and uses compensation instead. This is the strongest
-part of the reliability design: it names the *infeasible* case explicitly rather than papering over
-it with a generic "rollback" claim.
+Not yet implemented (no code exists) — this is a design-feasibility judgment, not a runtime
+observation. As *designed*, rollback is only claimed where genuinely reversible: an
+in-transaction, not-yet-committed effect is specified to roll back for free via transaction abort
+(ADR-009). Where it is not feasible — a served redirect, CLR-14's confirmed case — the design
+correctly refuses to claim rollback and specifies compensation instead. This is the strongest part
+of the reliability *design*: it names the *infeasible* case explicitly rather than papering over it
+with a generic "rollback" claim. Whether ADR-009's `CompensationRegistry` code actually behaves this
+way is unverifiable until T032/T033 are implemented.
 
 **11. Where is compensation used instead?**
-`CompensationRegistry.register(stageName, action)`/`run(...)`, invoked for externally-observed
-effects (the served-redirect case being canonical, ADR-009). A stage with an externally-visible
-effect but no registered compensation falls through to safe-stop — a disclosed fail-safe, not a
-silent no-op.
+Not yet implemented (no code exists). *Designed* as `CompensationRegistry.register(stageName,
+action)`/`run(...)`, to be invoked for externally-observed effects (the served-redirect case being
+canonical, ADR-009). A stage with an externally-visible effect but no registered compensation is
+specified to fall through to safe-stop — a disclosed fail-safe design, not a silent no-op — once
+T032/T033 build it.
 
 **12. What triggers safe-stop?**
-A closed, two-condition enumeration (CLR-13): (a) a mandatory policy `FAIL` with no approved
-exception, or (b) bounded retries exhausted with no applicable compensation. `tasks.md` T034 is a
-dedicated convergence test whose specific job is proving no third, divergent safe-stop path exists.
+Not yet implemented (no code exists). *Designed* as a closed, two-condition enumeration (CLR-13):
+(a) a mandatory policy `FAIL` with no approved exception, or (b) bounded retries exhausted with no
+applicable compensation. `tasks.md` T034 names a planned dedicated convergence test whose specific
+job will be proving no third, divergent safe-stop path exists, once T028/T033/T034 are implemented.
 
 **13. How does dynamic replanning avoid uncontrolled change?**
-`replan()` only affects stages reachable from a named point forward (never rewrites/deletes prior
-`workflow_events`/`workflow_steps` rows), bumps `plan_version`, and records a `replanned` audit event
-with what changed, why, and under whose authority (`plan.md` §3.4, ORCH-CHK-010/011). The
-replan-before-approve ordering rule is enforced as a fixed sequencing constraint specifically to
-prevent a race where execution resumes against a not-yet-updated graph (ADR-004 Risks, tested by
-T035/T041).
+Not yet implemented (no code exists). *Designed* so that `replan()` only affects stages reachable
+from a named point forward (never rewrites/deletes prior `workflow_events`/`workflow_steps` rows),
+bumps `plan_version`, and records a `replanned` audit event with what changed, why, and under whose
+authority (`plan.md` §3.4, ORCH-CHK-010/011). The replan-before-approve ordering rule is specified
+as a fixed sequencing constraint intended to prevent a race where execution resumes against a
+not-yet-updated graph (ADR-004 Risks) — a property T035/T041 are planned to test once written, not
+one confirmed by any test that has run yet.
 
 **14. Can every major claim be validated?**
 Every claim reviewed cites a specific file/section/test-class name that will exist once Tasks 11+

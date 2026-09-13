@@ -11,7 +11,7 @@ public class ShortLinkEntity {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(unique = true, nullable = false, length = 16)
+    @Column(unique = true, nullable = true, length = 16)
     private String code;
 
     @Column(name = "long_url", nullable = false, length = 2048)

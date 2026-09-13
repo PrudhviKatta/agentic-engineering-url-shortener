@@ -1606,9 +1606,9 @@ public class DependencyGraph {
 - Test: `src/test/java/com/schwab/urlshortener/orchestration/WorkflowContextTest.java`
 
 **Interfaces:**
-- Produces entities: `WorkflowInstanceEntity(id: String[uuid], feature, status: WorkflowStatus, correlationId, createdAt, updatedAt, planVersion: int)`; `WorkflowStepEntity(id: Long, workflowId, name, status: StepStatus, sequence: int, dependsOn: List<String>, startedAt, endedAt, retryCount: int, result: Map<String,Object>)`; `WorkflowEventEntity(id: Long, workflowId, actorType, action, timestamp, payload: Map<String,Object>, result, reason)`
+- Produces entities: `WorkflowInstanceEntity(id: String[uuid], feature, status: WorkflowStatus, correlationId, createdAt, updatedAt, planVersion: int)`; `WorkflowStepEntity(id: Long, workflowId, name, status: StepStatus, sequence: int, dependsOn: List<String>, startedAt, endedAt, retryCount: int, result: Map<String,Object>, planVersion: int)`; `WorkflowEventEntity(id: Long, workflowId, actorType, action, timestamp, payload: Map<String,Object>, result, reason)`
 - Produces: `class WorkflowContext { WorkflowContext(String correlationId); WorkflowContext(String correlationId, List<Map<String,Object>> decisions, Map<String,Object> artifacts); void recordDecision(String actor, String decision, String rationale); void addArtifact(String name, Object value); String correlationId(); List<Map<String,Object>> decisions(); Map<String,Object> artifacts(); }`
-- Produces: `WorkflowStepJpaRepository.findByWorkflowIdAndName(String workflowId, String name) -> Optional<WorkflowStepEntity>` (used constantly by the engine)
+- Produces: `WorkflowStepJpaRepository.findByWorkflowIdAndPlanVersionAndName(String workflowId, int planVersion, String name) -> Optional<WorkflowStepEntity>` (used constantly by the engine). **`planVersion` is on `WorkflowStepEntity` from this task onward, and every lookup is scoped by it, not by `(workflowId, name)` alone** — corrected here (2026-09-13) to match `data-model.md`'s already-documented design: a replan (Task 35) can retire a stage name at one plan version and legitimately reintroduce it at a later one, so `(workflowId, name)` alone is never a safe uniqueness/lookup assumption, even before Task 35 exists. Retrofitting this after the fact (once Task 35 lands) would mean rewriting every intervening task's repository calls; establishing it now costs nothing (no replan exists yet to exploit the gap) and avoids that rework.
 
 - [ ] **Step 1: Write failing test**
 ```java
@@ -1856,6 +1856,12 @@ public class WorkflowStepEntity {
     @Column(columnDefinition = "CLOB")
     private Map<String, Object> result;
 
+    // Corrected 2026-09-13 (data-model.md's already-documented design; see this task's Interfaces
+    // note above): without this column, (workflowId, name) is not a safe uniqueness/lookup
+    // assumption once Task 35's replan() can retire and reintroduce a stage name.
+    @Column(name = "plan_version")
+    private int planVersion = 1;
+
     public Long getId() { return id; }
     public String getWorkflowId() { return workflowId; }
     public void setWorkflowId(String workflowId) { this.workflowId = workflowId; }
@@ -1875,6 +1881,8 @@ public class WorkflowStepEntity {
     public void setRetryCount(int retryCount) { this.retryCount = retryCount; }
     public Map<String, Object> getResult() { return result; }
     public void setResult(Map<String, Object> result) { this.result = result; }
+    public int getPlanVersion() { return planVersion; }
+    public void setPlanVersion(int planVersion) { this.planVersion = planVersion; }
 }
 ```
 ```java
@@ -1945,8 +1953,10 @@ import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface WorkflowStepJpaRepository extends JpaRepository<WorkflowStepEntity, Long> {
-    Optional<WorkflowStepEntity> findByWorkflowIdAndName(String workflowId, String name);
-    List<WorkflowStepEntity> findByWorkflowIdOrderBySequence(String workflowId);
+    // Corrected 2026-09-13: plan-version-scoped from this task onward — never a bare
+    // (workflowId, name) lookup. See this task's Interfaces note above.
+    Optional<WorkflowStepEntity> findByWorkflowIdAndPlanVersionAndName(String workflowId, int planVersion, String name);
+    List<WorkflowStepEntity> findByWorkflowIdAndPlanVersionOrderBySequence(String workflowId, int planVersion);
 }
 ```
 ```java
@@ -1972,6 +1982,7 @@ public interface WorkflowEventJpaRepository extends JpaRepository<WorkflowEventE
 **Interfaces:**
 - Consumes: `DependencyGraph`, `StageDefinition`, `WorkflowContext`, entities/repos from Task 21
 - Produces: `class WorkflowEngine { WorkflowEngine(WorkflowInstanceJpaRepository, WorkflowStepJpaRepository, WorkflowEventJpaRepository); String submit(String feature, List<StageDefinition> stages, String correlationId); }` — a plain constructor-injected class (per ADR-004: not a Spring-managed singleton, so it's testable without booting the full context); `StageHandler.run(ctx)` returns a `Map<String,Object>` merged into `WorkflowStepEntity.result`
+- **Corrected 2026-09-13:** the `submit()`→`runFrom()` handoff within this task uses a plain **non-static** instance field to remember each workflow's stage list between the two calls (same-object, same-call-sequence convenience only — the constructor-injected `WorkflowEngine` object stays alive across both calls in every test and every real caller at this point in the build). An earlier draft of this task used a `private static final Map<...> REGISTRY` — `static` state here would be shared across every `WorkflowEngine` instance in the JVM for the rest of the process's life, which is a real defect independent of restart-safety (test pollution, unbounded growth) and is also the exact anti-pattern a later corrective round (Task 49/50) replaces with a proper `StageCatalog`. Do not transcribe `static` here.
 
 - [ ] **Step 1: Write failing test**
 ```java
@@ -2014,7 +2025,7 @@ class WorkflowEngineExecutionTest {
         WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
         assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.COMPLETED);
         assertThat(calls).containsExactly("a", "b");
-        assertThat(stepRepository.findByWorkflowIdOrderBySequence(workflowId))
+        assertThat(stepRepository.findByWorkflowIdAndPlanVersionOrderBySequence(workflowId, 1))
                 .allMatch(s -> s.getStatus() == StepStatus.SUCCEEDED);
     }
 
@@ -2051,7 +2062,10 @@ import java.util.concurrent.*;
 
 public class WorkflowEngine {
 
-    private static final Map<String, StageRegistration> REGISTRY = new ConcurrentHashMap<>();
+    // Non-static, per-instance: same-object convenience linking submit() to its own runFrom()
+    // call and any later resume within this object's lifetime — never a static/shared registry.
+    // See this task's Interfaces note above.
+    private final Map<String, StageRegistration> registry = new ConcurrentHashMap<>();
 
     private final WorkflowInstanceJpaRepository instanceRepository;
     private final WorkflowStepJpaRepository stepRepository;
@@ -2069,7 +2083,7 @@ public class WorkflowEngine {
         DependencyGraph graph = new DependencyGraph(stages);
         graph.validate();
         String workflowId = UUID.randomUUID().toString();
-        REGISTRY.put(workflowId, new StageRegistration(stages, graph));
+        registry.put(workflowId, new StageRegistration(stages, graph));
 
         WorkflowInstanceEntity instance = new WorkflowInstanceEntity();
         instance.setId(workflowId);
@@ -2086,6 +2100,7 @@ public class WorkflowEngine {
             step.setStatus(StepStatus.PENDING);
             step.setSequence(sequence++);
             step.setDependsOn(stage.dependsOn());
+            step.setPlanVersion(instance.getPlanVersion());
             stepRepository.save(step);
         }
 
@@ -2098,13 +2113,14 @@ public class WorkflowEngine {
         // (no persistence yet) — this is deliberately incomplete and is exactly the
         // gap Task 24 closes. Do not "fix" it here; Task 24's failing test depends
         // on this gap existing first.
-        StageRegistration registration = REGISTRY.get(workflowId);
+        StageRegistration registration = registry.get(workflowId);
         WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        int planVersion = instance.getPlanVersion();
         WorkflowContext ctx = new WorkflowContext(instance.getCorrelationId());
 
         for (List<StageDefinition> batch : registration.graph().topologicalBatches()) {
             List<StageDefinition> pending = batch.stream()
-                    .filter(s -> stepStatus(workflowId, s.name()) == StepStatus.PENDING)
+                    .filter(s -> stepStatus(workflowId, planVersion, s.name()) == StepStatus.PENDING)
                     .toList();
             if (pending.isEmpty()) continue;
 
@@ -2112,7 +2128,7 @@ public class WorkflowEngine {
             try {
                 List<Future<?>> futures = new ArrayList<>();
                 for (StageDefinition stage : pending) {
-                    futures.add(pool.submit(() -> runStage(workflowId, stage, ctx)));
+                    futures.add(pool.submit(() -> runStage(workflowId, planVersion, stage, ctx)));
                 }
                 for (Future<?> future : futures) {
                     future.get(); // propagate exceptions synchronously per batch (fail-fast)
@@ -2133,8 +2149,8 @@ public class WorkflowEngine {
         recordEvent(workflowId, "engine", "workflow_completed", "OK", null);
     }
 
-    private void runStage(String workflowId, StageDefinition stage, WorkflowContext ctx) {
-        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndName(workflowId, stage.name()).orElseThrow();
+    private void runStage(String workflowId, int planVersion, StageDefinition stage, WorkflowContext ctx) {
+        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, planVersion, stage.name()).orElseThrow();
         step.setStatus(StepStatus.RUNNING);
         step.setStartedAt(Instant.now());
         stepRepository.save(step);
@@ -2158,8 +2174,8 @@ public class WorkflowEngine {
         eventRepository.save(event);
     }
 
-    private StepStatus stepStatus(String workflowId, String name) {
-        return stepRepository.findByWorkflowIdAndName(workflowId, name).orElseThrow().getStatus();
+    private StepStatus stepStatus(String workflowId, int planVersion, String name) {
+        return stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, planVersion, name).orElseThrow().getStatus();
     }
 
     private record StageRegistration(List<StageDefinition> stages, DependencyGraph graph) { }
@@ -2178,6 +2194,7 @@ public class WorkflowEngine {
 
 **Interfaces:**
 - Produces: `WorkflowEngine.approve(String workflowId, String stepName, String decision, String actor, String reason)` (`decision` in `{"approved","rejected"}`); an `entryApproval` stage halts the workflow in `PENDING_APPROVAL` *before* its handler ever runs; an `exitApproval` stage's handler runs normally, then the workflow halts in `PENDING_APPROVAL` before any dependent stage runs. `"rejected"` always sets the workflow to `FAILED`; for an entry-gated stage its step also becomes `FAILED` (handler never ran); for an exit-gated stage the step's `SUCCEEDED` status stands (the handler did complete) but no dependent stage ever runs.
+- **Corrected 2026-09-13:** `ApprovalEntity` carries `planVersion` and `stepInstanceId` from this task onward (matching `data-model.md`'s already-documented design), not a bare `stepName` reference — an approval is scoped to the specific `WorkflowStepEntity` row it governs, not any row that happens to share its name across a future plan version. `stepName` is retained alongside `stepInstanceId` for human-legible display only; every lookup goes through `(workflowId, planVersion, stepName)`, matching `WorkflowStepEntity`'s own uniqueness scope from Task 21. Establishing this now, before Task 35's replan exists to exploit the gap, costs nothing and avoids rewriting this task's queries later.
 
 - [ ] **Step 1: Write failing test**
 ```java
@@ -2264,6 +2281,14 @@ public class ApprovalEntity {
     @Column(name = "workflow_id")
     private String workflowId;
 
+    // Corrected 2026-09-13: scoped to a plan version and a specific step row from this task
+    // onward — see this task's Interfaces note above.
+    @Column(name = "plan_version")
+    private int planVersion = 1;
+
+    @Column(name = "step_instance_id")
+    private Long stepInstanceId;
+
     @Column(name = "step_name")
     private String stepName;
 
@@ -2283,6 +2308,10 @@ public class ApprovalEntity {
     public Long getId() { return id; }
     public String getWorkflowId() { return workflowId; }
     public void setWorkflowId(String workflowId) { this.workflowId = workflowId; }
+    public int getPlanVersion() { return planVersion; }
+    public void setPlanVersion(int planVersion) { this.planVersion = planVersion; }
+    public Long getStepInstanceId() { return stepInstanceId; }
+    public void setStepInstanceId(Long stepInstanceId) { this.stepInstanceId = stepInstanceId; }
     public String getStepName() { return stepName; }
     public void setStepName(String stepName) { this.stepName = stepName; }
     public Instant getRequestedAt() { return requestedAt; }
@@ -2304,7 +2333,9 @@ import java.util.List;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface ApprovalJpaRepository extends JpaRepository<ApprovalEntity, Long> {
-    List<ApprovalEntity> findByWorkflowIdAndStepNameAndDecision(String workflowId, String stepName, String decision);
+    // Corrected 2026-09-13: plan-version-scoped — see this task's Interfaces note above.
+    List<ApprovalEntity> findByWorkflowIdAndPlanVersionAndStepNameAndDecision(
+            String workflowId, int planVersion, String stepName, String decision);
 }
 ```
 ```java
@@ -2317,7 +2348,8 @@ public interface ApprovalJpaRepository extends JpaRepository<ApprovalEntity, Lon
 // A single boolean cannot express both — do not collapse these back into one flag.
 public class WorkflowEngine {
 
-    private static final Map<String, StageRegistration> REGISTRY = new ConcurrentHashMap<>();
+    // Non-static, per-instance — see Task 22's Interfaces note. Never a shared/static registry.
+    private final Map<String, StageRegistration> registry = new ConcurrentHashMap<>();
 
     private final WorkflowInstanceJpaRepository instanceRepository;
     private final WorkflowStepJpaRepository stepRepository;
@@ -2334,36 +2366,37 @@ public class WorkflowEngine {
         this.approvalRepository = approvalRepository;
     }
 
-    // submit(...) is unchanged from Task 22.
+    // submit(...) is unchanged from Task 22 (still writes registry.put(...), not REGISTRY.put(...)).
 
     private void runFrom(String workflowId) {
         // NOTE: still deliberately a fresh WorkflowContext each call — Task 24 fixes this.
-        StageRegistration registration = REGISTRY.get(workflowId);
+        StageRegistration registration = registry.get(workflowId);
         WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        int planVersion = instance.getPlanVersion();
         WorkflowContext ctx = new WorkflowContext(instance.getCorrelationId());
 
         for (List<StageDefinition> batch : registration.graph().topologicalBatches()) {
             List<StageDefinition> pending = batch.stream()
-                    .filter(s -> stepStatus(workflowId, s.name()) == StepStatus.PENDING)
+                    .filter(s -> stepStatus(workflowId, planVersion, s.name()) == StepStatus.PENDING)
                     .toList();
             if (pending.isEmpty()) continue;
 
             // Entry gate: block BEFORE running any handler in this batch.
             for (StageDefinition stage : pending) {
-                if (stage.entryApproval() && !isApproved(workflowId, stage.name())) {
-                    enterPendingApproval(workflowId, stage.name());
+                if (stage.entryApproval() && !isApproved(workflowId, planVersion, stage.name())) {
+                    enterPendingApproval(workflowId, planVersion, stage.name());
                     instance.setStatus(WorkflowStatus.PENDING_APPROVAL);
                     instanceRepository.save(instance);
                     return; // halt entirely; handler has NOT run; approve() resumes
                 }
             }
 
-            runBatch(workflowId, pending, ctx);
+            runBatch(workflowId, planVersion, pending, ctx);
 
             // Exit gate: block AFTER running, before any dependent batch proceeds.
             for (StageDefinition stage : pending) {
-                if (stage.exitApproval() && !isApproved(workflowId, stage.name())) {
-                    enterPendingApproval(workflowId, stage.name());
+                if (stage.exitApproval() && !isApproved(workflowId, planVersion, stage.name())) {
+                    enterPendingApproval(workflowId, planVersion, stage.name());
                     instance.setStatus(WorkflowStatus.PENDING_APPROVAL);
                     instanceRepository.save(instance);
                     return; // halt; handler already ran and is SUCCEEDED-turned-WAITING_APPROVAL
@@ -2376,12 +2409,12 @@ public class WorkflowEngine {
         recordEvent(workflowId, "engine", "workflow_completed", "OK", null);
     }
 
-    private void runBatch(String workflowId, List<StageDefinition> pending, WorkflowContext ctx) {
+    private void runBatch(String workflowId, int planVersion, List<StageDefinition> pending, WorkflowContext ctx) {
         ExecutorService pool = Executors.newFixedThreadPool(Math.max(1, pending.size()));
         try {
             List<Future<?>> futures = new ArrayList<>();
             for (StageDefinition stage : pending) {
-                futures.add(pool.submit(() -> runStage(workflowId, stage, ctx)));
+                futures.add(pool.submit(() -> runStage(workflowId, planVersion, stage, ctx)));
             }
             for (Future<?> future : futures) {
                 future.get();
@@ -2397,8 +2430,16 @@ public class WorkflowEngine {
     }
 
     public void approve(String workflowId, String stepName, String decision, String actor, String reason) {
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        int planVersion = instance.getPlanVersion();
+        StageDefinition stage = registry.get(workflowId).stages().stream()
+                .filter(s -> s.name().equals(stepName)).findFirst().orElseThrow();
+        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, planVersion, stepName).orElseThrow();
+
         ApprovalEntity approval = new ApprovalEntity();
         approval.setWorkflowId(workflowId);
+        approval.setPlanVersion(planVersion);
+        approval.setStepInstanceId(step.getId());
         approval.setStepName(stepName);
         approval.setDecidedAt(Instant.now());
         approval.setDecision(decision);
@@ -2406,11 +2447,6 @@ public class WorkflowEngine {
         approval.setReason(reason);
         approvalRepository.save(approval);
         recordEvent(workflowId, "human", "approval_" + decision + ":" + stepName, "OK", reason);
-
-        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
-        StageDefinition stage = REGISTRY.get(workflowId).stages().stream()
-                .filter(s -> s.name().equals(stepName)).findFirst().orElseThrow();
-        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndName(workflowId, stepName).orElseThrow();
 
         if ("rejected".equals(decision)) {
             if (step.getStatus() != StepStatus.SUCCEEDED) {
@@ -2436,17 +2472,19 @@ public class WorkflowEngine {
         runFrom(workflowId);
     }
 
-    private boolean isApproved(String workflowId, String stepName) {
-        return !approvalRepository.findByWorkflowIdAndStepNameAndDecision(workflowId, stepName, "approved").isEmpty();
+    private boolean isApproved(String workflowId, int planVersion, String stepName) {
+        return !approvalRepository.findByWorkflowIdAndPlanVersionAndStepNameAndDecision(
+                workflowId, planVersion, stepName, "approved").isEmpty();
     }
 
-    private void enterPendingApproval(String workflowId, String stepName) {
-        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndName(workflowId, stepName).orElseThrow();
+    private void enterPendingApproval(String workflowId, int planVersion, String stepName) {
+        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, planVersion, stepName).orElseThrow();
         step.setStatus(StepStatus.WAITING_APPROVAL);
         stepRepository.save(step);
     }
 
-    // runStage(...), recordEvent(...), stepStatus(...), StageRegistration are unchanged from Task 22.
+    // runStage(...), recordEvent(...), stepStatus(...), StageRegistration are unchanged from Task 22
+    // except runStage/stepStatus now take the same threaded planVersion parameter as runFrom.
 }
 ```
 - [ ] **Step 4: Run to confirm pass** — run both new tests **and** Task 22's tests (regression, after updating its `engine()` helper for the new constructor arg) — all PASS. Trace `workflowHaltsAtApprovalGateAndResumesOnApprove` by hand against the code above before running it: `submit()` → batch `[risky]` → entry gate fires (not approved) → `WAITING_APPROVAL`/`PENDING_APPROVAL`, `executed` empty ✓ → `approve("approved")` → `stage.entryApproval()` true → step reset to `PENDING` → `runFrom` re-enters → entry gate now passes (`isApproved` true) → handler runs → `executed` contains `"risky"`, step `SUCCEEDED`, workflow `COMPLETED` ✓.
@@ -2531,8 +2569,9 @@ public void setContextJson(Map<String, Object> contextJson) { this.contextJson =
 ```java
 // WorkflowEngine.java changes
 private void runFrom(String workflowId) {
-    StageRegistration registration = REGISTRY.get(workflowId);
+    StageRegistration registration = registry.get(workflowId);
     WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+    int planVersion = instance.getPlanVersion();
 
     @SuppressWarnings("unchecked")
     List<Map<String, Object>> priorDecisions =
@@ -2544,20 +2583,20 @@ private void runFrom(String workflowId) {
 
     for (List<StageDefinition> batch : registration.graph().topologicalBatches()) {
         List<StageDefinition> pending = batch.stream()
-                .filter(s -> stepStatus(workflowId, s.name()) == StepStatus.PENDING)
+                .filter(s -> stepStatus(workflowId, planVersion, s.name()) == StepStatus.PENDING)
                 .toList();
         if (pending.isEmpty()) continue;
 
         for (StageDefinition stage : pending) {
-            if (stage.entryApproval() && !isApproved(workflowId, stage.name())) {
-                enterPendingApproval(workflowId, stage.name());
+            if (stage.entryApproval() && !isApproved(workflowId, planVersion, stage.name())) {
+                enterPendingApproval(workflowId, planVersion, stage.name());
                 instance.setStatus(WorkflowStatus.PENDING_APPROVAL);
                 instanceRepository.save(instance);
                 return;
             }
         }
 
-        runBatch(workflowId, pending, ctx);
+        runBatch(workflowId, planVersion, pending, ctx);
 
         // Persist lineage BEFORE the exit-gate check, so a decision recorded by an
         // exit-gated stage's own handler survives even though this batch then halts.
@@ -2565,8 +2604,8 @@ private void runFrom(String workflowId) {
         instanceRepository.save(instance);
 
         for (StageDefinition stage : pending) {
-            if (stage.exitApproval() && !isApproved(workflowId, stage.name())) {
-                enterPendingApproval(workflowId, stage.name());
+            if (stage.exitApproval() && !isApproved(workflowId, planVersion, stage.name())) {
+                enterPendingApproval(workflowId, planVersion, stage.name());
                 instance.setStatus(WorkflowStatus.PENDING_APPROVAL);
                 instanceRepository.save(instance);
                 return;

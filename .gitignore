@@ -1,8 +1,6 @@
-.venv/
-__pycache__/
-*.pyc
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-data/*.db
-*.egg-info/
+target/
+data/*.mv.db
+data/*.trace.db
+.idea/
+*.iml
+.mvn/wrapper/maven-wrapper.jar

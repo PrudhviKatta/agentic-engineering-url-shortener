@@ -1,0 +1,20 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: url-shortener
+  datasource:
+    url: jdbc:h2:file:./data/app;AUTO_SERVER=TRUE
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+  jpa:
+    hibernate:
+      # Prototype-only convenience: auto-evolves the schema from entities on
+      # every boot. Never use ddl-auto=update in production; a real deployment
+      # needs Flyway/Liquibase-managed migrations. Documented limitation, not
+      # an oversight — see docs/assessment/final_engineering_summary.md.
+      ddl-auto: update
+    show-sql: false
+    open-in-view: false

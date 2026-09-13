@@ -95,8 +95,11 @@ first boot (Hibernate `ddl-auto: update` creates the schema from entities).
 **Testing:** `@DataJpaTest` slices get a real H2 instance per Spring Boot convention; no mocking of
 the persistence layer anywhere in the plan's test tasks.
 
-**Governance:** same standing as ADR-001 — proposed pending the human candidate's explicit
-accept/reject, not self-approved.
+**Governance:** same standing as ADR-001 — **Accepted** by the human candidate (Prudhvidhar Reddy
+Katta) on 2026-09-13, not self-approved (corrected by the Task 10 corrective batch,
+`codex-recommend.md` Finding #12 — this line previously read "proposed pending... accept/reject"
+after this ADR's own Status header had already moved to Accepted; see
+`docs/governance/human-gates-log.md` for the approval record).
 
 ## Risks and Mitigations
 

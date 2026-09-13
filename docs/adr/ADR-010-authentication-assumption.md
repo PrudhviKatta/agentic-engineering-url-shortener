@@ -160,10 +160,11 @@ treated as closed.
   mechanism it targets exists.
 
 **Governance:**
-- This ADR is proposed pending the human candidate's explicit accept/reject at Task 7. Because this
-  decision touches a security-sensitive control (or the absence of one) over the system's own
-  governance mechanism (the approval endpoint), constitution Principle III's "humans own security-
-  sensitive decisions" applies to this ADR's review with more weight than a typical technology
+- **Accepted** by the human candidate (Prudhvidhar Reddy Katta) on 2026-09-13 — see
+  `docs/governance/human-gates-log.md`. Because this decision touches a security-sensitive control
+  (or the absence of one) over the system's own governance mechanism (the approval endpoint),
+  constitution Principle III's "humans own security-sensitive decisions" applied to this ADR's
+  review with more weight than a typical technology
   choice — accepting it should be read as the human candidate explicitly accepting the residual risk
   named above, not as a formality.
 

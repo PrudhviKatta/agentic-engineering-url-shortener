@@ -183,10 +183,14 @@ targeting a gated stage's downstream correctly reaches only the not-yet-started 
   resumption re-derives blocked status from persisted state rather than a cached flag.
 
 **Governance:**
-- This ADR is proposed pending the human candidate's explicit accept/reject at Task 7. It directly
-  operationalizes constitution Principle III's "approval is never inferred from silence" and REQ-
-  013's negative criteria — a rejection or amendment of this ADR would need to preserve those
-  properties under whatever alternative mechanism is proposed instead.
+- **Accepted** by the human candidate (Prudhvidhar Reddy Katta) on 2026-09-13 — see
+  `docs/governance/human-gates-log.md`. It directly operationalizes constitution Principle III's
+  "approval is never inferred from silence" and REQ-013's negative criteria — a future rejection or
+  amendment of this ADR would need to preserve those properties under whatever alternative
+  mechanism is proposed instead. **Corrected by the Task 10 corrective batch**
+  (`codex-recommend.md` Finding #12): this bullet previously read "is proposed pending...
+  accept/reject at Task 7" after Task 7 had already run and this ADR's own Status header above had
+  already moved to Accepted.
 
 ## Risks and Mitigations
 

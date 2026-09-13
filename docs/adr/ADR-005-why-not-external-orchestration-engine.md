@@ -143,9 +143,12 @@ separately learning and trusting that product's own runtime.
   orchestration characteristic without the rejected infrastructure.
 
 **Governance:**
-- This ADR is proposed pending the human candidate's explicit accept/reject at Task 7. Rejecting a
-  category of infrastructure is itself a material decision under Principle VII and is recorded here
-  rather than left as an implicit default.
+- **Accepted** by the human candidate (Prudhvidhar Reddy Katta) on 2026-09-13 — see
+  `docs/governance/human-gates-log.md`. Rejecting a category of infrastructure is itself a material
+  decision under Principle VII and is recorded here rather than left as an implicit default.
+  **Corrected by the Task 10 corrective batch** (`codex-recommend.md` Finding #12): this bullet
+  previously read "is proposed pending... accept/reject at Task 7" after Task 7 had already run and
+  this ADR's own Status header above had already moved to Accepted.
 
 ## Risks and Mitigations
 

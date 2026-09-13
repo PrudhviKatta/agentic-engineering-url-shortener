@@ -1,21 +1,30 @@
 # Research & Technology Decisions — Agentic URL Shortener
 
-**Status: DRAFT**, produced at the `/speckit.plan` stage (Task 6). This document is the detailed
-decision record `plan.md` Section 12 summarizes in table form. It does not itself grant ADR
-status to anything — only ADR-001 (language/framework) and ADR-002 (persistence) are **Accepted**
-as of this writing (both accepted 2026-09-13 by the human candidate). Every other decision below
-is a **proposal for Task 7's formal ADR Generation Gate**, phrased that way throughout, not as an
-already-settled fact. Task 7 routes each one through explicit human accept/reject, one at a time —
-this document does not pre-empt that.
+**Status: DRAFT**, produced at the `/speckit.plan` stage (Task 6) — this document's own status is
+unchanged by the correction below; it remains a Task 6 deliverable pending whatever plan-approval
+gate `plan.md` itself is pending. This document is the detailed decision record `plan.md` Section
+12 summarizes in table form. It does not itself grant ADR status to anything.
+
+**Corrected by the Task 10 corrective batch** (`codex-recommend.md` Finding #12): when this
+document was authored at Task 6, only ADR-001 (language/framework) and ADR-002 (persistence) were
+**Accepted**, and every other decision below (D3–D10) was phrased as a **proposal for Task 7's
+formal ADR Generation Gate**, not an already-settled fact. Task 7 has since run: the human
+candidate reviewed and accepted ADR-003 through ADR-010 individually, without amendment, on
+2026-09-13 (`docs/governance/human-gates-log.md`, "Human Gate 4" rows). All ten ADRs (ADR-001
+through ADR-010) are therefore now **Accepted**; the per-decision headings below (D3–D10) are
+updated accordingly. This is a factual correction to this document's own now-stale forward-looking
+language, not a re-opening of any decision — no option, rationale, or selected choice below has
+changed.
 
 **Provenance.** These are not this plan's own first-principles derivation. They are transcribed
 and re-justified, at plan altitude, from the pre-decision table already worked out in the
 controller's execution runbook (`docs/engineering-runbook.md`,
 "Architecture Decisions" section) — a Java implementation-detail document that is explicitly
-subordinate to this plan and to the ADRs Task 7 will produce from it. Where the runbook's own
+subordinate to this plan and to the ADRs Task 7 produced from it. Where the runbook's own
 language already frames a decision as provisional ("finalized here; formalized as ADRs in Task
-8" — note that document's Task-8 label maps to this project's Task 7), this document inherits that
-same provisional framing, not an upgraded one.
+8" — note that document's Task-8 label maps to this project's Task 7), this document inherited
+that same provisional framing at authoring time; Task 7's subsequent Accepted outcome for all
+eight is recorded above rather than by silently rewriting this historical framing.
 
 For each decision: question, options considered, assessment criteria, selected/proposed option,
 rationale, consequences, risks, reversibility, and validation approach — per the source material's
@@ -84,7 +93,7 @@ Section 12 requirement.
 - **Validation:** full Spring context boot (including HikariCP + Hibernate `EntityManagerFactory`)
   exits 0 against `jdbc:h2:file:./data/app` (commit `d9e03a4`).
 
-## D3. Short-code generation — **proposed ADR-003 (Task 7)**
+## D3. Short-code generation — **ADR-003, Accepted (2026-09-13)**
 
 - **Decision question:** What algorithm produces the 7-character base62 short codes CLR-3/CLR-4
   confirm as the code's testable properties?
@@ -94,7 +103,7 @@ Section 12 requirement.
 - **Assessment criteria:** collision behavior under REQ-003 (must never surface a collision as a
   successful creation); implementation simplicity within the timebox; predictability/auditability
   for a reviewer; whether it needs a retry loop under concurrent load (REQ-008).
-- **Proposed:** (A) Base62 encoding of `short_links.id` (an `IDENTITY`-strategy auto-increment PK).
+- **Selected:** (A) Base62 encoding of `short_links.id` (an `IDENTITY`-strategy auto-increment PK).
 - **Rationale:** deterministic and collision-free *by construction* — uniqueness follows directly
   from the primary key's own uniqueness guarantee, with no retry loop, no collision-probability
   argument, and no extra index beyond the `code` column's own `UNIQUE` constraint needed to prove
@@ -111,7 +120,7 @@ Section 12 requirement.
 - **Validation:** `ShortCodeGeneratorTest` (Task 16) plus `REQ-003`'s N-way concurrency test
   (Task 12/17 persistence + API contract tests).
 
-## D4. Orchestration model — **proposed ADR-004 (Task 7)**
+## D4. Orchestration model — **ADR-004, Accepted (2026-09-13)**
 
 - **Decision question:** What executes the Section 3.1 stage dependency graph — a custom
   in-process engine, or an existing workflow-orchestration framework/product?
@@ -123,7 +132,7 @@ Section 12 requirement.
   resumption, and dynamic replanning (spec.md Section 3); must not add infrastructure
   disproportionate to a 2–3 day local prototype; must be fully unit-testable in isolation from the
   web layer; must be auditable by a reviewer reading Java source, not a vendor's opaque runtime.
-- **Proposed:** (A) Custom `WorkflowEngine` — a plain, constructor-injected Java class (not a
+- **Selected:** (A) Custom `WorkflowEngine` — a plain, constructor-injected Java class (not a
   Spring-managed singleton, so it is testable without booting the full Spring context) over a
   `DependencyGraph` of `StageDefinition` records. Each `StageDefinition` carries `name`,
   `dependsOn`, a `StageHandler` (`WorkflowContext -> Map<String,Object>`), independent
@@ -158,13 +167,14 @@ Section 12 requirement.
   D4's replan note below) and by dedicated tests for exactly that race (Task 35/41).
 - **Reversibility:** low — this is the architectural core of the differentiator constitution
   Principle II names; replacing it later would be a substantial rewrite, not a swap. This is why
-  it is flagged for explicit ADR review at Task 7 rather than left as an unexamined default.
+  it was flagged for explicit ADR review at Task 7 (since run — see ADR-004, Accepted 2026-09-13)
+  rather than left as an unexamined default.
 - **Validation:** `DependencyGraphTest`, `WorkflowEngineExecutionTest`,
   `WorkflowEngineApprovalTest`, `WorkflowEngineContextLineageTest`,
   `WorkflowEngineReliabilityIntegrationTest`, `WorkflowEngineSafeStopTest`,
   `WorkflowEngineReplanningTest` (Phase 4/6/7 test suite — see `plan.md` Section 10).
 
-## D5. Why not an external orchestration product (Temporal/Camunda/Activiti) — **proposed ADR-005 (Task 7)**
+## D5. Why not an external orchestration product (Temporal/Camunda/Activiti) — **ADR-005, Accepted (2026-09-13)**
 
 - **Decision question:** Should the orchestration engine be built on an existing
   workflow-orchestration product instead of a custom engine (D4)?
@@ -172,7 +182,7 @@ Section 12 requirement.
 - **Assessment criteria:** operational footprint vs. a local 2–3 day prototype; whether the
   product's own runtime would itself need to be independently audited to satisfy constitution
   Principle IX, on top of this project's own code.
-- **Proposed:** Rejected — infra/ops burden (a separate server process, its own persistence,
+- **Selected:** Rejected — infra/ops burden (a separate server process, its own persistence,
   its own operational learning curve) is disproportionate to what a local, reviewer-run prototype
   needs, and a custom engine is demonstrably auditable end-to-end in H2 and in Java source, which
   a third-party runtime's internal state model would not be to the same degree.
@@ -185,7 +195,7 @@ Section 12 requirement.
 - **Validation:** N/A (a rejection, not a build) — validated by the same Phase 4 test suite proving
   D4's custom engine satisfies every required characteristic without the extra infrastructure.
 
-## D6. Human approval mechanism — **proposed ADR-006 (Task 7)**
+## D6. Human approval mechanism — **ADR-006, Accepted (2026-09-13)**
 
 - **Decision question:** How does a human actually record an approval/rejection decision against a
   pending gate?
@@ -194,7 +204,7 @@ Section 12 requirement.
   reviewer UI/dashboard.
 - **Assessment criteria:** no UI is in scope for this assessment (spec.md Section 9.6 exclusion);
   the decision must be an explicit, auditable, non-inferred act (REQ-013).
-- **Proposed:** (A) — the workflow blocks in `PENDING_APPROVAL`/`WAITING_APPROVAL` state until this
+- **Selected:** (A) — the workflow blocks in `PENDING_APPROVAL`/`WAITING_APPROVAL` state until this
   endpoint is called with an explicit `approved`/`rejected` decision, actor, and reason.
 - **Rationale:** simplest mechanism that satisfies REQ-013's explicit/non-silent requirement
   without building UI the assignment explicitly excludes from scope.
@@ -208,7 +218,7 @@ Section 12 requirement.
   `WorkflowEngine.approve()`'s contract.
 - **Validation:** `WorkflowEngineApprovalTest`, `WorkflowControllerContractTest`.
 
-## D7. Policy engine format — **proposed ADR-007 (Task 7)**
+## D7. Policy engine format — **ADR-007, Accepted (2026-09-13)**
 
 - **Decision question:** How are versioned policy guardrails (constitution Principle VI) expressed
   and evaluated?
@@ -218,7 +228,7 @@ Section 12 requirement.
   commit, not a hidden runtime mutation); versioned without a database migration per change;
   avoids a heavyweight rules-engine dependency disproportionate to ~4 policy checks at prototype
   scale.
-- **Proposed:** (A) — `src/main/resources/policies/v{N}.yaml`, parsed via Jackson's `YAMLMapper`.
+- **Selected:** (A) — `src/main/resources/policies/v{N}.yaml`, parsed via Jackson's `YAMLMapper`.
   Each policy declares `id`, `domain`, `stage`, `mandatory`, `description`, and `check_key` (the
   `WorkflowContext` artifact key whose truthiness the check reads). The evaluated file's
   `version` string is recorded on every `policy_evaluations` row (`data-model.md` Section 7), so a
@@ -238,7 +248,7 @@ Section 12 requirement.
   backing format were swapped later.
 - **Validation:** `PolicyEngineTest`, `PolicyExceptionTest`, `WorkflowEnginePolicyEnforcementTest`.
 
-## D8. Concurrency model for parallel stage fan-out — **proposed ADR-008 (Task 7)**
+## D8. Concurrency model for parallel stage fan-out — **ADR-008, Accepted (2026-09-13)**
 
 - **Decision question:** How are parallel-eligible stages (e.g., Testing/Documentation/Security
   fanning out from Implementation, Section 3.1) actually executed concurrently?
@@ -248,7 +258,7 @@ Section 12 requirement.
 - **Assessment criteria:** stage handlers in this prototype are short-lived and I/O-light (no real
   external calls); must prove genuine parallel fan-out and synchronization without forcing a
   reactive rewrite of the whole codebase (which ADR-001 already rejected for the web layer).
-- **Proposed:** (A) — `Executors.newFixedThreadPool(...)`, one `Future` per stage within a
+- **Selected:** (A) — `Executors.newFixedThreadPool(...)`, one `Future` per stage within a
   `DependencyGraph.topologicalBatches()` batch, `Future.get()` to join the batch before moving to
   the next.
 - **Rationale:** minimal additional complexity; proves real fan-out/synchronization (spec.md
@@ -264,7 +274,7 @@ Section 12 requirement.
 - **Validation:** the runbook's Task 22 parallel-execution test plus Phase 6's concurrency-focused
   reliability tests.
 
-## D9. Rollback vs. compensation mechanism — **proposed ADR-009 (Task 7)**
+## D9. Rollback vs. compensation mechanism — **ADR-009, Accepted (2026-09-13)**
 
 - **Decision question:** How does the engine implement the rollback/compensation distinction
   constitution Principle VIII and REQ-015/CLR-14 require?
@@ -273,7 +283,7 @@ Section 12 requirement.
   via JPA transaction abort) from externally-visible effects (compensation-eligible, via a
   registered compensating action); (C) always compensate, never roll back (loses the cheaper
   rollback path for genuinely reversible effects).
-- **Proposed:** (B) — a `CompensationRegistry` maps a stage name to a registered
+- **Selected:** (B) — a `CompensationRegistry` maps a stage name to a registered
   `Consumer<Map<String,Object>>` compensating action. A stage whose effect never left the
   transaction boundary rolls back for free (the JPA transaction simply isn't committed); a stage
   whose effect was already externally observed (the canonical example: a redirect already served
@@ -294,13 +304,13 @@ Section 12 requirement.
 - **Validation:** `CompensationRegistryTest`, `WorkflowEngineReliabilityIntegrationTest`,
   `WorkflowEngineSafeStopTest`.
 
-## D10. Authentication — **proposed ADR-010 (Task 7)**
+## D10. Authentication — **ADR-010, Accepted (2026-09-13)**
 
 - **Decision question:** Is any authentication/authorization mechanism implemented in this
   iteration?
 - **Options:** (A) none, documented as a trusted-caller-only assumption; (B) a minimal API-key
   header check; (C) full OAuth2/OIDC integration.
-- **Proposed:** (A) — none enforced, per CLR-10's already-confirmed specification-level decision
+- **Selected:** (A) — none enforced, per CLR-10's already-confirmed specification-level decision
   (this is the one item in this table where the *specification* itself, not just this plan, has
   already resolved the underlying question; the ADR formalizes the technology-level consequence of
   that resolution, primarily that every endpoint — including the approval-decision endpoint,

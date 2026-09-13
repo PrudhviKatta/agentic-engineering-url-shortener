@@ -20,16 +20,20 @@ broader approval. Human Gate 3's completion means the *ambiguities* are resolved
 deferred, not that the *specification* is approved.
 
 **Authority**: This specification sits directly beneath `docs/governance/constitution.md`
-(version 1.0.0, itself still in draft pending Human Gate 1) in the project's authority hierarchy.
-Nothing in this document may contradict any of the constitution's eleven principles; where a
-tension was found while drafting, it is surfaced explicitly in Section 9 rather than silently
-resolved. This specification does not choose a programming language, framework, database, cloud
-provider, or agent-orchestration library — those are Architecture Decision Record (ADR) and
+(version 1.0.0, **Ratified** — Human Gate 1 closed 2026-09-13; see
+`docs/governance/human-gates-log.md` for the approval record) in the project's authority
+hierarchy. Nothing in this document may contradict any of the constitution's eleven principles;
+where a tension was found while drafting, it is surfaced explicitly in Section 9 rather than
+silently resolved. This specification does not choose a programming language, framework, database,
+cloud provider, or agent-orchestration library — those are Architecture Decision Record (ADR) and
 `/speckit.plan` stage decisions (see Section 10).
 
 **Input**: `.superpowers/sdd/2026-09-12-agentic-url-shortener-sdlc/task-4-source-material.md`
-("Prompt 2: Feature Specification"), interpreted under `docs/governance/constitution.md` v1.0.0
-(draft).
+("Prompt 2: Feature Specification"), interpreted at authoring time under
+`docs/governance/constitution.md` v1.0.0, which was itself still in draft pending Human Gate 1 at
+that moment — that gate has since closed and the constitution is now **Ratified** (see the
+Authority line above; corrected by the Task 10 corrective batch, `codex-recommend.md` Finding
+#12).
 
 ---
 
@@ -901,8 +905,10 @@ constitution-consistent:
 ### 9.4 Constraints
 
 - This specification MUST NOT contradict any of the eleven principles in
-  `docs/governance/constitution.md` v1.0.0 (draft); where a candidate requirement would have
-  created tension, it was written to avoid that tension rather than silently overriding the
+  `docs/governance/constitution.md` v1.0.0 (**Ratified** — corrected by the Task 10 corrective
+  batch, `codex-recommend.md` Finding #12; see `docs/governance/human-gates-log.md`); where a
+  candidate requirement would have created tension, it was written to avoid that tension rather
+  than silently overriding the
   constitution.
 - This specification MUST NOT select implementation technology (Section 8) — that decision belongs
   to the ADR/plan stage.
@@ -1069,6 +1075,14 @@ ADRs) only once a human reviewer completes Human Gate 2:
       constitution principle (Section 11).
 - [ ] Records approval, or requested amendments, before `/speckit.clarify` proceeds against this
       document.
+
+**Delegated technical-review decision (2026-09-13): REQUEST AMENDMENTS.** Codex reviewed this
+checklist as a delegated technical reviewer, not as a human approver. Human Gate 2 remains open and
+all boxes intentionally remain unchecked. Before approval, reconcile the conflicting safe-stop
+semantics between REQ-016, CLR-13, SCN-C, and the plan's separate `PENDING_APPROVAL` state; restate
+REQ-007's current (post-CLR-2) behavior with explicit positive and negative criteria or move it out
+of the active numbered requirement set; and state explicitly which proposed non-functional targets
+Human Gate 2 approves versus leaves deferred.
 
 Until this checklist is completed and recorded, this document remains a DRAFT and should be
 treated as the best-available current guidance, not as ratified scope.

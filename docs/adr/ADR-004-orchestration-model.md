@@ -171,10 +171,13 @@ gate type; this ADR covers what the gate blocks and when.
   negative consequence creates.
 
 **Governance:**
-- This ADR is proposed pending the human candidate's explicit accept/reject at Task 7. Because this
-  is the architectural core of the project's own differentiator (Principle II), reversing it later
-  would be substantial (see Reversibility) — the human candidate's review of this specific ADR
-  carries more downstream weight than most of the other seven.
+- **Accepted** by the human candidate (Prudhvidhar Reddy Katta) on 2026-09-13 — see
+  `docs/governance/human-gates-log.md`. Because this is the architectural core of the project's own
+  differentiator (Principle II), reversing it later would be substantial (see Reversibility) — the
+  human candidate's review of this specific ADR carried more downstream weight than most of the
+  other seven. **Corrected by the Task 10 corrective batch** (`codex-recommend.md` Finding #12):
+  this bullet previously read "is proposed pending... accept/reject at Task 7" after Task 7 had
+  already run and this ADR's own Status header above had already moved to Accepted.
 
 ## Risks and Mitigations
 

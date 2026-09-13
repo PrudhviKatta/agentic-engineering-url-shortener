@@ -139,9 +139,13 @@ codebase.
   `PolicyEngine` unit level.
 
 **Governance:**
-- This ADR is proposed pending the human candidate's explicit accept/reject at Task 7. Because
-  policy format directly implements a constitutional principle (VI), its acceptance carries the same
-  governance weight as the other seven proposed ADRs — no exemption for being "just a file format."
+- **Accepted** by the human candidate (Prudhvidhar Reddy Katta) on 2026-09-13 — see
+  `docs/governance/human-gates-log.md`. Because policy format directly implements a constitutional
+  principle (VI), its acceptance carried the same governance weight as the other seven ADRs — no
+  exemption for being "just a file format." **Corrected by the Task 10 corrective batch**
+  (`codex-recommend.md` Finding #12): this bullet previously read "is proposed pending...
+  accept/reject at Task 7" after Task 7 had already run and this ADR's own Status header above had
+  already moved to Accepted.
 
 ## Risks and Mitigations
 

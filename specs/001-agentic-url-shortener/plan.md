@@ -239,11 +239,16 @@ this was the exact claim an external review correctly identified as unvalidatabl
 cannot mechanically deliver three differentiated retry policies) and incomplete (Stage 4 was never
 independently persisted/auditable). The corrected design — three real split stages
 (`requirement_ingestion`, `requirement_normalization`, `ambiguity_detection`), a real persisted
-`human_clarification` node using a new conditional-activation mechanism, and a real
+`human_clarification` node using a `StageCatalog`-based conditional-activation mechanism, and a real
 `final_engineering_summary` terminal node — is fully specified in `docs/engineering-runbook.md`
-Phase 12 (Tasks 49/51) and `tasks.md` (`T020b`, `T020c`), not re-tabulated here to avoid the same
-content drifting out of sync in two places. Treat rows 1-4 and 12 below as superseded by those
-tasks; rows 5-11 are unaffected.
+Task 39 (the scenario task that creates all twelve stage classes directly, in authoritative final
+form) and Task 49 (`StageCatalog`, the restart-safe lookup mechanism Task 39 depends on), and in
+`tasks.md` `T039`/`T020b`, not re-tabulated here to avoid the same content drifting out of sync in
+two places. **Corrected 2026-09-13 (fourth review round):** this pointer previously named `Task 51`
+and `T020c` — both were forward-reference defects (each modified a file only Task 39/`T039` creates)
+and their content was folded directly into Task 39/`T039` instead; `Task 51`/`T020c` remain in the
+runbook/`tasks.md` only as short historical markers. Treat rows 1-4 and 12 below as superseded by
+Task 39; rows 5-11 are unaffected.
 
 This is the same 12-stage graph `spec.md` Section 3.1 defines, restated here with the concrete
 orchestration-engine mechanics (gate type, timeout, retry, failure classification, fallback,
@@ -660,7 +665,7 @@ test classes:
 | Approval/rejection tests | `WorkflowEngineApprovalTest` | REQ-013 |
 | Retry tests | `RetryTest`, `WorkflowEngineReliabilityIntegrationTest` | REQ-014, REQ-022 |
 | Timeout tests | `TimeoutTest` | REQ-014 |
-| Fallback tests | Covered within `WorkflowEngineReliabilityIntegrationTest` (retry-then-safe-stop path) | REQ-014, REQ-022 |
+| Fallback tests | `FallbackTest` (`docs/engineering-runbook.md` Task 50) — a distinct mechanism from retry/safe-stop (constitution Principle VIII); corrected 2026-09-13, this row previously mislabeled fallback as the retry-then-safe-stop path, which is a different mechanism this table already lists separately above | Principle VIII, REQ-016, REQ-022 |
 | Rollback/compensation tests | `CompensationRegistryTest`, one rollback-eligible + one compensation-eligible case in `WorkflowEngineReliabilityIntegrationTest` | REQ-015 |
 | Safe-stop tests | `WorkflowEngineSafeStopTest` | REQ-016 |
 | Resumption tests | Covered by `WorkflowEngineContextLineageTest` (context reload across a resume boundary) | REQ-017, REQ-028 |
@@ -684,9 +689,10 @@ not assume they are already covered by the existing `LinkControllerContractTest`
 
 - **Initial input:** a well-defined feature requirement (runbook example:
   `"add-expiration-endpoint"`).
-- **Requirement interpretation:** `RequirementStage` performs completeness/consistency/
-  testability/policy-boundary checks and records **why clarification was skipped** — not merely
-  that it was skipped (spec.md Section 4, SCN-A).
+- **Requirement interpretation:** `AmbiguityDetectionStage` (Task 39; corrected 2026-09-13 — was a
+  combined `RequirementStage` before the real 12-node graph split it into three stages) performs
+  completeness/consistency/testability/policy-boundary checks and records **why clarification was
+  skipped** — not merely that it was skipped (spec.md Section 4, SCN-A).
 - **Decomposition:** `DecompositionStage` → reviewable units with acceptance criteria.
 - **Orchestration path:** full 12-node baseline graph (Section 3.2), Stage 4 not triggered on the
   first pass; Design (`exitApproval`) → fan-out to Implementation and Documentation; Implementation
@@ -714,8 +720,11 @@ not assume they are already covered by the existing `LinkControllerContractTest`
   capability.
 - **Decomposition:** the fix is scoped to exactly one production file (`UrlValidator.java`) and
   its test suite.
-- **Orchestration path (corrected 2026-09-13 — see `docs/engineering-runbook.md` Phase 12,
-  Task 52; `tasks.md` T040a):** the original design here collapsed `spec.md` Section 4's seven
+- **Orchestration path (corrected 2026-09-13 — see `docs/engineering-runbook.md` Task 40;
+  `tasks.md` `T040`. This pointer previously named `Task 52`/`T040a` — both were forward-reference
+  defects, since each depended on/modified files only Task 39/`T039` create; their seven-branch
+  content was folded directly into Task 40/`T040` instead, and `Task 52`/`T040a` remain only as
+  short historical markers):** the original design here collapsed `spec.md` Section 4's seven
   required parallel impact dimensions into one stage's structured result fields, with the four
   dimensions lacking a field (interfaces, data flows, documentation, rollout/rollback) covered only
   in narrative prose — an external review correctly identified this as not satisfying `spec.md`'s

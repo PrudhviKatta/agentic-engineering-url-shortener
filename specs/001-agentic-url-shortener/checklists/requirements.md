@@ -43,11 +43,14 @@ convergence) use to check requirement quality — it is not itself a record that
   requirements are functional vs. non-functional. **Cites**: Principle I (second bullet).
 
 - **[MANDATORY] REQ-CHK-005** — Verify every numeric target in `spec.md` Section 7 (REQ-021, 022,
-  023, 025, 026, 027, 028, 030, 031) is labeled exactly "Proposed validation target (assumption —
-  requires approval)" and is not, anywhere downstream, referenced as if it were an already-approved
-  hard requirement before Human Gate 2/a later gate records its approval. **Fail if**: a task, ADR,
-  or test asserts a numeric target (e.g. "p95 ≤ 200ms") as a confirmed requirement without a
-  traceable approval record. **Cites**: spec.md Section 7, Section 9.3 (ASM-2), Principle I.
+  023, 025, 026, 027, 028, 030, 031) is labeled exactly "Demonstration acceptance target" and is
+  not, anywhere downstream, referenced as a production SLA. **Updated 2026-09-13:** ASM-2 closed
+  2026-09-13, approving all eleven figures as binding demonstration acceptance targets (not
+  production SLAs) — the check is no longer "is this still an unapproved assumption" but "is this
+  correctly labeled as demonstration-scale and not overstated as a production guarantee." **Fail
+  if**: a task, ADR, or test asserts a numeric target (e.g. "p95 ≤ 200ms") as a production SLA, or
+  as still pending approval after ASM-2's closure. **Cites**: spec.md Section 7, Section 9.7,
+  Section 13.2 (ASM-2), Principle I.
 
 - **[MANDATORY] REQ-CHK-006** — Verify every one of the 9 originally flagged ambiguities (AMB-1..9,
   `spec.md` Section 9.5) has an explicit resolution (CLR-x) or an explicit, owned deferral recorded

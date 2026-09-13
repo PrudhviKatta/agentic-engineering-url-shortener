@@ -1149,6 +1149,69 @@ public class LinkController {
 ```
 - [ ] **Step 4: Run to confirm pass** — `JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home ./mvnw test -Dtest=LinkControllerContractTest` → PASS
 - [ ] **Step 5: Commit** — `git commit -m "feat(api): implement validated short-link creation"`
+- [ ] **Step 6: Write and implement `LinkConcurrencyTest`** — this is REQ-023's own named planned
+  evidence (`spec.md` Section 7/9.7, ASM-2: 20 concurrent requests, zero incorrect mappings/
+  duplicates/drops), added here because it exercises this task's own endpoint under real concurrent
+  load, not a single-threaded call:
+```java
+// src/test/java/com/schwab/urlshortener/api/LinkConcurrencyTest.java
+package com.schwab.urlshortener.api;
+
+import java.util.List;
+import java.util.concurrent.*;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.http.ResponseEntity;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+class LinkConcurrencyTest {
+
+    @LocalServerPort int port;
+    private final TestRestTemplate rest = new TestRestTemplate();
+
+    @Test
+    void twentyConcurrentCreatesProduceTwentyDistinctCodesWithNoDropsOrDuplicates() throws Exception {
+        int concurrency = 20;
+        ExecutorService pool = Executors.newFixedThreadPool(concurrency);
+        List<Callable<ResponseEntity<LinkResponse>>> tasks = IntStream.range(0, concurrency)
+                .<Callable<ResponseEntity<LinkResponse>>>mapToObj(i -> () -> rest.postForEntity(
+                        "http://localhost:" + port + "/links",
+                        new CreateLinkRequest("https://example.com/concurrency-test-" + i, null),
+                        LinkResponse.class))
+                .toList();
+        List<Future<ResponseEntity<LinkResponse>>> futures = pool.invokeAll(tasks);
+        pool.shutdown();
+
+        List<ResponseEntity<LinkResponse>> responses = futures.stream()
+                .map(f -> { try { return f.get(); } catch (Exception e) { throw new RuntimeException(e); } })
+                .toList();
+
+        // Zero drops: every request produced a 201 with a body.
+        assertThat(responses).allMatch(r -> r.getStatusCode().value() == 201 && r.getBody() != null);
+
+        // Zero incorrect mappings/duplicates: 20 distinct codes, each round-tripping to its own URL.
+        List<String> codes = responses.stream().map(r -> r.getBody().code()).collect(Collectors.toList());
+        assertThat(codes).doesNotHaveDuplicates().hasSize(concurrency);
+        for (int i = 0; i < concurrency; i++) {
+            assertThat(responses.get(i).getBody().longUrl())
+                    .isEqualTo("https://example.com/concurrency-test-" + i);
+        }
+    }
+}
+```
+  This test is demonstration-scale, not a production load test (constitution Principle IX):
+  correctness under 20 concurrent requests is guaranteed structurally by Hibernate's `IDENTITY`
+  strategy delegating code uniqueness to the database's own atomic sequence generation, not by any
+  application-level locking this task adds — the test exists to prove that guarantee holds under
+  genuine concurrent HTTP load, not just in a single-threaded unit test.
+- [ ] **Step 7: Run to confirm pass** — `./mvnw test -Dtest=LinkConcurrencyTest` → PASS
+- [ ] **Step 8: Commit** — `git commit -m "test(api): validate concurrent link creation produces no duplicate or dropped codes"`
 
 **Design note:** `repository.save(entity)` twice (once to obtain the `IDENTITY`-generated id, once to persist the derived code) is the direct Java/Hibernate analog of the original design's "insert then rewrite code" approach — cleaner here because Hibernate's `IDENTITY` strategy executes the `INSERT` synchronously inside `save()`, so there's no placeholder-value hack needed, just two round trips.
 
@@ -1602,8 +1665,13 @@ public class WorkflowContext {
 
     public WorkflowContext(String correlationId, List<Map<String, Object>> decisions, Map<String, Object> artifacts) {
         this.correlationId = correlationId;
-        this.decisions = new ArrayList<>(decisions);
-        this.artifacts = new HashMap<>(artifacts);
+        // CopyOnWriteArrayList/ConcurrentHashMap, not ArrayList/HashMap: from Task 40 onward,
+        // multiple stages in the same parallel batch (e.g. SCN-B's seven impact branches, or a
+        // stage recording a decision while a sibling's fallback records one) call
+        // recordDecision()/addArtifact() concurrently from the batch's thread pool. A plain
+        // HashMap under concurrent put() can corrupt its internal state, not just lose updates.
+        this.decisions = new java.util.concurrent.CopyOnWriteArrayList<>(decisions);
+        this.artifacts = new java.util.concurrent.ConcurrentHashMap<>(artifacts);
     }
 
     public void recordDecision(String actor, String decision, String rationale) {
@@ -4024,7 +4092,7 @@ public class AuditRecorder {
 - Test: `src/test/java/com/schwab/urlshortener/observability/MetricsMttrTest.java`
 
 **Interfaces:**
-- Produces: `record RecoveryEvent(Instant failureDetectedAt, Instant recoveryStartAt, Instant recoveryCompleteAt, boolean recovered, String mechanism)`; `class MetricsService { static MttrReport computeMttr(List<RecoveryEvent> events); static ReliabilitySummary computeReliabilitySummary(WorkflowInstanceJpaRepository, WorkflowStepJpaRepository, String workflowId); }` where `record MttrReport(Double mttrSeconds, int recoveredCount, int unrecoveredCount, int excludedCount, String populationNote)` and `record ReliabilitySummary(double successRate, double retryFrequency, double rollbackOrCompensationFrequency, Double endToEndLatencySeconds, boolean isDemonstrationData)`
+- Produces: `record RecoveryEvent(Instant failureDetectedAt, Instant recoveryStartAt, Instant recoveryCompleteAt, boolean recovered, String mechanism)`; `class MetricsService { static MttrReport computeMttr(List<RecoveryEvent> events); static ReliabilitySummary computeReliabilitySummary(WorkflowInstanceJpaRepository, WorkflowStepJpaRepository, String workflowId); }` where `record MttrReport(Double mttrSeconds, int recoveredCount, int unrecoveredCount, int excludedCount, String populationNote)` and `record ReliabilitySummary(double successRate, double retryFrequency, double rollbackOrCompensationFrequency, double fallbackFrequency, Double endToEndLatencySeconds, boolean isDemonstrationData)` (`fallbackFrequency` added by Phase 12, Task 50 — tracks `SUCCEEDED_WITH_FALLBACK` steps separately from rollback/compensation)
 
 - [ ] **Step 1: Write failing test**
 ```java
@@ -4092,11 +4160,13 @@ public record MttrReport(Double mttrSeconds, int recoveredCount, int unrecovered
 package com.schwab.urlshortener.observability;
 
 public record ReliabilitySummary(double successRate, double retryFrequency,
-                                  double rollbackOrCompensationFrequency,
+                                  double rollbackOrCompensationFrequency, double fallbackFrequency,
                                   Double endToEndLatencySeconds, boolean isDemonstrationData) {
     public ReliabilitySummary(double successRate, double retryFrequency,
-                               double rollbackOrCompensationFrequency, Double endToEndLatencySeconds) {
-        this(successRate, retryFrequency, rollbackOrCompensationFrequency, endToEndLatencySeconds, true);
+                               double rollbackOrCompensationFrequency, double fallbackFrequency,
+                               Double endToEndLatencySeconds) {
+        this(successRate, retryFrequency, rollbackOrCompensationFrequency, fallbackFrequency,
+                endToEndLatencySeconds, true);
     }
 }
 ```
@@ -4148,6 +4218,13 @@ public final class MetricsService {
         long recoveredSteps = steps.stream()
                 .filter(s -> s.getStatus() == StepStatus.ROLLED_BACK || s.getStatus() == StepStatus.COMPENSATED)
                 .count();
+        // SUCCEEDED_WITH_FALLBACK is its own recovery mechanism (Task 50), tracked separately
+        // from rollback/compensation rather than folded into the same frequency — a fallback
+        // recovery and a compensated failure carry different degrees of guarantee and should not
+        // be reported as the same number.
+        long fallbackSteps = steps.stream()
+                .filter(s -> s.getStatus() == StepStatus.SUCCEEDED_WITH_FALLBACK)
+                .count();
 
         Double latency = null;
         if (!instances.isEmpty()
@@ -4161,6 +4238,7 @@ public final class MetricsService {
                 (double) succeeded / total,
                 (double) retriedSteps / Math.max(steps.size(), 1),
                 (double) recoveredSteps / Math.max(steps.size(), 1),
+                (double) fallbackSteps / Math.max(steps.size(), 1),
                 latency);
     }
 }
@@ -4265,15 +4343,47 @@ void printMetricsReport(PrintStream out) throws Exception {
 
 ### Task 39: Greenfield scenario — well-defined requirement proceeds without artificial clarification
 
-> **Superseded in part by Phase 12 (2026-09-13):** the combined `RequirementStage` and the 8-stage wiring described here are superseded by Task 51's real 12-node graph (real Stage 4 `human_clarification` and Stage 12 `final_engineering_summary`, split Stages 1-3). See Phase 12.
+**Authoritative final form (corrected 2026-09-13).** No shipped code exists yet, so this task is
+written directly in its final form — the real 12-node graph — rather than an 8-stage version meant
+to be patched later. **Execution order note:** implement Task 49 (`StageCatalog`), Task 50
+(consolidated `WorkflowEngine`), and Task 51 (`DecompositionStage`'s clarification fold-in,
+`FinalSummaryStage`) — all below, in the Phase 12 section — before this task; they are placed later
+in this document only to stay adjacent to the corrective-review narrative that produced them, but
+belong earlier in actual build order. This task does not modify a file any of those three create;
+it is the first task that creates `RequirementIngestionStage`, `RequirementNormalizationStage`,
+`AmbiguityDetectionStage`, `HumanClarificationStage`, and `FinalSummaryStage`, so nothing here is
+forward-referencing a not-yet-created file.
+
+The 12 nodes: `requirement_ingestion`, `requirement_normalization`, `ambiguity_detection`,
+`human_clarification` (present in every run's stage list, `SKIPPED` here since this requirement is
+unambiguous), `decomposition`, `design`, `implementation`, `testing`, `security`, `documentation`,
+`release_readiness`, `final_engineering_summary`.
 
 **Files:**
-- Create: `src/main/java/com/schwab/urlshortener/orchestration/stages/{RequirementStage,DecompositionStage,DesignStage,ImplementationStage,TestingStage,DocumentationStage,SecurityStage,ReleaseReadinessStage}.java`
-- Modify: `src/main/java/com/schwab/urlshortener/scenarios/ScenarioRunner.java` (wire the real `greenfield` scenario stage set, replacing the trivial 2-stage placeholder from Task 25)
+- Create: `src/main/java/com/schwab/urlshortener/orchestration/stages/{RequirementIngestionStage,RequirementNormalizationStage,AmbiguityDetectionStage,HumanClarificationStage,DecompositionStage,DesignStage,ImplementationStage,TestingStage,DocumentationStage,SecurityStage,ReleaseReadinessStage,FinalSummaryStage}.java`
+  (this task writes all twelve stage classes in their final form; `DecompositionStage`'s
+  clarification-reading logic, specified fully in Task 51, is included here directly since it is
+  needed for this task's own catalog to compile and this task creates the file)
+- Modify: `src/main/java/com/schwab/urlshortener/orchestration/WorkflowEngine.java` (adds one line to
+  `runFrom`, per Task 50: seed `ctx.artifacts().putIfAbsent("feature", instance.getFeature())` so
+  `RequirementIngestionStage` can read the originally-submitted requirement text)
+- Modify: `src/main/java/com/schwab/urlshortener/scenarios/ScenarioRunner.java` (wire the real
+  12-stage `greenfield` scenario via a `StageCatalog`, replacing the trivial 2-stage placeholder
+  from Task 25)
 - Test: `src/test/java/com/schwab/urlshortener/scenarios/GreenfieldScenarioTest.java`
 - Create: `docs/scenarios/greenfield.md`
 
-**Interfaces:** Each stage class exposes one static method `run(WorkflowContext ctx) -> Map<String,Object>` matching `StageHandler`, referenced via method reference (e.g., `RequirementStage::run`). `RequirementStage.run` performs the "requirement-quality checks" (completeness/consistency/testability/policy+architecture-boundary) and records via `ctx.recordDecision(...)` **why clarification was skipped**.
+**Interfaces:** Each stage class exposes one static method `run(WorkflowContext ctx) -> Map<String,Object>`
+matching `StageHandler`, referenced via method reference — never a lambda, so every handler is a
+stable, restart-safe catalog entry (Task 49's binding requirement). `AmbiguityDetectionStage.run`
+performs a deterministic, documented-as-demonstration-scope check: a requirement is treated as
+unambiguous only when its normalized text cites a concrete requirement ID (`req-<digits>`) **and**
+states a measurable, testable criterion (contains a digit). It records via `ctx.recordDecision(...)`
+**why** clarification was or wasn't required, and sets `ctx.addArtifact("ambiguityDetected", <bool>)`
+— the catalog-registered `"ambiguity_gate"` predicate reads that artifact to decide whether
+`human_clarification` runs or is `SKIP`ped. This same class, unmodified, is what Task 41's ambiguous
+scenario exercises with different input text — the branching is data-driven, not scenario-specific
+code.
 
 - [ ] **Step 1: Write failing test**
 ```java
@@ -4299,58 +4409,166 @@ class GreenfieldScenarioTest {
     @Autowired private WorkflowEventJpaRepository eventRepository;
     @Autowired private ApprovalJpaRepository approvalRepository;
 
-    @Test
-    void wellDefinedRequirementCompletesWithoutClarificationGate() {
-        List<StageDefinition> stages = List.of(
-                StageDefinition.of("requirement", List.of(), RequirementStage::run),
-                StageDefinition.of("decomposition", List.of("requirement"), DecompositionStage::run),
+    private static StageCatalog greenfieldCatalog() {
+        return new StageCatalog(
+                Map.ofEntries(
+                        Map.entry("requirement_ingestion", (StageHandler) RequirementIngestionStage::run),
+                        Map.entry("requirement_normalization", (StageHandler) RequirementNormalizationStage::run),
+                        Map.entry("ambiguity_detection", (StageHandler) AmbiguityDetectionStage::run),
+                        Map.entry("human_clarification", (StageHandler) HumanClarificationStage::run),
+                        Map.entry("decomposition", (StageHandler) DecompositionStage::run),
+                        Map.entry("design", (StageHandler) DesignStage::run),
+                        Map.entry("implementation", (StageHandler) ImplementationStage::run),
+                        Map.entry("testing", (StageHandler) TestingStage::run),
+                        Map.entry("security", (StageHandler) SecurityStage::run),
+                        Map.entry("documentation", (StageHandler) DocumentationStage::run),
+                        Map.entry("release_readiness", (StageHandler) ReleaseReadinessStage::run),
+                        Map.entry("final_engineering_summary", (StageHandler) FinalSummaryStage::run)),
+                Map.of("ambiguity_gate", (java.util.function.Predicate<WorkflowContext>)
+                        c -> Boolean.TRUE.equals(c.artifacts().get("ambiguityDetected"))),
+                Map.of());
+    }
+
+    private static List<StageDefinition> greenfieldStages() {
+        return List.of(
+                new StageDefinition("requirement_ingestion", List.of(), RequirementIngestionStage::run,
+                        false, false, 0, 30, null, null, null),
+                new StageDefinition("requirement_normalization", List.of("requirement_ingestion"),
+                        RequirementNormalizationStage::run, false, false, 0, 30, null, null, null),
+                new StageDefinition("ambiguity_detection", List.of("requirement_normalization"),
+                        AmbiguityDetectionStage::run, false, false, 0, 30, null, null, null),
+                new StageDefinition("human_clarification", List.of("ambiguity_detection"),
+                        HumanClarificationStage::run, true, false, 0, 30, null, "ambiguity_gate", null),
+                new StageDefinition("decomposition", List.of("human_clarification"), DecompositionStage::run,
+                        false, false, 0, 30, null, null, null),
                 // exitApproval on both: the human reviews a PRODUCED design / readiness report,
                 // not a proposal to run one — the handler must execute first.
-                new StageDefinition("design", List.of("decomposition"), DesignStage::run, false, true, 0, 30, null),
-                StageDefinition.of("implementation", List.of("design"), ImplementationStage::run),
-                new StageDefinition("testing", List.of("implementation"), TestingStage::run, false, false, 0, 30, "verify"),
-                new StageDefinition("security", List.of("implementation"), SecurityStage::run, false, false, 0, 30, "verify"),
-                new StageDefinition("documentation", List.of("implementation"), DocumentationStage::run, false, false, 0, 30, "verify"),
+                new StageDefinition("design", List.of("decomposition"), DesignStage::run,
+                        false, true, 0, 30, null, null, null),
+                new StageDefinition("implementation", List.of("design"), ImplementationStage::run,
+                        false, false, 0, 30, null, null, null),
+                new StageDefinition("testing", List.of("implementation"), TestingStage::run,
+                        false, false, 0, 30, "verify", null, null),
+                new StageDefinition("security", List.of("implementation"), SecurityStage::run,
+                        false, false, 0, 30, "verify", null, null),
+                new StageDefinition("documentation", List.of("implementation"), DocumentationStage::run,
+                        false, false, 0, 30, "verify", null, null),
                 new StageDefinition("release_readiness", List.of("testing", "security", "documentation"),
-                        ReleaseReadinessStage::run, false, true, 0, 30, null)
+                        ReleaseReadinessStage::run, false, true, 0, 30, null, null, null),
+                new StageDefinition("final_engineering_summary", List.of("release_readiness"),
+                        FinalSummaryStage::run, false, false, 0, 30, null, null, null)
         );
+    }
 
-        WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository);
-        String workflowId = engine.submit("add-expiration-endpoint", stages, "scn-a-1");
+    @Test
+    void wellDefinedRequirementCompletesWithoutClarificationGate() {
+        WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository,
+                approvalRepository, null, null, null, null, greenfieldCatalog());
+        String workflowId = engine.submit(
+                "add optional expiresAt field to the create-link contract per req-014, "
+                        + "returning 400 for a past timestamp",
+                greenfieldStages(), "scn-a-1");
         engine.approve(workflowId, "design", "approved", "human", "matches ADR-003/006");
         engine.approve(workflowId, "release_readiness", "approved", "human", "all checks green");
 
         WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
         assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.COMPLETED);
 
+        WorkflowStepEntity clarificationStep = stepRepository
+                .findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "human_clarification").orElseThrow();
+        assertThat(clarificationStep.getStatus()).isEqualTo(StepStatus.SKIPPED);
+
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> decisions = (List<Map<String, Object>>) instance.getContextJson().get("decisions");
-        boolean firstIsSkipReason = decisions.get(0).get("decision").toString().contains("no_clarification_required");
-        boolean anyMentionsClarification = decisions.stream()
-                .anyMatch(d -> d.get("decision").toString().contains("clarification"));
-        assertThat(firstIsSkipReason || anyMentionsClarification).isTrue();
+        assertThat(decisions).anyMatch(d -> d.get("decision").toString().contains("no_clarification_required"));
     }
 }
 ```
 - [ ] **Step 2: Run to confirm failure** — compile error, none of the stage classes exist yet.
-- [ ] **Step 3: Implement** each stage class minimally:
+- [ ] **Step 3: Implement** each stage class:
 ```java
-// src/main/java/com/schwab/urlshortener/orchestration/stages/RequirementStage.java
+// src/main/java/com/schwab/urlshortener/orchestration/stages/RequirementIngestionStage.java
 package com.schwab.urlshortener.orchestration.stages;
 
 import com.schwab.urlshortener.orchestration.WorkflowContext;
 import java.util.Map;
 
-public final class RequirementStage {
-    private RequirementStage() { }
+public final class RequirementIngestionStage {
+    private RequirementIngestionStage() { }
 
     public static Map<String, Object> run(WorkflowContext ctx) {
-        // Requirement-quality checks (hardcoded for this demonstration requirement,
-        // documented as such): completeness, consistency, testability, and policy/
-        // architecture-boundary fit are all satisfied, so clarification is skipped —
-        // and that decision is recorded, not silently assumed.
-        ctx.recordDecision("agent", "no_clarification_required",
-                "requirement is complete, consistent, testable, within policy/architecture boundaries");
+        String feature = (String) ctx.artifacts().get("feature");
+        ctx.addArtifact("requirementText", feature);
+        ctx.recordDecision("agent", "requirement_ingested", "captured the submitted requirement text verbatim");
+        return Map.of();
+    }
+}
+```
+```java
+// src/main/java/com/schwab/urlshortener/orchestration/stages/RequirementNormalizationStage.java
+package com.schwab.urlshortener.orchestration.stages;
+
+import com.schwab.urlshortener.orchestration.WorkflowContext;
+import java.util.Map;
+
+public final class RequirementNormalizationStage {
+    private RequirementNormalizationStage() { }
+
+    public static Map<String, Object> run(WorkflowContext ctx) {
+        String raw = (String) ctx.artifacts().get("requirementText");
+        String normalized = raw == null ? "" : raw.trim().toLowerCase(java.util.Locale.ROOT);
+        ctx.addArtifact("normalizedRequirement", normalized);
+        return Map.of();
+    }
+}
+```
+```java
+// src/main/java/com/schwab/urlshortener/orchestration/stages/AmbiguityDetectionStage.java
+package com.schwab.urlshortener.orchestration.stages;
+
+import com.schwab.urlshortener.orchestration.WorkflowContext;
+import java.util.Map;
+
+public final class AmbiguityDetectionStage {
+    private AmbiguityDetectionStage() { }
+
+    public static Map<String, Object> run(WorkflowContext ctx) {
+        String normalized = (String) ctx.artifacts().getOrDefault("normalizedRequirement", "");
+        // Demonstration-scope heuristic, documented as such: unambiguous only when the
+        // requirement cites a concrete requirement ID AND states a measurable, testable
+        // criterion (a digit somewhere — a status code, a count, a duration). Anything else
+        // routes to human_clarification. This is completeness/consistency/testability/
+        // policy-boundary review reduced to something a demo can execute deterministically.
+        boolean citesRequirement = normalized.matches(".*\\breq-\\d+\\b.*");
+        boolean statesMeasurableCriterion = normalized.matches(".*\\d.*");
+        boolean ambiguous = !(citesRequirement && statesMeasurableCriterion);
+        ctx.addArtifact("ambiguityDetected", ambiguous);
+        if (ambiguous) {
+            ctx.recordDecision("agent", "clarification_required",
+                    "requirement lacks a cited requirement ID and/or a measurable, testable criterion");
+        } else {
+            ctx.recordDecision("agent", "no_clarification_required",
+                    "requirement is complete, consistent, testable, within policy/architecture boundaries");
+        }
+        return Map.of();
+    }
+}
+```
+```java
+// src/main/java/com/schwab/urlshortener/orchestration/stages/HumanClarificationStage.java
+package com.schwab.urlshortener.orchestration.stages;
+
+import com.schwab.urlshortener.orchestration.WorkflowContext;
+import java.util.Map;
+
+public final class HumanClarificationStage {
+    private HumanClarificationStage() { }
+
+    public static Map<String, Object> run(WorkflowContext ctx) {
+        // entryApproval-gated (see StageDefinition above); this handler runs only once already
+        // approved, and does no work of its own — WorkflowEngine.approve() (Task 50) has already
+        // written the human's reason into ctx.artifacts() under "human_clarificationResolution"
+        // before this handler is invoked. DecompositionStage (below) is what reads and uses it.
         return Map.of();
     }
 }
@@ -4366,7 +4584,14 @@ public final class DecompositionStage {
     private DecompositionStage() { }
 
     public static Map<String, Object> run(WorkflowContext ctx) {
-        return Map.of();
+        Object resolution = ctx.artifacts().get("human_clarificationResolution");
+        Map<String, Object> result = new java.util.HashMap<>();
+        result.put("decomposed", true);
+        if (resolution != null) {
+            ctx.recordDecision("agent", "decomposition_used_clarification", String.valueOf(resolution));
+            result.put("clarifiedRequirement", resolution);
+        }
+        return result;
     }
 }
 ```
@@ -4461,18 +4686,62 @@ public final class ReleaseReadinessStage {
 
     public static Map<String, Object> run(WorkflowContext ctx) {
         ctx.addArtifact("auditTrailPresent", true);
+        Map<String, Object> result = new java.util.HashMap<>();
+        @SuppressWarnings("unchecked")
+        java.util.List<String> fallbacksUsed = (java.util.List<String>) ctx.artifacts().get("fallbacksUsed");
+        if (fallbacksUsed != null && !fallbacksUsed.isEmpty()) {
+            // Principle VIII: never report an unqualified "ready" when a fallback degraded the
+            // outcome — name which stages ran degraded and mark the release as such.
+            result.put("ready", true);
+            result.put("degraded", true);
+            result.put("degradedStages", fallbacksUsed);
+            ctx.recordDecision("agent", "release_readiness_degraded",
+                    "ready with disclosed reduced guarantee: " + fallbacksUsed + " completed via fallback, not primary path");
+        } else {
+            result.put("ready", true);
+            result.put("degraded", false);
+        }
+        return result;
+    }
+}
+```
+```java
+// src/main/java/com/schwab/urlshortener/orchestration/stages/FinalSummaryStage.java
+package com.schwab.urlshortener.orchestration.stages;
+
+import com.schwab.urlshortener.orchestration.WorkflowContext;
+import java.util.Map;
+
+public final class FinalSummaryStage {
+    private FinalSummaryStage() { }
+
+    public static Map<String, Object> run(WorkflowContext ctx) {
+        ctx.recordDecision("agent", "final_engineering_summary_recorded",
+                "captured the complete decision lineage and produced artifacts for the reviewer navigation guide");
         return Map.of();
     }
 }
 ```
-  Wire `ScenarioRunner.runScenario` to build this exact stage list when `scenario.equals("greenfield")` (replacing the Task 25 placeholder), and — since this is a non-interactive CLI demo, not a governance test — have the runner call `engine.approve(...)` itself for both `design` and `release_readiness` immediately after `submit()`, simulating a human approving on the spot, so the printed final line shows `COMPLETED` end to end.
+  Wire `ScenarioRunner.runScenario` to build this exact stage list and catalog when
+  `scenario.equals("greenfield")` (replacing the Task 25 placeholder), and — since this is a
+  non-interactive CLI demo, not a governance test — have the runner call `engine.approve(...)`
+  itself for both `design` and `release_readiness` immediately after `submit()`, simulating a human
+  approving on the spot, so the printed final line shows `COMPLETED` end to end.
 - [ ] **Step 4: Run to confirm pass** — PASS
-- [ ] **Step 5:** Write `docs/scenarios/greenfield.md` documenting: original requirement, requirement-quality checks performed, reason clarification was skipped, decomposition, orchestration path (paste the actual `GET /workflows/{id}/audit` JSON output from a real run), acceptance criteria, terminal outcome.
-- [ ] **Step 6: Commit** — `git commit -m "test(scenarios): validate greenfield workflow"`
+- [ ] **Step 5:** Write `docs/scenarios/greenfield.md` documenting: original requirement, the
+  requirement-quality check performed by `AmbiguityDetectionStage` and why it skipped
+  `human_clarification`, decomposition, orchestration path (paste the actual
+  `GET /workflows/{id}/audit` JSON output from a real run), acceptance criteria, terminal outcome.
+- [ ] **Step 6: Commit** — `git commit -m "test(scenarios): validate greenfield workflow against the real 12-node graph"`
 
-### Task 40: Brownfield scenario — enhancement against existing code with impact analysis gate
 
-> **Superseded by Phase 12 (2026-09-13):** the single `ImpactAnalysisStage` described here is superseded by Task 52's seven-genuinely-parallel-branch design, matching `spec.md` Section 4's explicit SCN-B requirement. See Phase 12.
+### Task 40: Brownfield scenario — enhancement against existing code with seven-branch impact analysis gate
+
+**Authoritative final form (corrected 2026-09-13).** Reuses Task 39's 12-node stage set and adds
+`spec.md` Section 4's SCN-B requirement directly — seven genuinely parallel impact-analysis branches
+joined by a mandatory Approval Gate before `implementation` — rather than the single-stage
+placeholder an earlier draft used. **Execution order note:** this task creates the seven impact
+classes and `ChangeImpactReportStage`; nothing here modifies a file a later task creates.
 
 **Chosen brownfield change (fixed 2026-09-13, after CLR-15's human confirmation):** the original
 draft of this task targeted a `PATCH /links/{code}/expiration` endpoint — that is no longer valid.
@@ -4489,14 +4758,27 @@ existing, already-shipped code, with genuine regression risk (must not start blo
 public IPv6 addresses) and a direct security consequence if missed.
 
 **Files:**
-- Create: `src/main/java/com/schwab/urlshortener/orchestration/stages/ImpactAnalysisStage.java`
+- Create: `src/main/java/com/schwab/urlshortener/orchestration/stages/impact/` — seven classes:
+  `ImpactedComponentsStage`, `ImpactedInterfacesStage`, `ImpactedDataFlowsStage`, `ImpactedTestsStage`,
+  `ImpactedDocumentationStage`, `RegressionRiskStage`, `RolloutRollbackStage`
+- Create: `src/main/java/com/schwab/urlshortener/orchestration/stages/ChangeImpactReportStage.java`
 - Create: `docs/scenarios/brownfield.md`
 - Test: `src/test/java/com/schwab/urlshortener/scenarios/BrownfieldScenarioTest.java`
-- Modify: `src/main/java/com/schwab/urlshortener/domain/UrlValidator.java` (the actual brownfield fix this scenario analyzes), `src/test/java/com/schwab/urlshortener/domain/UrlValidatorSsrfTest.java`
+- Modify: `src/main/java/com/schwab/urlshortener/domain/UrlValidator.java` (the actual brownfield fix
+  this scenario analyzes), `src/test/java/com/schwab/urlshortener/domain/UrlValidatorSsrfTest.java`
 
-**Interfaces:** Reuses Task 39's stage set; adds a preceding, non-approval `impact_analysis` stage (`dependsOn=[]`) whose `run()` returns a `Map<String,Object>` enumerating impacted modules/interfaces/tests (hardcoded to the real files this exercise touches: `UrlValidator.java` and `UrlValidatorSsrfTest.java`).
+**Interfaces:** Reuses Task 39's 12 stages verbatim, with two changes to the graph: (1) the seven
+impact stages below, each `dependsOn=["decomposition"]`, no dependency on each other — genuinely
+parallel-safe, disjoint concerns, disjoint `ctx.artifacts()` keys; each returns a `Map<String,Object>`
+with at minimum a `"finding"` string and a `"risk"` string (`"low"|"medium"|"high"`);
+`RolloutRollbackStage` additionally returns `"rollbackPlan"`, which `ReleaseReadinessStage` must read
+from the joined report and refuse a "ready" outcome if absent for a brownfield run (REQ-020 negative
+criterion); (2) `ChangeImpactReportStage`, `dependsOn` = all seven impact stages, `exitApproval=true`
+— its handler reads all seven predecessor results from `ctx` and assembles one `Map` keyed by
+dimension name (the "single Change Impact Report" / "mandatory Approval Gate" `spec.md` REQ-013
+names); `implementation.dependsOn` becomes `["design", "change_impact_report"]` for this scenario.
 
-- [ ] **Step 1: Write failing test** — assert the workflow records an `impact_analysis` step whose `result` map contains non-empty `impactedModules`, `impactedTests`, and `regressionRisk` entries, and that this step runs **before** `implementation`.
+- [ ] **Step 1: Write failing test**
 ```java
 // src/test/java/com/schwab/urlshortener/scenarios/BrownfieldScenarioTest.java
 package com.schwab.urlshortener.scenarios;
@@ -4504,7 +4786,10 @@ package com.schwab.urlshortener.scenarios;
 import com.schwab.urlshortener.orchestration.*;
 import com.schwab.urlshortener.orchestration.persistence.*;
 import com.schwab.urlshortener.orchestration.stages.*;
+import com.schwab.urlshortener.orchestration.stages.impact.*;
+import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
@@ -4519,59 +4804,297 @@ class BrownfieldScenarioTest {
     @Autowired private WorkflowEventJpaRepository eventRepository;
     @Autowired private ApprovalJpaRepository approvalRepository;
 
-    @Test
-    void impactAnalysisRunsBeforeImplementationWithNonEmptyFindings() {
-        List<StageDefinition> stages = List.of(
-                StageDefinition.of("impact_analysis", List.of(), ImpactAnalysisStage::run),
-                StageDefinition.of("requirement", List.of(), RequirementStage::run),
-                StageDefinition.of("decomposition", List.of("requirement"), DecompositionStage::run),
-                new StageDefinition("design", List.of("decomposition"), DesignStage::run, false, true, 0, 30, null),
-                StageDefinition.of("implementation", List.of("impact_analysis", "design"), ImplementationStage::run)
-        );
+    private static final List<String> IMPACT_NAMES = List.of(
+            "impact_components", "impact_interfaces", "impact_data_flows", "impact_tests",
+            "impact_documentation", "impact_regression_risk", "impact_rollout_rollback");
 
-        WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository);
-        String workflowId = engine.submit("harden-ssrf-guard-ipv6-ula", stages, "scn-b-1");
+    private static StageCatalog brownfieldCatalog() {
+        Map<String, StageHandler> handlers = new java.util.HashMap<>(Map.ofEntries(
+                Map.entry("requirement_ingestion", (StageHandler) RequirementIngestionStage::run),
+                Map.entry("requirement_normalization", (StageHandler) RequirementNormalizationStage::run),
+                Map.entry("ambiguity_detection", (StageHandler) AmbiguityDetectionStage::run),
+                Map.entry("human_clarification", (StageHandler) HumanClarificationStage::run),
+                Map.entry("decomposition", (StageHandler) DecompositionStage::run),
+                Map.entry("design", (StageHandler) DesignStage::run),
+                Map.entry("implementation", (StageHandler) ImplementationStage::run),
+                Map.entry("testing", (StageHandler) TestingStage::run),
+                Map.entry("security", (StageHandler) SecurityStage::run),
+                Map.entry("documentation", (StageHandler) DocumentationStage::run),
+                Map.entry("release_readiness", (StageHandler) ReleaseReadinessStage::run),
+                Map.entry("final_engineering_summary", (StageHandler) FinalSummaryStage::run)));
+        handlers.put("impact_components", ImpactedComponentsStage::run);
+        handlers.put("impact_interfaces", ImpactedInterfacesStage::run);
+        handlers.put("impact_data_flows", ImpactedDataFlowsStage::run);
+        handlers.put("impact_tests", ImpactedTestsStage::run);
+        handlers.put("impact_documentation", ImpactedDocumentationStage::run);
+        handlers.put("impact_regression_risk", RegressionRiskStage::run);
+        handlers.put("impact_rollout_rollback", RolloutRollbackStage::run);
+        handlers.put("change_impact_report", ChangeImpactReportStage::run);
+        return new StageCatalog(handlers,
+                Map.of("ambiguity_gate", (java.util.function.Predicate<WorkflowContext>)
+                        c -> Boolean.TRUE.equals(c.artifacts().get("ambiguityDetected"))),
+                Map.of());
+    }
+
+    private static List<StageDefinition> brownfieldStages() {
+        List<StageDefinition> stages = new java.util.ArrayList<>(List.of(
+                new StageDefinition("requirement_ingestion", List.of(), RequirementIngestionStage::run,
+                        false, false, 0, 30, null, null, null),
+                new StageDefinition("requirement_normalization", List.of("requirement_ingestion"),
+                        RequirementNormalizationStage::run, false, false, 0, 30, null, null, null),
+                new StageDefinition("ambiguity_detection", List.of("requirement_normalization"),
+                        AmbiguityDetectionStage::run, false, false, 0, 30, null, null, null),
+                new StageDefinition("human_clarification", List.of("ambiguity_detection"),
+                        HumanClarificationStage::run, true, false, 0, 30, null, "ambiguity_gate", null),
+                new StageDefinition("decomposition", List.of("human_clarification"), DecompositionStage::run,
+                        false, false, 0, 30, null, null, null),
+                new StageDefinition("design", List.of("decomposition"), DesignStage::run,
+                        false, true, 0, 30, null, null, null)));
+        for (String name : IMPACT_NAMES) {
+            StageHandler h = switch (name) {
+                case "impact_components" -> ImpactedComponentsStage::run;
+                case "impact_interfaces" -> ImpactedInterfacesStage::run;
+                case "impact_data_flows" -> ImpactedDataFlowsStage::run;
+                case "impact_tests" -> ImpactedTestsStage::run;
+                case "impact_documentation" -> ImpactedDocumentationStage::run;
+                case "impact_regression_risk" -> RegressionRiskStage::run;
+                default -> RolloutRollbackStage::run;
+            };
+            stages.add(new StageDefinition(name, List.of("decomposition"), h,
+                    false, false, 0, 30, "impact", null, null));
+        }
+        stages.add(new StageDefinition("change_impact_report", IMPACT_NAMES, ChangeImpactReportStage::run,
+                false, true, 0, 30, null, null, null));
+        stages.add(new StageDefinition("implementation", List.of("design", "change_impact_report"),
+                ImplementationStage::run, false, false, 0, 30, null, null, null));
+        stages.add(new StageDefinition("testing", List.of("implementation"), TestingStage::run,
+                false, false, 0, 30, "verify", null, null));
+        stages.add(new StageDefinition("security", List.of("implementation"), SecurityStage::run,
+                false, false, 0, 30, "verify", null, null));
+        stages.add(new StageDefinition("documentation", List.of("implementation"), DocumentationStage::run,
+                false, false, 0, 30, "verify", null, null));
+        stages.add(new StageDefinition("release_readiness", List.of("testing", "security", "documentation"),
+                ReleaseReadinessStage::run, false, true, 0, 30, null, null, null));
+        stages.add(new StageDefinition("final_engineering_summary", List.of("release_readiness"),
+                FinalSummaryStage::run, false, false, 0, 30, null, null, null));
+        return stages;
+    }
+
+    @Test
+    void sevenImpactBranchesRunInParallelAndJoinBeforeImplementation() {
+        WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository,
+                approvalRepository, null, null, null, null, brownfieldCatalog());
+        String workflowId = engine.submit(
+                "harden the SSRF guard (req-015) to reject IPv6 unique local addresses fc00::/7",
+                brownfieldStages(), "scn-b-1");
         engine.approve(workflowId, "design", "approved", "human", "matches brownfield impact analysis");
 
-        WorkflowStepEntity impactStep = stepRepository.findByWorkflowIdAndName(workflowId, "impact_analysis").orElseThrow();
-        assertThat(impactStep.getResult()).containsKeys("impactedModules", "impactedTests", "regressionRisk");
-        assertThat(impactStep.getEndedAt()).isNotNull();
+        List<WorkflowStepEntity> impactSteps = stepRepository.findByWorkflowIdAndPlanVersionAndNameIn(
+                workflowId, 1, IMPACT_NAMES);
+        assertThat(impactSteps).hasSize(7);
+        assertThat(impactSteps).allMatch(s -> s.getStatus() == StepStatus.SUCCEEDED);
 
-        WorkflowStepEntity implStep = stepRepository.findByWorkflowIdAndName(workflowId, "implementation").orElseThrow();
-        assertThat(implStep.getStartedAt()).isAfterOrEqualTo(impactStep.getEndedAt());
+        // Genuine overlap, not fast-sequential: at least two of the seven have overlapping
+        // [startedAt, endedAt) intervals. If this proves flaky under CI scheduling, replace with
+        // a CountDownLatch-based deterministic check inside two of the seven handlers instead of
+        // loosening the assertion.
+        boolean anyOverlap = pairwiseIntervalsOverlap(impactSteps);
+        assertThat(anyOverlap).isTrue();
+
+        WorkflowStepEntity reportStep = stepRepository
+                .findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "change_impact_report").orElseThrow();
+        assertThat(reportStep.getStartedAt()).isAfterOrEqualTo(
+                impactSteps.stream().map(WorkflowStepEntity::getEndedAt).max(Instant::compareTo).orElseThrow());
+
+        WorkflowStepEntity implStep = stepRepository
+                .findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "implementation").orElseThrow();
+        assertThat(implStep.getStatus()).isEqualTo(StepStatus.PENDING); // blocked: report is exitApproval, unapproved
+    }
+
+    @Test
+    void rejectedChangeImpactReportBlocksImplementationPermanently() {
+        WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository,
+                approvalRepository, null, null, null, null, brownfieldCatalog());
+        String workflowId = engine.submit(
+                "harden the SSRF guard (req-015) to reject IPv6 unique local addresses fc00::/7",
+                brownfieldStages(), "scn-b-2");
+        engine.approve(workflowId, "design", "approved", "human", "matches brownfield impact analysis");
+        engine.approve(workflowId, "change_impact_report", "rejected", "human", "regression risk too high");
+
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.FAILED);
+        WorkflowStepEntity implStep = stepRepository
+                .findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "implementation").orElseThrow();
+        assertThat(implStep.getStatus()).isEqualTo(StepStatus.PENDING); // never ran
+    }
+
+    private static boolean pairwiseIntervalsOverlap(List<WorkflowStepEntity> steps) {
+        for (int i = 0; i < steps.size(); i++) {
+            for (int j = i + 1; j < steps.size(); j++) {
+                Instant aStart = steps.get(i).getStartedAt();
+                Instant aEnd = steps.get(i).getEndedAt();
+                Instant bStart = steps.get(j).getStartedAt();
+                Instant bEnd = steps.get(j).getEndedAt();
+                if (aStart.isBefore(bEnd) && bStart.isBefore(aEnd)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 }
 ```
-- [ ] **Step 2: Run to confirm failure** — compile error, `ImpactAnalysisStage` doesn't exist.
-- [ ] **Step 3: Implement**
+- [ ] **Step 2: Run to confirm failure** — compile errors, none of the eight impact classes exist.
+- [ ] **Step 3: Implement** the seven impact stages and `ChangeImpactReportStage`:
 ```java
-// src/main/java/com/schwab/urlshortener/orchestration/stages/ImpactAnalysisStage.java
-package com.schwab.urlshortener.orchestration.stages;
+// src/main/java/com/schwab/urlshortener/orchestration/stages/impact/ImpactedComponentsStage.java
+package com.schwab.urlshortener.orchestration.stages.impact;
+
+import com.schwab.urlshortener.orchestration.WorkflowContext;
+import java.util.Map;
+
+public final class ImpactedComponentsStage {
+    private ImpactedComponentsStage() { }
+
+    public static Map<String, Object> run(WorkflowContext ctx) {
+        ctx.recordDecision("agent", "impact_components_identified",
+                "UrlValidator.isBlockedHost is the only production component touched");
+        return Map.of("finding", "src/main/java/com/schwab/urlshortener/domain/UrlValidator.java", "risk", "low");
+    }
+}
+```
+```java
+// src/main/java/com/schwab/urlshortener/orchestration/stages/impact/ImpactedInterfacesStage.java
+package com.schwab.urlshortener.orchestration.stages.impact;
+
+import com.schwab.urlshortener.orchestration.WorkflowContext;
+import java.util.Map;
+
+public final class ImpactedInterfacesStage {
+    private ImpactedInterfacesStage() { }
+
+    public static Map<String, Object> run(WorkflowContext ctx) {
+        return Map.of("finding", "no public API contract changes — isBlockedHost is a private validation helper", "risk", "low");
+    }
+}
+```
+```java
+// src/main/java/com/schwab/urlshortener/orchestration/stages/impact/ImpactedDataFlowsStage.java
+package com.schwab.urlshortener.orchestration.stages.impact;
+
+import com.schwab.urlshortener.orchestration.WorkflowContext;
+import java.util.Map;
+
+public final class ImpactedDataFlowsStage {
+    private ImpactedDataFlowsStage() { }
+
+    public static Map<String, Object> run(WorkflowContext ctx) {
+        return Map.of("finding", "no persisted-entity shape changes — validation happens before any write", "risk", "low");
+    }
+}
+```
+```java
+// src/main/java/com/schwab/urlshortener/orchestration/stages/impact/ImpactedTestsStage.java
+package com.schwab.urlshortener.orchestration.stages.impact;
 
 import com.schwab.urlshortener.orchestration.WorkflowContext;
 import java.util.List;
 import java.util.Map;
 
-public final class ImpactAnalysisStage {
-    private ImpactAnalysisStage() { }
+public final class ImpactedTestsStage {
+    private ImpactedTestsStage() { }
 
-    // Hardcoded, documented-as-such impact map for this specific brownfield change:
-    // hardening UrlValidator's SSRF guard to reject IPv6 Unique Local Addresses.
     public static Map<String, Object> run(WorkflowContext ctx) {
-        ctx.recordDecision("agent", "impact_analysis_complete",
-                "hardening the SSRF guard's IPv6 handling touches only UrlValidator.isBlockedHost and its SSRF test suite — no API contract, DTO, or persisted-entity shape changes");
         return Map.of(
-                "impactedModules", List.of(
-                        "src/main/java/com/schwab/urlshortener/domain/UrlValidator.java"),
-                "impactedTests", List.of(
+                "finding", List.of(
                         "src/test/java/com/schwab/urlshortener/domain/UrlValidatorSsrfTest.java",
                         "src/test/java/com/schwab/urlshortener/domain/UrlValidatorTest.java"),
-                "regressionRisk", "medium — a byte-range check on resolved addresses; must not start rejecting legitimate public IPv6 hosts. Full existing UrlValidatorTest/UrlValidatorSsrfTest suite (Task 15) is the regression gate."
-        );
+                "risk", "low");
     }
 }
 ```
-  Wire `ImpactAnalysisStage` as `ScenarioRunner`'s `brownfield` case: this stage plus Task 39's full stage set, with `implementation` depending on both `design` and `impact_analysis`.
+```java
+// src/main/java/com/schwab/urlshortener/orchestration/stages/impact/ImpactedDocumentationStage.java
+package com.schwab.urlshortener.orchestration.stages.impact;
+
+import com.schwab.urlshortener.orchestration.WorkflowContext;
+import java.util.Map;
+
+public final class ImpactedDocumentationStage {
+    private ImpactedDocumentationStage() { }
+
+    public static Map<String, Object> run(WorkflowContext ctx) {
+        return Map.of("finding", "docs/scenarios/brownfield.md must record this as the SSRF-guard hardening demo, not the retired PATCH-expiration draft", "risk", "low");
+    }
+}
+```
+```java
+// src/main/java/com/schwab/urlshortener/orchestration/stages/impact/RegressionRiskStage.java
+package com.schwab.urlshortener.orchestration.stages.impact;
+
+import com.schwab.urlshortener.orchestration.WorkflowContext;
+import java.util.Map;
+
+public final class RegressionRiskStage {
+    private RegressionRiskStage() { }
+
+    public static Map<String, Object> run(WorkflowContext ctx) {
+        return Map.of(
+                "finding", "a byte-range check on resolved addresses; must not start rejecting legitimate public IPv6 hosts. Full existing UrlValidatorTest/UrlValidatorSsrfTest suite (Task 15) is the regression gate.",
+                "risk", "medium");
+    }
+}
+```
+```java
+// src/main/java/com/schwab/urlshortener/orchestration/stages/impact/RolloutRollbackStage.java
+package com.schwab.urlshortener.orchestration.stages.impact;
+
+import com.schwab.urlshortener.orchestration.WorkflowContext;
+import java.util.Map;
+
+public final class RolloutRollbackStage {
+    private RolloutRollbackStage() { }
+
+    public static Map<String, Object> run(WorkflowContext ctx) {
+        return Map.of(
+                "finding", "single-method change behind existing validation path — no feature flag needed",
+                "risk", "low",
+                "rollbackPlan", "revert the isBlockedHost commit; no schema or contract migration to undo");
+    }
+}
+```
+```java
+// src/main/java/com/schwab/urlshortener/orchestration/stages/ChangeImpactReportStage.java
+package com.schwab.urlshortener.orchestration.stages;
+
+import com.schwab.urlshortener.orchestration.WorkflowContext;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+public final class ChangeImpactReportStage {
+    private ChangeImpactReportStage() { }
+
+    private static final java.util.List<String> DIMENSIONS = java.util.List.of(
+            "components", "interfaces", "data_flows", "tests", "documentation", "regression_risk", "rollout_rollback");
+
+    public static Map<String, Object> run(WorkflowContext ctx) {
+        Map<String, Object> report = new LinkedHashMap<>();
+        for (String dimension : DIMENSIONS) {
+            report.put(dimension, ctx.artifacts().get("impact_" + dimension + "_finding"));
+        }
+        ctx.recordDecision("agent", "change_impact_report_assembled",
+                "joined all seven impact-analysis branches into one report for the mandatory approval gate (REQ-013)");
+        return report;
+    }
+}
+```
+  **Note on reading predecessor results:** `WorkflowContext` in this plan does not expose other
+  steps' persisted `result` maps directly — each impact stage additionally calls
+  `ctx.addArtifact("impact_<dimension>_finding", ...)` (alongside its returned `Map`, not shown
+  above for brevity — add it to each of the seven implementations) so `ChangeImpactReportStage` can
+  read them from the shared `ctx.artifacts()` rather than re-querying the repository from inside a
+  handler.
+  Wire `ScenarioRunner`'s `brownfield` case to `brownfieldCatalog()`/`brownfieldStages()` above.
 - [ ] **Step 4: Run to confirm pass** — PASS
 - [ ] **Step 5:** Implement the real brownfield change via its own TDD cycle:
   1. Add a failing test to `UrlValidatorSsrfTest.java`:
@@ -4592,18 +5115,41 @@ public final class ImpactAnalysisStage {
      }
      ```
   4. Run the new test — confirm it passes. Run the full `UrlValidatorTest` + `UrlValidatorSsrfTest` suite — confirm no regression (legitimate public IPv6 test hosts, if any exist in the suite, still pass; if none exist, add one, e.g. a documentation/reserved public IPv6 address that is not loopback/link-local/ULA/multicast, to prove the fix doesn't over-block).
-  5. Follow the guide's Brownfield Impact Analysis Gate content structure in `docs/scenarios/brownfield.md` (Change Impact Summary, Dependency Map, Test-First Change Plan, Regression Risk Matrix, Documentation Impact, Replanning Decision, Human Approval Requirement) — explicitly note in "Documentation Impact" that this fix was chosen *instead of* the originally-planned PATCH-expiration brownfield demo, because CLR-15 (confirmed 2026-09-13) rules out any update endpoint.
-- [ ] **Step 6: Commit** — `git commit -m "fix(security): reject IPv6 unique local addresses in SSRF guard"` for the fix itself, then `git commit -m "test(scenarios): validate brownfield change workflow"` for the scenario/orchestration wiring — two coherent commits, not one bundling both concerns.
+  5. Follow the guide's Brownfield Impact Analysis Gate content structure in `docs/scenarios/brownfield.md` (Change Impact Summary, Dependency Map, Test-First Change Plan, Regression Risk Matrix, Documentation Impact, Replanning Decision, Human Approval Requirement) — reflecting the real seven-branch structure, not a single-stage impact map — and explicitly note in "Documentation Impact" that this fix was chosen *instead of* the originally-planned PATCH-expiration brownfield demo, because CLR-15 (confirmed 2026-09-13) rules out any update endpoint.
+- [ ] **Step 6: Commit** — `git commit -m "fix(security): reject IPv6 unique local addresses in SSRF guard"` for the fix itself, then `git commit -m "test(scenarios): validate brownfield workflow's seven parallel impact-analysis branches"` for the scenario/orchestration wiring — two coherent commits, not one bundling both concerns.
 
-### Task 41: Ambiguous-requirement scenario — real suspension, real replanning
 
-> **Superseded in part by Phase 12 (2026-09-13):** the "make ambiguity-detection itself `exitApproval`" workaround described here is superseded by Task 51's real, conditionally-activated `human_clarification` stage — a more faithful realization of `spec.md`'s Stage 3 (detection) vs. Stage 4 (clarification) distinction. See Phase 12.
+### Task 41: Ambiguous-requirement scenario — real suspension, real clarification fold-in, real replanning
+
+**Authoritative final form (corrected 2026-09-13).** Reuses Task 39's real `human_clarification`
+stage — `entryApproval=true`, gated by `activationConditionKey="ambiguity_gate"` — instead of an
+earlier draft's workaround of making `ambiguity_detection` itself `exitApproval`. This is the more
+faithful realization of `spec.md`'s Stage 3 (detection) vs. Stage 4 (clarification) distinction:
+detection is a normal stage that succeeds either way; clarification is its own gated stage, present
+in every run, active only when detection says so. **Execution order note:** this task creates
+`AmbiguousScenarioTest`; it modifies no file Task 39/40 didn't already create.
+
+A deliberately ambiguous input — "add rate limiting" with no numeric target and no cited requirement
+ID, the exact gap `AmbiguityDetectionStage` (Task 39) is built to catch, and the same gap flagged as
+an assumption in Task 5.
 
 **Files:**
 - Create: `docs/scenarios/ambiguous.md`
 - Test: `src/test/java/com/schwab/urlshortener/scenarios/AmbiguousScenarioTest.java`
 
-**Interfaces:** A dedicated stage set (not Task 39's — the graph shape itself differs), defined inline in the test itself via lambdas rather than named stage classes, matching how narrowly scenario-specific this one is. A deliberately ambiguous input — "add rate limiting" with no numeric target, the exact gap flagged as an assumption in Task 5. The `requirement` stage is `exitApproval=true`: its handler runs normally and detects the ambiguity (this is not an error — the stage *succeeds*, it just flags its output as needing review), and the exit gate halts before `decomposition` runs. Resolution follows Task 35's proven replan-before-approve ordering exactly (mechanically required: `approve()` synchronously resumes execution, so replacement stages must already be registered before it's called) — `decomposition` is replaced via `engine.replan(...)` first, then `engine.approve(...)` records the human's resolution and unblocks the new stage.
+**Interfaces:** Reuses Task 39's `greenfieldCatalog()`/stage classes verbatim (same 12-node graph,
+same catalog) — only the submitted requirement text differs, which is what drives
+`AmbiguityDetectionStage` to set `ambiguityDetected=true` this time, activating `human_clarification`
+instead of skipping it. Two behaviors are exercised: (1) the human's approval reason on
+`human_clarification` flows generically (via `WorkflowEngine.approve()`, Task 50) into
+`ctx.artifacts().get("human_clarificationResolution")`, which `DecompositionStage` reads and folds
+into its own persisted result under `"clarifiedRequirement"` — proving the decision reached
+downstream, not merely that an `ApprovalEntity` exists; (2) a genuine `replan()` call while
+`human_clarification` is still `WAITING_APPROVAL`, replacing `decomposition` with a differently
+structured `decomposition_v2` — proving replanning still works on the corrected engine, using the
+same replan-before-approve ordering Task 35 established (mechanically required: `approve()`
+synchronously resumes execution, so replacement stages must already be registered before it's
+called).
 
 - [ ] **Step 1: Write failing test**
 ```java
@@ -4612,6 +5158,7 @@ package com.schwab.urlshortener.scenarios;
 
 import com.schwab.urlshortener.orchestration.*;
 import com.schwab.urlshortener.orchestration.persistence.*;
+import com.schwab.urlshortener.orchestration.stages.*;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -4628,51 +5175,118 @@ class AmbiguousScenarioTest {
     @Autowired private WorkflowEventJpaRepository eventRepository;
     @Autowired private ApprovalJpaRepository approvalRepository;
 
+    private static StageCatalog ambiguousCatalog() {
+        return new StageCatalog(
+                Map.ofEntries(
+                        Map.entry("requirement_ingestion", (StageHandler) RequirementIngestionStage::run),
+                        Map.entry("requirement_normalization", (StageHandler) RequirementNormalizationStage::run),
+                        Map.entry("ambiguity_detection", (StageHandler) AmbiguityDetectionStage::run),
+                        Map.entry("human_clarification", (StageHandler) HumanClarificationStage::run),
+                        Map.entry("decomposition", (StageHandler) DecompositionStage::run),
+                        Map.entry("design", (StageHandler) DesignStage::run),
+                        Map.entry("implementation", (StageHandler) ImplementationStage::run),
+                        Map.entry("testing", (StageHandler) TestingStage::run),
+                        Map.entry("security", (StageHandler) SecurityStage::run),
+                        Map.entry("documentation", (StageHandler) DocumentationStage::run),
+                        Map.entry("release_readiness", (StageHandler) ReleaseReadinessStage::run),
+                        Map.entry("final_engineering_summary", (StageHandler) FinalSummaryStage::run)),
+                Map.of("ambiguity_gate", (java.util.function.Predicate<WorkflowContext>)
+                        c -> Boolean.TRUE.equals(c.artifacts().get("ambiguityDetected"))),
+                Map.of());
+    }
+
+    private static List<StageDefinition> ambiguousStages() {
+        return List.of(
+                new StageDefinition("requirement_ingestion", List.of(), RequirementIngestionStage::run,
+                        false, false, 0, 30, null, null, null),
+                new StageDefinition("requirement_normalization", List.of("requirement_ingestion"),
+                        RequirementNormalizationStage::run, false, false, 0, 30, null, null, null),
+                new StageDefinition("ambiguity_detection", List.of("requirement_normalization"),
+                        AmbiguityDetectionStage::run, false, false, 0, 30, null, null, null),
+                new StageDefinition("human_clarification", List.of("ambiguity_detection"),
+                        HumanClarificationStage::run, true, false, 0, 30, null, "ambiguity_gate", null),
+                new StageDefinition("decomposition", List.of("human_clarification"), DecompositionStage::run,
+                        false, false, 0, 30, null, null, null),
+                new StageDefinition("design", List.of("decomposition"), DesignStage::run,
+                        false, true, 0, 30, null, null, null),
+                new StageDefinition("implementation", List.of("design"), ImplementationStage::run,
+                        false, false, 0, 30, null, null, null),
+                new StageDefinition("testing", List.of("implementation"), TestingStage::run,
+                        false, false, 0, 30, "verify", null, null),
+                new StageDefinition("security", List.of("implementation"), SecurityStage::run,
+                        false, false, 0, 30, "verify", null, null),
+                new StageDefinition("documentation", List.of("implementation"), DocumentationStage::run,
+                        false, false, 0, 30, "verify", null, null),
+                new StageDefinition("release_readiness", List.of("testing", "security", "documentation"),
+                        ReleaseReadinessStage::run, false, true, 0, 30, null, null, null),
+                new StageDefinition("final_engineering_summary", List.of("release_readiness"),
+                        FinalSummaryStage::run, false, false, 0, 30, null, null, null)
+        );
+    }
+
     @Test
-    void ambiguousRequirementSuspendsThenReplansThenResumes() {
-        StageHandler requirement = ctx -> {
-            ctx.recordDecision("agent", "ambiguity_detected",
-                    "'add rate limiting' has no numeric target; REQ-0NN requires an approved assumption");
-            Map<String, Object> result = new java.util.HashMap<>();
-            result.put("ambiguityDetected", true);
-            result.put("reason", "missing numeric rate-limit target");
-            return result;
-        };
-        StageHandler oldDecomposition = ctx -> Map.of("shouldNotRun", true);
-
-        List<StageDefinition> stages = List.of(
-                new StageDefinition("requirement", List.of(), requirement, false, true, 0, 30, null),
-                StageDefinition.of("decomposition", List.of("requirement"), oldDecomposition));
-
-        WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository);
-        String workflowId = engine.submit("add-rate-limiting", stages, "scn-c-1");
+    void ambiguousRequirementSuspendsAtHumanClarificationThenDecompositionUsesTheResolution() {
+        WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository,
+                approvalRepository, null, null, null, null, ambiguousCatalog());
+        String workflowId = engine.submit("add rate limiting", ambiguousStages(), "scn-c-1");
 
         WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
-        assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.PENDING_APPROVAL); // decomposition has NOT run
+        assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.PENDING_APPROVAL);
+        WorkflowStepEntity clarificationStep = stepRepository
+                .findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "human_clarification").orElseThrow();
+        assertThat(clarificationStep.getStatus()).isEqualTo(StepStatus.WAITING_APPROVAL);
+        WorkflowStepEntity decompStepBefore = stepRepository
+                .findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "decomposition").orElseThrow();
+        assertThat(decompStepBefore.getStatus()).isEqualTo(StepStatus.PENDING); // has NOT run
 
-        java.util.concurrent.atomic.AtomicBoolean ran = new java.util.concurrent.atomic.AtomicBoolean(false);
-        StageHandler newDecomposition = ctx -> {
-            ctx.recordDecision("agent", "decomposition_finalized", "uses rate limit of 100 req/min/IP, the now-approved value");
-            ran.set(true);
-            return Map.of();
-        };
-
-        engine.replan(workflowId, "decomposition",
-                List.of(StageDefinition.of("decomposition_v2", List.of("requirement"), newDecomposition)),
-                "human", "rate limit set to 100 req/min/IP per REQ-0NN assumption");
-        engine.approve(workflowId, "requirement", "approved", "human",
+        engine.approve(workflowId, "human_clarification", "approved", "human",
                 "rate limit set to 100 req/min/IP per REQ-0NN assumption");
 
         instance = instanceRepository.findById(workflowId).orElseThrow();
         assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.COMPLETED);
+
+        WorkflowStepEntity decompStep = stepRepository
+                .findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "decomposition").orElseThrow();
+        assertThat(decompStep.getResult()).containsEntry("clarifiedRequirement",
+                "rate limit set to 100 req/min/IP per REQ-0NN assumption");
+        // Not merely "an approval exists" — decomposition's own persisted output demonstrably used it.
+    }
+
+    @Test
+    void humanCanReplanDecompositionWhileClarificationIsStillPending() {
+        WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository,
+                approvalRepository, null, null, null, null, ambiguousCatalog());
+        String workflowId = engine.submit("add rate limiting", ambiguousStages(), "scn-c-2");
+
+        java.util.concurrent.atomic.AtomicBoolean ran = new java.util.concurrent.atomic.AtomicBoolean(false);
+        StageHandler decompositionV2 = ctx -> {
+            ran.set(true);
+            ctx.recordDecision("agent", "decomposition_finalized",
+                    "rate limiting deferred to a follow-up ticket; this workflow only adds request logging");
+            return Map.of("decomposed", true, "deferred", true);
+        };
+
+        // replan-before-approve: approve() synchronously resumes, so decomposition_v2 must
+        // already be registered by the time it's called.
+        engine.replan(workflowId, "decomposition",
+                List.of(new StageDefinition("decomposition_v2", List.of("human_clarification"), decompositionV2,
+                        false, false, 0, 30, null, null, null)),
+                "human", "narrowed scope to logging-only after clarification discussion");
+        engine.approve(workflowId, "human_clarification", "approved", "human",
+                "rate limiting deferred; logging-only for this iteration");
+
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.COMPLETED);
         assertThat(ran.get()).isTrue();
+
+        WorkflowStepEntity oldDecomp = stepRepository
+                .findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "decomposition").orElseThrow();
+        assertThat(oldDecomp.getStatus()).isEqualTo(StepStatus.INVALIDATED);
 
         List<String> events = eventRepository.findByWorkflowIdOrderById(workflowId).stream()
                 .map(WorkflowEventEntity::getAction).toList();
-        int ambiguityIdx = indexOfPrefix(events, "ambiguity_detected");
         int replannedIdx = events.indexOf("replanned");
         int approvedIdx = indexOfPrefix(events, "approval_approved");
-        assertThat(ambiguityIdx).isLessThan(replannedIdx);
         assertThat(replannedIdx).isLessThan(approvedIdx);
     }
 
@@ -4684,24 +5298,23 @@ class AmbiguousScenarioTest {
     }
 }
 ```
-- [ ] **Step 2: Run to confirm failure** — `AssertionError` from `indexOfPrefix`: no `ambiguity_detected:*` audit event exists yet, since a generic `stage_succeeded:<name>` event is all `runStage` currently records.
-- [ ] **Step 3: Implement** — one small, generic addition to `runStage` (reusable by any future stage, not scenario-specific beyond checking one well-defined result key): immediately after a handler returns successfully, if the result map's `"ambiguityDetected"` entry is `true`, record an additional audit event before the generic success event:
-```java
-// WorkflowEngine.java — runStage, insert immediately after the retry loop succeeds
-// (i.e., right after `if (!succeeded) { ... }` and before the policy-enforcement block)
-if (Boolean.TRUE.equals(result != null ? result.get("ambiguityDetected") : null)) {
-    recordEvent(workflowId, "agent", "ambiguity_detected:" + stage.name(), "DETECTED",
-            result.get("reason") != null ? result.get("reason").toString() : null);
-}
-```
-  No other engine change is needed: `exitApproval` (Task 23), context persistence (Task 24), and the `blocked`-batch re-halt + `replan()` (Task 35) already compose to produce exactly this scenario's behavior.
-- [ ] **Step 4: Run to confirm pass** — PASS. Hand-trace the event order: `submit()` → `requirement` runs → `ambiguity_detected:requirement` event, then `stage_succeeded:requirement` event → exit gate halts (`PENDING_APPROVAL`). `replan()` → `replanned` event. `approve("approved")` → `approval_approved:requirement` event → `runFrom` resumes → batch `[requirement]` not blocked, not pending → batch `[decomposition(INVALIDATED), decomposition_v2(PENDING)]` → `decomposition_v2` runs → `stage_succeeded:decomposition_v2` → workflow `COMPLETED`. Order in the events table: `ambiguity_detected` < `replanned` < `approval_approved` ✓.
-- [ ] **Step 5:** Write `docs/scenarios/ambiguous.md` per the guide's 17-point required evidence list (Section 20): original ambiguous input, detected ambiguity, classification/severity, affected requirements, workflow state before/after, human clarification request text, recorded human decision, updated assumption, downstream impact analysis, replanning event, invalidated/regenerated artifacts, resumed state, final validation, audit trail excerpt, terminal outcome.
-- [ ] **Step 6: Commit** — `git commit -m "test(scenarios): validate ambiguous requirement workflow"`
+- [ ] **Step 2: Run to confirm failure** — `decompStep.getResult()` doesn't contain
+  `clarifiedRequirement`; `DecompositionStage` doesn't read the resolution artifact yet (it is
+  written in Task 39 exactly as this test needs — if Task 39 was implemented as specified, this is
+  the confirmation test, not new production code).
+- [ ] **Step 3: Implement** — no new production code: this task is validation-only against Task 39's
+  `DecompositionStage` (already reads `ctx.artifacts().get("human_clarificationResolution")`) and
+  Task 50's `WorkflowEngine.approve()`/`replan()` (already write that artifact and support
+  replan-before-approve). If either test fails, the defect is in one of those two tasks, not here.
+- [ ] **Step 4: Run to confirm pass** — PASS
+- [ ] **Step 5:** Write `docs/scenarios/ambiguous.md` per the guide's 17-point required evidence list
+  (Section 20): original ambiguous input, detected ambiguity (`AmbiguityDetectionStage`'s recorded
+  decision), classification/severity, affected requirements, workflow state before/after, human
+  clarification request text, recorded human decision, updated assumption, downstream impact
+  (`decomposition`'s `clarifiedRequirement` field), replanning event (from the second test), invalidated/
+  regenerated artifacts, resumed state, final validation, audit trail excerpt, terminal outcome.
+- [ ] **Step 6: Commit** — `git commit -m "test(scenarios): validate ambiguous-requirement workflow's clarification fold-in and replanning"`
 
----
-
-## Phase 10 — Cross-Scenario Evidence Review, Documentation, Traceability
 
 ### Task 42: Three-Scenario Evidence Review (self-audit, no file modification)
 
@@ -4779,16 +5392,30 @@ if (Boolean.TRUE.equals(result != null ? result.get("ambiguityDetected") : null)
 ## Phase 12 — Post-Task-10 Corrective Design Round (2026-09-13)
 
 **Why this section exists, and why it's an addendum rather than an edit to Tasks 20–41 in place:**
-three rounds of pre-implementation review (this plan's own Task 10 analysis, and two rounds of an
-external Codex review — see `codex-recommend.md` and `CODEX-REVIEW-BRIEFING.md` Section 9 in the
-repo, outside this plan file) found real, confirmed design gaps discovered *before any code was
-written* — which is exactly what a pre-implementation gate is for. Rather than silently rewriting
-Tasks 20, 23, 24, 34, 37, 39, 40, 41 in place (erasing the record of what was originally designed
-and why it changed), this section is the corrective design, and each affected original task gets a
-one-line pointer added to it saying "superseded by Phase 12, Task N below — see there for the
-reason." This preserves the plan's own history-preservation convention (never delete the record of
-what was asked/designed, append the correction alongside it) applied to itself, not just to
-`spec.md`.
+four rounds of pre-implementation review (this plan's own Task 10 analysis, and three rounds of an
+external Codex review — see `codex-recommend.md` and `CODEX-REVIEW-BRIEFING.md` in the repo, outside
+this plan file) found real, confirmed design gaps discovered *before any code was written* — which
+is exactly what a pre-implementation gate is for. For Tasks 20, 23, 24, 34, and 37, this section
+remains an addendum: each of those originals kept its content, with a one-line pointer added saying
+"superseded by Phase 12, Task N below — see there for the reason," preserving the plan's own
+history-preservation convention (never delete the record of what was asked/designed, append the
+correction alongside it).
+
+**Tasks 39, 40, and 41 are the one deliberate exception, corrected 2026-09-13 in the fourth review
+round.** Because no code exists yet for any of the three scenarios, the fourth review's explicit
+instruction was to write those three tasks directly in authoritative final form rather than build an
+obsolete version and layer a pointer on top of it — there is no implementation history to preserve
+for code that was never built. Tasks 49–51 below therefore no longer modify `RequirementStage.java`
+or extend `GreenfieldScenarioTest`/`BrownfieldScenarioTest`/`AmbiguousScenarioTest` in place; Task 51
+and Task 52 are retained only as short historical markers explaining what they used to cover and
+where it moved (into Tasks 39, 40, and 41 directly). This also fixes a genuine ordering defect the
+fourth review caught: Task 51 (as originally written) modified files that Task 39 alone creates,
+while sitting, in this document, after Task 48 — i.e. after every task that could ever reach it.
+Tasks 49 (`StageCatalog`) and 50 (the consolidated `WorkflowEngine`) still hold real, non-duplicated
+content that Tasks 39–41 depend on; each of those two tasks' bodies now carries an explicit
+**Execution order note** stating that Tasks 49 and 50 must be implemented before Task 39, even
+though this document, for narrative continuity with the review round that produced them, lists them
+later.
 
 **Scope of this round, confirmed real by direct inspection before any fix was proposed:**
 1. `spec.md`'s SCN-B requires 7 genuinely parallel impact-analysis branches joined by a mandatory
@@ -4811,36 +5438,208 @@ the `entryApproval`/`exitApproval` gate mechanism itself, the `blocked`-batch re
 replan-before-approve ordering, the policy PASS/FAIL/EXCEPTION_REQUESTED/NOT_APPLICABLE model, and
 every already-Accepted ADR's decision. This round adds capability; it does not revisit those.
 
-### Task 49: Conditional stage activation — `WorkflowEngine.registerActivationCondition`
+### Task 49: `StageCatalog` — restart-safe handler/condition/fallback lookup by stable key
 
-**Design constraint driving this task's shape:** `StageDefinition` is a Java `record` already
-constructed positionally in 15+ places across Tasks 20–41. Adding a field to the record would
-break every existing call site for a capability only two stages (Human clarification, and SCN-C's
-`requirement`-stage predecessor) actually need. Instead of touching the record, this task adds an
-**optional, additive side-channel** on `WorkflowEngine` itself: a stage name that has no registered
-condition is always active (today's behavior, unchanged); a stage name with a registered condition
-is evaluated against the current `WorkflowContext` when its batch is reached, and marked `SKIPPED`
-(satisfying its dependents' preconditions without running) if the condition is false.
+**Revises the original Task 49 (2026-09-13 first pass) after a fourth review correctly identified
+that the first pass's design — `registerActivationCondition`/`registerFallback` storing Java
+`Predicate`/`StageHandler` objects directly on the live `WorkflowEngine` instance, and the
+pre-existing `WorkflowEngine._registry` static in-memory map storing each workflow's
+`List<StageDefinition>` — cannot survive a process restart. A fresh JVM has an empty static map and
+empty registration maps; `runFrom(workflowId)` on that fresh instance has nothing to look up. This
+directly contradicts REQ-017 (resumption) and the now-binding REQ-028 5-second recovery-time
+objective. Java lambdas/`Predicate` objects are never persisted — the fix is a stable-string-key
+indirection layer plus real persisted configuration, not a smarter cache.**
+
+**Design:** `StageDefinition` gains two more fields (a real change to the record's shape, not an
+additive side-channel this time — the earlier "avoid touching the record" decision doesn't survive
+contact with a real restart requirement, and is superseded here, disclosed, not silently reversed):
+`String activationConditionKey` and `String fallbackHandlerKey` (both nullable, `null` by default
+via `.of()`). These are stable string identifiers, not Java objects. `WorkflowStepEntity` gains
+persisted columns for `entryApproval`, `exitApproval`, `maxRetries`, `timeoutSeconds`,
+`parallelGroup`, `activationConditionKey`, `fallbackHandlerKey` — the stage's *handler* is looked up
+by `WorkflowStepEntity.name` itself (one handler per stage name, already true throughout this
+design; no separate handler-key column needed). A `StageCatalog` maps these stable keys to the
+actual Java implementations, populated once (at test-construction time in tests; at Spring context
+startup in the real application, via a `@Configuration` class listing every known stage class — out
+of this plan's scope to fully wire, since it's an application-composition-root concern, not an
+orchestration-engine concern; tests construct their own small catalogs directly).
 
 **Files:**
-- Modify: `src/main/java/com/schwab/urlshortener/orchestration/WorkflowEngine.java` (add
-  `Map<String, Predicate<WorkflowContext>> activationConditions` field, defaulting to an empty
-  `HashMap`; add `public void registerActivationCondition(String stageName, Predicate<WorkflowContext> condition)`;
-  modify `runFrom`'s batch loop to check the condition, if any, before the existing entry-gate
-  check)
-- Test: `src/test/java/com/schwab/urlshortener/orchestration/ConditionalActivationTest.java`
+- Modify: `src/main/java/com/schwab/urlshortener/orchestration/StageDefinition.java` (add the two
+  key fields)
+- Create: `src/main/java/com/schwab/urlshortener/orchestration/StageCatalog.java`
+- Modify: `src/main/java/com/schwab/urlshortener/orchestration/persistence/WorkflowStepEntity.java`
+  (add the seven columns above)
+- Modify: `src/main/java/com/schwab/urlshortener/orchestration/persistence/WorkflowStepJpaRepository.java`
+  (add `List<WorkflowStepEntity> findByWorkflowIdAndPlanVersion(String, int)` — used for full-graph
+  reconstruction; keep the existing `findByWorkflowIdAndPlanVersionAndName`/`...AndNameIn` from
+  Task 21/this round's Task 52)
+- Test: `src/test/java/com/schwab/urlshortener/orchestration/StageCatalogTest.java`
 
 **Interfaces:**
-- Produces: `WorkflowEngine.registerActivationCondition(String, Predicate<WorkflowContext>)`.
-  Called after constructing the engine, before `submit()`. A stage with no registered condition is
-  always active (backward-compatible default).
+- `record StageDefinition(String name, List<String> dependsOn, StageHandler handler, boolean entryApproval, boolean exitApproval, int maxRetries, int timeoutSeconds, String parallelGroup, String activationConditionKey, String fallbackHandlerKey)`,
+  `static StageDefinition of(String name, List<String> dependsOn, StageHandler handler)` — the
+  common-case factory now defaults both new fields to `null` in addition to its existing defaults.
+  **Every existing full-positional `new StageDefinition(...)` call site across Tasks 20–41 needs two
+  more trailing `null` arguments** — a mechanical, verified-by-compilation change (there is no
+  runtime behavior difference for a stage that doesn't use either key).
+- `class StageCatalog { StageHandler handlerFor(String stageName); Optional<Predicate<WorkflowContext>> activationConditionFor(String key); Optional<StageHandler> fallbackFor(String key); }`,
+  constructed from three maps: `Map<String,StageHandler> handlersByStageName`,
+  `Map<String,Predicate<WorkflowContext>> activationConditionsByKey`,
+  `Map<String,StageHandler> fallbacksByKey`. `handlerFor` throws `IllegalStateException` for an
+  unknown stage name (a configuration error, not a runtime condition to recover from).
 
 - [ ] **Step 1: Write failing test**
 ```java
-// src/test/java/com/schwab/urlshortener/orchestration/ConditionalActivationTest.java
+// src/test/java/com/schwab/urlshortener/orchestration/StageCatalogTest.java
+package com.schwab.urlshortener.orchestration;
+
+import java.util.Map;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+class StageCatalogTest {
+
+    @Test
+    void looksUpHandlerConditionAndFallbackByStableKey() {
+        StageHandler handler = ctx -> Map.of("ran", true);
+        StageHandler fallback = ctx -> Map.of("degraded", true);
+        StageCatalog catalog = new StageCatalog(
+                Map.of("my_stage", handler),
+                Map.of("ambiguity_gate", (java.util.function.Predicate<WorkflowContext>) ctx -> true),
+                Map.of("doc_fallback", fallback));
+
+        assertThat(catalog.handlerFor("my_stage")).isSameAs(handler);
+        assertThat(catalog.activationConditionFor("ambiguity_gate")).isPresent();
+        assertThat(catalog.activationConditionFor("nonexistent_key")).isEmpty();
+        assertThat(catalog.fallbackFor("doc_fallback")).contains(fallback);
+        assertThatThrownBy(() -> catalog.handlerFor("unknown_stage"))
+                .isInstanceOf(IllegalStateException.class);
+    }
+}
+```
+- [ ] **Step 2: Run to confirm failure** — compile error, `StageCatalog` doesn't exist.
+- [ ] **Step 3: Implement**
+```java
+// src/main/java/com/schwab/urlshortener/orchestration/StageCatalog.java
+package com.schwab.urlshortener.orchestration;
+
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.Predicate;
+
+public final class StageCatalog {
+    private final Map<String, StageHandler> handlersByStageName;
+    private final Map<String, Predicate<WorkflowContext>> activationConditionsByKey;
+    private final Map<String, StageHandler> fallbacksByKey;
+
+    public StageCatalog(Map<String, StageHandler> handlersByStageName,
+                         Map<String, Predicate<WorkflowContext>> activationConditionsByKey,
+                         Map<String, StageHandler> fallbacksByKey) {
+        this.handlersByStageName = Map.copyOf(handlersByStageName);
+        this.activationConditionsByKey = Map.copyOf(activationConditionsByKey);
+        this.fallbacksByKey = Map.copyOf(fallbacksByKey);
+    }
+
+    public StageHandler handlerFor(String stageName) {
+        StageHandler handler = handlersByStageName.get(stageName);
+        if (handler == null) {
+            throw new IllegalStateException("no handler registered for stage: " + stageName);
+        }
+        return handler;
+    }
+
+    public Optional<Predicate<WorkflowContext>> activationConditionFor(String key) {
+        return Optional.ofNullable(key).map(activationConditionsByKey::get);
+    }
+
+    public Optional<StageHandler> fallbackFor(String key) {
+        return Optional.ofNullable(key).map(fallbacksByKey::get);
+    }
+}
+```
+  Add the two fields to `StageDefinition`'s record declaration and to `.of(...)`'s defaults (both
+  `null`). Add the seven columns to `WorkflowStepEntity` (four `boolean`/`int` primitives, one
+  nullable `String parallelGroup` already existed conceptually but wasn't yet a persisted column —
+  add it now — plus two nullable `String` key columns). Add
+  `findByWorkflowIdAndPlanVersion(String, int)` to the repository (a zero-code Spring Data derived
+  query).
+- [ ] **Step 4: Run to confirm pass** — PASS
+- [ ] **Step 5: Commit** — `git commit -m "feat(orchestration): add StageCatalog for restart-safe handler/condition/fallback lookup"`
+
+### Task 50: Consolidated, restart-safe, plan-version-safe `WorkflowEngine`
+
+**This is the authoritative final form of `WorkflowEngine.submit`/`runFrom`/`runStage`/`approve`/
+`replan` and their helper methods, superseding every incremental version shown in Tasks 22, 23, 24,
+28, 29, 33, 34, 35 and the original (now-revised) Tasks 49/50. Implement the version below; the
+earlier versions were pedagogically incremental (each showing one capability landing at a time) —
+this task is where they converge into what actually gets built.** This also folds in the fallback
+subsystem (`SUCCEEDED_WITH_FALLBACK`, previously drafted in the original Task 50) and the human-
+clarification decision-flow fix (finding 5 of the fourth review).
+
+**What changes structurally, and why:**
+1. **No more static `_registry`.** `runFrom` reconstructs `List<StageDefinition>` from persisted
+   `WorkflowStepEntity` rows (via `StageCatalog` for the handler/condition/fallback lookups) on
+   *every call*, not from an in-memory cache. This makes the engine genuinely stateless across
+   process restarts — the fix is not "make the cache survive," it's "don't need a cache."
+2. **Every step/approval lookup is scoped to `(workflowId, planVersion, name)`**, using
+   `findByWorkflowIdAndPlanVersionAndName`/`...AndNameIn`/`...AndPlanVersion` throughout — never the
+   bare `findByWorkflowIdAndName` shown in earlier tasks' code blocks. `planVersion` is read once
+   per `runFrom` call from the `WorkflowInstanceEntity` and threaded through as a plain parameter to
+   every private helper — it is not re-derived redundantly at each call site.
+3. **`approve()` writes the decision's `reason` into `WorkflowContext.artifacts()`** under
+   `"<stepName>Resolution"` before resuming — a generic mechanism (works for any approval-gated
+   stage, not a `human_clarification`-specific hack), so a downstream stage's handler can read what
+   was decided, not merely that *something* was approved.
+4. **A `resumeAll()` method**, callable from application startup (or directly from a test
+   simulating a restart), queries every non-terminal `WorkflowInstanceEntity` and calls `runFrom`
+   for each — this is the concrete mechanism a restart test exercises.
+
+**Files:**
+- Modify: `src/main/java/com/schwab/urlshortener/orchestration/WorkflowEngine.java` (full
+  replacement of `submit`, `runFrom`, `runStage`, `approve`, `replan`, and all private helpers)
+- Test: `src/test/java/com/schwab/urlshortener/orchestration/WorkflowEngineRestartTest.java`,
+  `src/test/java/com/schwab/urlshortener/orchestration/FallbackTest.java`
+
+**Interfaces:**
+- `WorkflowEngine(WorkflowInstanceJpaRepository, WorkflowStepJpaRepository, WorkflowEventJpaRepository, ApprovalJpaRepository, PolicyEvaluationJpaRepository, PolicyExceptionJpaRepository, CompensationRegistry, StageCatalog)`
+  — yes, a ninth constructor parameter, on top of the already-tracked "replace with a builder"
+  backlog item (Task 33's note). This one is not cosmetic: `StageCatalog` is load-bearing for
+  restart safety, not optional. Existing tests using fewer-parameter overloads need a
+  `null`-tolerant overload chain exactly as established since Task 22 (each overload delegates to
+  the next with a sensible default — `null` `StageCatalog` is **not** a safe default, since nearly
+  every stage needs handler lookup; provide a convenience overload only for the
+  all-primitive-no-catalog-needed tests that predate this task, defaulting to
+  `new StageCatalog(Map.of(), Map.of(), Map.of())` plus **inline stage handlers already present in
+  the submitted `StageDefinition` objects** — see implementation note below for how `runFrom`
+  reconciles "catalog has it" vs. "the submitted definition already carried a real handler
+  reference in the same process" so pre-existing tests that never registered anything in a catalog
+  keep passing without modification).
+- `WorkflowEngine.resumeAll()` — queries all `WorkflowInstanceEntity` with status in
+  `{RUNNING, PENDING_APPROVAL, REPLANNING}` and calls `runFrom(instance.getId())` for each.
+
+**Implementation note on backward compatibility with pre-Task-49 tests:** every test written in
+Tasks 22–41 constructs `StageDefinition` with a **real, in-process `StageHandler` reference**
+(a lambda or method reference) directly in the test — it never relied on catalog lookup. To avoid
+rewriting dozens of already-specified tests, `runFrom`'s reconstruction step tries the catalog
+first (`catalog.handlerFor(row.getName())`) and, **only if the catalog has no such entry
+registered**, falls back to using the handler already present on the in-memory `StageDefinition`
+object passed to `submit()` for that same call (kept in a short-lived, per-call, non-static local
+map populated at the top of `submit()` and consulted only within the same `submit()` call's
+synchronous execution — this is not a restart-surviving cache, it exists solely so `submit()`
+followed immediately by execution in the same test/process doesn't require every test to also
+construct a `StageCatalog`). **The restart test below constructs a real `StageCatalog` and
+deliberately does not rely on this fallback**, proving the catalog path specifically.
+
+- [ ] **Step 1: Write failing test**
+```java
+// src/test/java/com/schwab/urlshortener/orchestration/WorkflowEngineRestartTest.java
 package com.schwab.urlshortener.orchestration;
 
 import com.schwab.urlshortener.orchestration.persistence.*;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -4850,7 +5649,7 @@ import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import static org.assertj.core.api.Assertions.assertThat;
 
 @DataJpaTest
-class ConditionalActivationTest {
+class WorkflowEngineRestartTest {
 
     @Autowired private WorkflowInstanceJpaRepository instanceRepository;
     @Autowired private WorkflowStepJpaRepository stepRepository;
@@ -4858,111 +5657,455 @@ class ConditionalActivationTest {
     @Autowired private ApprovalJpaRepository approvalRepository;
 
     @Test
-    void stageWithFalseConditionIsSkippedNotRun() {
-        StageHandler shouldNotRun = ctx -> { throw new AssertionError("must not run"); };
+    void interruptedWorkflowResumesFromAFreshEngineInstanceWithEmptyRuntimeState() {
+        StageHandler slowStep = ctx -> { throw new com.schwab.urlshortener.reliability.TransientStageException("simulated crash before this attempt persists success"); };
+        StageHandler after = ctx -> Map.of("done", true);
+
+        StageCatalog catalog = new StageCatalog(
+                Map.of("first", slowStep, "second", after),
+                Map.of(), Map.of());
+
+        // "Original" engine instance: submit, let "first" exhaust its retries and safe-stop
+        // (simulating a crash mid-run is modeled here as a real safe-stop rather than literally
+        // killing the JVM, which a unit test cannot do — the assertion that matters is the SECOND
+        // engine instance, constructed fresh with no shared in-memory state, correctly resuming).
+        WorkflowEngine original = new WorkflowEngine(instanceRepository, stepRepository,
+                eventRepository, approvalRepository, null, null, null, null, catalog);
         List<StageDefinition> stages = List.of(
-                StageDefinition.of("gate_check", List.of(), ctx -> Map.of()),
-                StageDefinition.of("conditional_stage", List.of("gate_check"), shouldNotRun),
-                StageDefinition.of("after", List.of("conditional_stage"), ctx -> Map.of()));
+                new StageDefinition("first", List.of(), slowStep, false, false, 0, 5, null, null, null),
+                new StageDefinition("second", List.of("first"), after, false, false, 0, 5, null, null, null));
+        String workflowId = original.submit("demo", stages, "run-restart-1");
 
-        WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository);
-        engine.registerActivationCondition("conditional_stage", ctx -> false);
+        WorkflowStepEntity firstStep = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "first").orElseThrow();
+        assertThat(firstStep.getStatus()).isEqualTo(StepStatus.SAFE_STOPPED);
 
-        String workflowId = engine.submit("demo", stages, "run-cond-1");
+        // Grant a policy exception isn't relevant here; simulate operator intervention by directly
+        // resetting the step to PENDING (what a real fix-and-retry operational action would do) —
+        // then construct a BRAND NEW WorkflowEngine instance (simulating a fresh process) with a
+        // fresh handler for "first" that succeeds this time, and a catalog that knows nothing this
+        // fresh instance didn't just construct:
+        firstStep.setStatus(StepStatus.PENDING);
+        firstStep.setRetryCount(0);
+        stepRepository.save(firstStep);
 
-        WorkflowStepEntity condStep = stepRepository.findByWorkflowIdAndName(workflowId, "conditional_stage").orElseThrow();
-        assertThat(condStep.getStatus()).isEqualTo(StepStatus.SKIPPED);
-        // "after" still ran, proving SKIPPED satisfies a dependent's precondition:
-        WorkflowStepEntity afterStep = stepRepository.findByWorkflowIdAndName(workflowId, "after").orElseThrow();
-        assertThat(afterStep.getStatus()).isEqualTo(StepStatus.SUCCEEDED);
+        StageHandler fixedFirst = ctx -> Map.of("recovered", true);
+        StageCatalog freshCatalog = new StageCatalog(Map.of("first", fixedFirst, "second", after), Map.of(), Map.of());
+        WorkflowEngine freshEngine = new WorkflowEngine(instanceRepository, stepRepository,
+                eventRepository, approvalRepository, null, null, null, null, freshCatalog);
+
+        Instant before = Instant.now();
+        freshEngine.runFrom(workflowId); // no submit() call — this is resumption, not re-submission
+        Instant after2 = Instant.now();
+
+        assertThat(java.time.Duration.between(before, after2).getSeconds()).isLessThan(5);
+
+        WorkflowStepEntity secondStep = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "second").orElseThrow();
+        assertThat(secondStep.getStatus()).isEqualTo(StepStatus.SUCCEEDED); // "second" ran, proving resumption continued past "first"
+        assertThat(eventRepository.findByWorkflowId(workflowId).stream().map(WorkflowEventEntity::getAction))
+                .anyMatch(a -> a.startsWith("resumed:"));
     }
 
     @Test
-    void stageWithTrueConditionRunsNormally() {
-        List<StageDefinition> stages = List.of(
-                StageDefinition.of("conditional_stage", List.of(), ctx -> Map.of("ran", true)));
-        WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository);
-        engine.registerActivationCondition("conditional_stage", ctx -> true);
-        String workflowId = engine.submit("demo", stages, "run-cond-2");
-        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndName(workflowId, "conditional_stage").orElseThrow();
-        assertThat(step.getStatus()).isEqualTo(StepStatus.SUCCEEDED);
+    void resumeAllFindsEveryNonTerminalWorkflow() {
+        StageHandler stalled = ctx -> { throw new com.schwab.urlshortener.reliability.TransientStageException("x"); };
+        StageCatalog catalog = new StageCatalog(Map.of("stalled", stalled), Map.of(), Map.of());
+        WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository,
+                eventRepository, approvalRepository, null, null, null, null, catalog);
+        String workflowId = engine.submit("demo",
+                List.of(new StageDefinition("stalled", List.of(), stalled, false, false, 0, 5, null, null, null)),
+                "run-resume-all-1");
+
+        StageCatalog freshCatalog = new StageCatalog(Map.of("stalled", (StageHandler) ctx -> Map.of()), Map.of(), Map.of());
+        WorkflowEngine freshEngine = new WorkflowEngine(instanceRepository, stepRepository,
+                eventRepository, approvalRepository, null, null, null, null, freshCatalog);
+        stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "stalled").ifPresent(s -> {
+            s.setStatus(StepStatus.PENDING); s.setRetryCount(0); stepRepository.save(s);
+        });
+
+        freshEngine.resumeAll();
+
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.COMPLETED);
     }
 }
 ```
-- [ ] **Step 2: Run to confirm failure** — compile error, no `registerActivationCondition` method.
-- [ ] **Step 3: Implement**
+- [ ] **Step 2: Run to confirm failure** — compile errors: 9-arg constructor, `runFrom` not
+  public, `resumeAll` doesn't exist, `StageDefinition`'s 10-arg constructor doesn't exist yet
+  (depends on Task 49).
+- [ ] **Step 3: Implement** — the full, final `WorkflowEngine`:
 ```java
-// WorkflowEngine.java additions
-private final Map<String, java.util.function.Predicate<WorkflowContext>> activationConditions = new java.util.HashMap<>();
+// WorkflowEngine.java — authoritative final form, supersedes every earlier version
+package com.schwab.urlshortener.orchestration;
 
-public void registerActivationCondition(String stageName, java.util.function.Predicate<WorkflowContext> condition) {
-    activationConditions.put(stageName, condition);
-}
-```
-  In `runFrom`'s per-batch loop, immediately after computing `pending` (the `PENDING`-status
-  stages for this batch) and before the existing entry-gate check, add:
-```java
-    for (StageDefinition stage : new java.util.ArrayList<>(pending)) {
-        var condition = activationConditions.get(stage.name());
-        if (condition != null && !condition.test(ctx)) {
-            WorkflowStepEntity step = stepRepository.findByWorkflowIdAndName(workflowId, stage.name()).orElseThrow();
-            step.setStatus(StepStatus.SKIPPED);
-            step.setEndedAt(Instant.now());
-            stepRepository.save(step);
-            recordEvent(workflowId, "engine", "stage_skipped:" + stage.name(), "OK", "activation condition false");
-            pending.remove(stage);
+import com.schwab.urlshortener.orchestration.persistence.*;
+import com.schwab.urlshortener.policy.PolicyEngine;
+import com.schwab.urlshortener.reliability.*;
+import java.time.Instant;
+import java.util.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+public class WorkflowEngine {
+
+    private final WorkflowInstanceJpaRepository instanceRepository;
+    private final WorkflowStepJpaRepository stepRepository;
+    private final WorkflowEventJpaRepository eventRepository;
+    private final ApprovalJpaRepository approvalRepository;
+    private final PolicyEngine policyEngine; // nullable
+    private final PolicyEvaluationJpaRepository policyEvaluationRepository; // nullable
+    private final PolicyExceptionJpaRepository policyExceptionRepository; // nullable
+    private final CompensationRegistry compensationRegistry; // nullable
+    private final StageCatalog catalog;
+
+    // Same-process, same-submit()-call convenience only (see Task 50's implementation note) —
+    // never relied upon across a process boundary, and never consulted by resumeAll()/a fresh
+    // runFrom() call on a workflow this process didn't itself just submit().
+    private final Map<String, StageHandler> inProcessHandlerFallback = new HashMap<>();
+
+    public WorkflowEngine(WorkflowInstanceJpaRepository instanceRepository,
+                           WorkflowStepJpaRepository stepRepository,
+                           WorkflowEventJpaRepository eventRepository,
+                           ApprovalJpaRepository approvalRepository,
+                           PolicyEngine policyEngine,
+                           PolicyEvaluationJpaRepository policyEvaluationRepository,
+                           PolicyExceptionJpaRepository policyExceptionRepository,
+                           CompensationRegistry compensationRegistry,
+                           StageCatalog catalog) {
+        this.instanceRepository = instanceRepository;
+        this.stepRepository = stepRepository;
+        this.eventRepository = eventRepository;
+        this.approvalRepository = approvalRepository;
+        this.policyEngine = policyEngine;
+        this.policyEvaluationRepository = policyEvaluationRepository;
+        this.policyExceptionRepository = policyExceptionRepository;
+        this.compensationRegistry = compensationRegistry;
+        this.catalog = catalog != null ? catalog : new StageCatalog(Map.of(), Map.of(), Map.of());
+    }
+
+    public String submit(String feature, List<StageDefinition> stages, String correlationId) {
+        DependencyGraph graph = new DependencyGraph(stages);
+        graph.validate();
+        String workflowId = java.util.UUID.randomUUID().toString();
+
+        WorkflowInstanceEntity instance = new WorkflowInstanceEntity();
+        instance.setId(workflowId);
+        instance.setFeature(feature);
+        instance.setStatus(WorkflowStatus.RUNNING);
+        instance.setCorrelationId(correlationId);
+        instance.setPlanVersion(1);
+        instance.setContextJson(Map.of());
+        instanceRepository.save(instance);
+
+        for (int seq = 0; seq < stages.size(); seq++) {
+            StageDefinition s = stages.get(seq);
+            WorkflowStepEntity row = new WorkflowStepEntity();
+            row.setWorkflowId(workflowId);
+            row.setPlanVersion(1);
+            row.setName(s.name());
+            row.setSequence(seq);
+            row.setStatus(StepStatus.PENDING);
+            row.setDependsOn(s.dependsOn());
+            row.setEntryApproval(s.entryApproval());
+            row.setExitApproval(s.exitApproval());
+            row.setMaxRetries(s.maxRetries());
+            row.setTimeoutSeconds(s.timeoutSeconds());
+            row.setParallelGroup(s.parallelGroup());
+            row.setActivationConditionKey(s.activationConditionKey());
+            row.setFallbackHandlerKey(s.fallbackHandlerKey());
+            stepRepository.save(row);
+            inProcessHandlerFallback.put(workflowId + "::" + s.name(), s.handler());
+        }
+        recordEvent(workflowId, "engine", "workflow_started", "OK", null);
+        runFrom(workflowId);
+        return workflowId;
+    }
+
+    /** Reconstructs the stage list from persisted state + the catalog and resumes execution.
+     * Safe to call on a workflow this process never submitted — this is the restart path. */
+    public void runFrom(String workflowId) {
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        int planVersion = instance.getPlanVersion();
+        List<WorkflowStepEntity> rows = stepRepository.findByWorkflowIdAndPlanVersion(workflowId, planVersion);
+
+        List<StageDefinition> stages = rows.stream()
+                .filter(r -> r.getStatus() != StepStatus.INVALIDATED)
+                .map(r -> new StageDefinition(r.getName(), r.getDependsOn(),
+                        resolveHandler(workflowId, r.getName()),
+                        r.isEntryApproval(), r.isExitApproval(), r.getMaxRetries(),
+                        r.getTimeoutSeconds(), r.getParallelGroup(),
+                        r.getActivationConditionKey(), r.getFallbackHandlerKey()))
+                .toList();
+        DependencyGraph graph = new DependencyGraph(stages);
+
+        WorkflowContext ctx = new WorkflowContext(instance.getCorrelationId(),
+                new ArrayList<>((List<Map<String,Object>>) instance.getContextJson().getOrDefault("decisions", List.of())),
+                new HashMap<>((Map<String,Object>) instance.getContextJson().getOrDefault("artifacts", Map.of())));
+        // Seeds the originally-submitted requirement text so stage handlers (e.g.
+        // RequirementIngestionStage, Task 39) can read it without a caller-supplied ctx.
+        ctx.artifacts().putIfAbsent("feature", instance.getFeature());
+
+        boolean resuming = rows.stream().anyMatch(r -> r.getStartedAt() != null);
+        if (resuming) {
+            recordEvent(workflowId, "engine", "resumed:" + workflowId, "OK", "runFrom invoked on a workflow with prior execution history");
+        }
+
+        for (List<StageDefinition> batch : graph.topologicalBatches()) {
+            List<StageDefinition> blocked = batch.stream()
+                    .filter(s -> stepStatus(workflowId, planVersion, s.name()) == StepStatus.WAITING_APPROVAL
+                            && !isApproved(workflowId, planVersion, s.name()))
+                    .toList();
+            if (!blocked.isEmpty()) {
+                instance.setStatus(WorkflowStatus.PENDING_APPROVAL);
+                persistContext(instance, ctx);
+                return;
+            }
+
+            List<StageDefinition> pending = batch.stream()
+                    .filter(s -> stepStatus(workflowId, planVersion, s.name()) == StepStatus.PENDING)
+                    .toList();
+            if (pending.isEmpty()) continue;
+
+            // Conditional activation (Task 51's predecessor design, unchanged in spirit):
+            List<StageDefinition> toSkip = new ArrayList<>();
+            for (StageDefinition s : pending) {
+                Optional<java.util.function.Predicate<WorkflowContext>> cond = catalog.activationConditionFor(s.activationConditionKey());
+                if (cond.isPresent() && !cond.get().test(ctx)) {
+                    markSkipped(workflowId, planVersion, s.name());
+                    toSkip.add(s);
+                }
+            }
+            List<StageDefinition> active = new ArrayList<>(pending);
+            active.removeAll(toSkip);
+            if (active.isEmpty()) continue;
+
+            // Entry gate:
+            for (StageDefinition s : active) {
+                if (s.entryApproval() && !isApproved(workflowId, planVersion, s.name())) {
+                    enterPendingApproval(workflowId, planVersion, s.name());
+                    instance.setStatus(WorkflowStatus.PENDING_APPROVAL);
+                    persistContext(instance, ctx);
+                    return;
+                }
+            }
+
+            try (ExecutorService pool = Executors.newFixedThreadPool(Math.max(1, active.size()))) {
+                List<java.util.concurrent.Future<?>> futures = new ArrayList<>();
+                for (StageDefinition s : active) {
+                    futures.add(pool.submit(() -> runStage(workflowId, planVersion, s, ctx)));
+                }
+                for (var f : futures) {
+                    try { f.get(); } catch (Exception e) { throw new RuntimeException(e); }
+                }
+            }
+            persistContext(instance, ctx);
+
+            for (StageDefinition s : active) {
+                StepStatus status = stepStatus(workflowId, planVersion, s.name());
+                boolean completedNormally = status == StepStatus.SUCCEEDED || status == StepStatus.SUCCEEDED_WITH_FALLBACK;
+                if (s.exitApproval() && completedNormally && !isApproved(workflowId, planVersion, s.name())) {
+                    enterPendingApproval(workflowId, planVersion, s.name());
+                    instance.setStatus(WorkflowStatus.PENDING_APPROVAL);
+                    persistContext(instance, ctx);
+                    return;
+                }
+            }
+        }
+
+        instance.setStatus(WorkflowStatus.COMPLETED);
+        persistContext(instance, ctx);
+        recordEvent(workflowId, "engine", "workflow_completed", "OK", null);
+    }
+
+    /** Application-startup (or restart-test) entry point: resumes every workflow this process
+     * didn't necessarily submit itself. */
+    public void resumeAll() {
+        for (WorkflowInstanceEntity instance : instanceRepository.findAll()) {
+            if (instance.getStatus() == WorkflowStatus.RUNNING
+                    || instance.getStatus() == WorkflowStatus.PENDING_APPROVAL
+                    || instance.getStatus() == WorkflowStatus.REPLANNING) {
+                runFrom(instance.getId());
+            }
         }
     }
+
+    private StageHandler resolveHandler(String workflowId, String stageName) {
+        try {
+            return catalog.handlerFor(stageName);
+        } catch (IllegalStateException notInCatalog) {
+            StageHandler fallback = inProcessHandlerFallback.get(workflowId + "::" + stageName);
+            if (fallback == null) {
+                throw new IllegalStateException(
+                        "no handler for stage " + stageName + " in the catalog, and none submitted in-process either");
+            }
+            return fallback;
+        }
+    }
+
+    private void runStage(String workflowId, int planVersion, StageDefinition stage, WorkflowContext ctx) {
+        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, planVersion, stage.name()).orElseThrow();
+        step.setStatus(StepStatus.RUNNING);
+        step.setStartedAt(Instant.now());
+        stepRepository.save(step);
+
+        Map<String, Object> result = null;
+        boolean succeeded = false;
+        for (int attempt = 0; attempt <= stage.maxRetries(); attempt++) {
+            try {
+                result = TimeoutExecutor.withTimeout(stage.handler(), stage.timeoutSeconds() * 1000L).run(ctx);
+                succeeded = true;
+                break;
+            } catch (PermanentStageException e) {
+                break;
+            } catch (TransientStageException | StageTimeoutException e) {
+                step.setRetryCount(step.getRetryCount() + 1);
+                stepRepository.save(step);
+                if (attempt == stage.maxRetries()) break;
+            }
+        }
+
+        if (succeeded) {
+            step.setStatus(StepStatus.SUCCEEDED);
+            step.setEndedAt(Instant.now());
+            step.setResult(result != null ? result : Map.of());
+            stepRepository.save(step);
+            recordEvent(workflowId, "agent", "stage_succeeded:" + stage.name(), "OK", null);
+            evaluatePolicyIfConfigured(workflowId, stage, ctx, step);
+            return;
+        }
+
+        // Retries exhausted (or a permanent failure on the first attempt). Fallback next, per the
+        // fourth review's required ordering: fallback attempted before compensation, itself
+        // timeout-wrapped, never itself retried.
+        Optional<StageHandler> fallback = catalog.fallbackFor(stage.fallbackHandlerKey());
+        if (fallback.isPresent()) {
+            recordEvent(workflowId, "engine", "fallback_started:" + stage.name(), "OK",
+                    "primary handler exhausted retries or failed permanently");
+            try {
+                Map<String, Object> fallbackResult = TimeoutExecutor.withTimeout(fallback.get(), stage.timeoutSeconds() * 1000L).run(ctx);
+                step.setStatus(StepStatus.SUCCEEDED_WITH_FALLBACK);
+                step.setEndedAt(Instant.now());
+                step.setResult(fallbackResult != null ? fallbackResult : Map.of());
+                stepRepository.save(step);
+                recordEvent(workflowId, "engine", "fallback_succeeded:" + stage.name(), "OK",
+                        "fallback path produced a degraded but valid outcome");
+                // Disclosure, per constitution Principle VIII: a fallback outcome is never
+                // presented as equivalent to primary-path success without saying so.
+                // ReleaseReadinessStage (Task 39) reads this list and must name the reduced
+                // guarantee rather than reporting an unqualified "ready".
+                @SuppressWarnings("unchecked")
+                List<String> fallbacksUsed = (List<String>) ctx.artifacts()
+                        .computeIfAbsent("fallbacksUsed", k -> new java.util.concurrent.CopyOnWriteArrayList<String>());
+                fallbacksUsed.add(stage.name());
+                return;
+            } catch (Exception fallbackFailure) {
+                recordEvent(workflowId, "engine", "fallback_failed:" + stage.name(), "FAILED",
+                        String.valueOf(fallbackFailure.getMessage()));
+                // falls through to compensation/safe-stop below, exactly as if no fallback existed
+            }
+        }
+
+        boolean compensated = compensationRegistry != null
+                && compensationRegistry.run(stage.name(), result != null ? result : Map.of());
+        step.setEndedAt(Instant.now());
+        if (compensated) {
+            step.setStatus(StepStatus.COMPENSATED);
+            stepRepository.save(step);
+            recordEvent(workflowId, "engine", "compensation_ran:" + stage.name(), "OK", null);
+            return;
+        }
+        step.setStatus(StepStatus.SAFE_STOPPED);
+        stepRepository.save(step);
+        throw new SafeStopException("retries exhausted, no fallback or compensation recovered stage " + stage.name());
+    }
+
+    private void evaluatePolicyIfConfigured(String workflowId, StageDefinition stage, WorkflowContext ctx, WorkflowStepEntity step) {
+        if (policyEngine == null) return;
+        var policyResults = policyEngine.evaluate(stage.name(), ctx.artifacts());
+        boolean mandatoryFail = false;
+        for (var pr : policyResults) {
+            PolicyEvaluationEntity evaluation = new PolicyEvaluationEntity();
+            evaluation.setWorkflowId(workflowId);
+            evaluation.setStageName(stage.name());
+            evaluation.setPolicyId(pr.policyId());
+            evaluation.setPolicyVersion(policyEngine.version());
+            evaluation.setOutcome(pr.outcome());
+            evaluation.setReason(pr.reason());
+            policyEvaluationRepository.save(evaluation);
+            if (pr.mandatory() && pr.outcome() == com.schwab.urlshortener.policy.PolicyOutcome.FAIL
+                    && !hasApprovedUnexpiredException(workflowId, pr.policyId())) {
+                mandatoryFail = true;
+            }
+        }
+        if (mandatoryFail) {
+            step.setStatus(StepStatus.SAFE_STOPPED);
+            stepRepository.save(step);
+            throw new SafeStopException("mandatory policy FAIL without an approved exception for stage " + stage.name());
+        }
+    }
+
+    public void approve(String workflowId, String stepName, String decision, String actor, String reason) {
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        int planVersion = instance.getPlanVersion();
+        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, planVersion, stepName).orElseThrow();
+
+        ApprovalEntity approval = new ApprovalEntity();
+        approval.setWorkflowId(workflowId);
+        approval.setPlanVersion(planVersion);
+        approval.setStepInstanceId(step.getId());
+        approval.setStepName(stepName);
+        approval.setDecision(decision);
+        approval.setDecidedBy(actor);
+        approval.setReason(reason);
+        approval.setDecidedAt(Instant.now());
+        approvalRepository.save(approval);
+        recordEvent(workflowId, "human", "approval_" + decision + ":" + stepName, "OK", reason);
+
+        if ("rejected".equals(decision)) {
+            if (step.getStatus() != StepStatus.SUCCEEDED && step.getStatus() != StepStatus.SUCCEEDED_WITH_FALLBACK) {
+                step.setStatus(StepStatus.FAILED);
+                stepRepository.save(step);
+            }
+            instance.setStatus(WorkflowStatus.FAILED);
+            instanceRepository.save(instance);
+            return;
+        }
+
+        // Generic decision-lineage fix (fourth review, finding 5): write the approved reason into
+        // context so ANY downstream stage can read what was actually decided, not merely that
+        // approval happened. Reloaded into `ctx` on the next runFrom() call via context_json.
+        Map<String, Object> contextJson = new HashMap<>(instance.getContextJson());
+        Map<String, Object> artifacts = new HashMap<>((Map<String, Object>) contextJson.getOrDefault("artifacts", Map.of()));
+        artifacts.put(stepName + "Resolution", reason);
+        contextJson.put("artifacts", artifacts);
+        List<Map<String, Object>> decisions = new ArrayList<>((List<Map<String,Object>>) contextJson.getOrDefault("decisions", List.of()));
+        decisions.add(Map.of("actor", actor, "decision", "approved:" + stepName, "rationale", reason,
+                "timestamp", Instant.now().toString()));
+        contextJson.put("decisions", decisions);
+        instance.setContextJson(contextJson);
+
+        boolean wasEntryGated = step.isEntryApproval() && step.getStatus() == StepStatus.WAITING_APPROVAL
+                && step.getStartedAt() == null;
+        step.setStatus(wasEntryGated ? StepStatus.PENDING : StepStatus.SUCCEEDED);
+        stepRepository.save(step);
+        instance.setStatus(WorkflowStatus.RUNNING);
+        instanceRepository.save(instance);
+        runFrom(workflowId);
+    }
+
+    // replan(), recordEvent(), persistContext(), stepStatus(), isApproved(), enterPendingApproval(),
+    // markSkipped(), hasApprovedUnexpiredException() follow the same plan-version-safe pattern
+    // established above; grantPolicyException()/retrySafeStopped() from Tasks 28/29 are unchanged
+    // except for the same findByWorkflowIdAndPlanVersionAndName scoping. Omitted here for length —
+    // implement each using the exact same `(workflowId, planVersion, name)` scoping shown in
+    // runStage/approve above; do not reintroduce a bare `findByWorkflowIdAndName` anywhere.
 ```
-  No other change is needed: the existing `pending`/entry-gate/exit-gate loop already only
-  processes what remains in `pending` after this filter, and a dependent stage's precondition
-  check (`_step_status(...) == PENDING`) already treats `SKIPPED` the same as `SUCCEEDED` for the
-  purpose of "is this batch's dependency satisfied" — because dependency satisfaction is derived
-  from `graph.topologicalBatches()`'s structural ordering, not from re-checking each dependency's
-  terminal status value, per Task 20's original design. Confirm this holds with the test above
-  rather than assuming it.
-- [ ] **Step 4: Run to confirm pass** — PASS
-- [ ] **Step 5: Commit** — `git commit -m "feat(orchestration): support conditional stage activation"`
-
-### Task 50: Fallback subsystem — distinct from retry, rollback/compensation, and safe-stop
-
-**Corrects Task 34's original mislabeling** ("fallback realized as retry-then-safe-stop"), which
-directly contradicted the constitution's Principle VIII definition. Also corrects a citation error
-made during investigation: the "Fallback support" line in `spec.md` Section 3.2's characteristics-
-to-requirement mapping points to REQ-014, but REQ-014's own text is about retries/timeouts — the
-actual normative source for fallback is constitution Principle VIII directly, with REQ-014 only
-carrying the characteristics-table cross-reference. Cite Principle VIII, not REQ-014, going
-forward.
-
-**Files:**
-- Modify: `src/main/java/com/schwab/urlshortener/orchestration/StepStatus.java` (add
-  `SUCCEEDED_WITH_FALLBACK`)
-- Modify: `src/main/java/com/schwab/urlshortener/orchestration/WorkflowEngine.java` (add
-  `Map<String, StageHandler> fallbackHandlers` field + `registerFallback(String, StageHandler)`;
-  modify `runStage`'s exhaustion branch)
-- Create: `src/main/java/com/schwab/urlshortener/orchestration/stages/DocumentationFallbackStage.java`
-  (the concrete example stage exercising this mechanism)
-- Test: `src/test/java/com/schwab/urlshortener/orchestration/FallbackTest.java`
-
-**Interfaces:**
-- Produces: `WorkflowEngine.registerFallback(String stageName, StageHandler fallback)` — called
-  before `submit()`, same registration pattern as Task 49's activation conditions. A stage with no
-  registered fallback behaves exactly as before (retry-exhaustion falls straight to
-  compensation-or-safe-stop, unchanged).
-- The fallback handler itself is timeout-wrapped (`TimeoutExecutor.withTimeout`, same per-attempt
-  timeout as the primary handler) and is **not itself retried** — a fallback that times out or
-  throws is a single, final attempt; if it fails, the stage proceeds to the existing
-  compensation-or-safe-stop path exactly as if no fallback had been registered. This is what
-  "safe-stop if both primary and fallback fail" means concretely: the fallback failing does not
-  invent a *third* recovery path, it falls through to the path that already existed.
-
-- [ ] **Step 1: Write failing test**
+- [ ] **Step 3b: Write and implement `FallbackTest`** (fourth review, finding 6: "add tests for
+  these behaviors, not just isolated step-status assertions"):
 ```java
 // src/test/java/com/schwab/urlshortener/orchestration/FallbackTest.java
 package com.schwab.urlshortener.orchestration;
 
 import com.schwab.urlshortener.orchestration.persistence.*;
-import com.schwab.urlshortener.reliability.TransientStageException;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -4979,269 +6122,120 @@ class FallbackTest {
     @Autowired private WorkflowEventJpaRepository eventRepository;
     @Autowired private ApprovalJpaRepository approvalRepository;
 
+    private static final StageHandler ALWAYS_FAILS = ctx -> {
+        throw new PermanentStageException("primary path is unavailable in this test");
+    };
+
     @Test
-    void primaryFailsFallbackSucceedsRecordsDegradedOutcome() {
-        StageHandler primary = ctx -> { throw new TransientStageException("primary tool unavailable"); };
-        StageHandler fallback = ctx -> Map.of("degraded", true, "reason", "used minimal-doc fallback");
+    void successfulFallbackLetsDependentStageRunAndWorkflowCompletesWithDisclosedDegradedOutcome() {
+        StageHandler fallback = ctx -> Map.of("degraded", true, "omits", "rich formatting");
+        StageHandler downstream = ctx -> {
+            @SuppressWarnings("unchecked")
+            List<String> fallbacksUsed = (List<String>) ctx.artifacts().get("fallbacksUsed");
+            return Map.of("ready", true, "degraded", !fallbacksUsed.isEmpty(), "degradedStages", fallbacksUsed);
+        };
+        StageCatalog catalog = new StageCatalog(
+                Map.of("flaky_doc", ALWAYS_FAILS, "downstream", downstream),
+                Map.of(),
+                Map.of("doc_fallback", fallback));
         List<StageDefinition> stages = List.of(
-                new StageDefinition("docs", List.of(), primary, false, false, 1, 5, null));
+                new StageDefinition("flaky_doc", List.of(), ALWAYS_FAILS, false, false, 0, 5, null, null, "doc_fallback"),
+                new StageDefinition("downstream", List.of("flaky_doc"), downstream, false, false, 0, 5, null, null, null));
 
-        WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository);
-        engine.registerFallback("docs", fallback);
+        WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository,
+                approvalRepository, null, null, null, null, catalog);
+        String workflowId = engine.submit("fallback-happy-path", stages, "fb-1");
 
-        String workflowId = engine.submit("demo", stages, "run-fb-1");
+        WorkflowStepEntity flakyStep = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "flaky_doc").orElseThrow();
+        assertThat(flakyStep.getStatus()).isEqualTo(StepStatus.SUCCEEDED_WITH_FALLBACK);
 
-        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndName(workflowId, "docs").orElseThrow();
-        assertThat(step.getStatus()).isEqualTo(StepStatus.SUCCEEDED_WITH_FALLBACK);
-        assertThat(step.getResult()).containsEntry("degraded", true);
-
-        List<String> events = eventRepository.findByWorkflowId(workflowId).stream()
+        List<String> actions = eventRepository.findByWorkflowIdOrderById(workflowId).stream()
                 .map(WorkflowEventEntity::getAction).toList();
-        assertThat(events).contains("fallback_started:docs", "fallback_succeeded:docs");
+        assertThat(actions).contains("fallback_started:flaky_doc", "fallback_succeeded:flaky_doc");
+        assertThat(eventRepository.findByWorkflowIdOrderById(workflowId).stream()
+                .filter(e -> e.getAction().equals("fallback_started:flaky_doc") || e.getAction().equals("fallback_succeeded:flaky_doc"))
+                .allMatch(e -> e.getReason() != null)).isTrue();
+
+        // The dependent stage ran at all — SUCCEEDED_WITH_FALLBACK satisfies dependency
+        // resolution exactly like SUCCEEDED, not like a failure.
+        WorkflowStepEntity downstreamStep = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "downstream").orElseThrow();
+        assertThat(downstreamStep.getStatus()).isEqualTo(StepStatus.SUCCEEDED);
+        assertThat(downstreamStep.getResult()).containsEntry("degraded", true);
+        assertThat((List<?>) downstreamStep.getResult().get("degradedStages")).containsExactly("flaky_doc");
+
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.COMPLETED);
     }
 
     @Test
-    void primaryAndFallbackBothFailSafeStops() {
-        StageHandler primary = ctx -> { throw new TransientStageException("primary fails"); };
-        StageHandler fallback = ctx -> { throw new TransientStageException("fallback also fails"); };
+    void fallbackFailureProceedsToCompensationThenSafeStopOnlyAsLastResort() {
+        StageHandler fallbackThatAlsoFails = ctx -> {
+            throw new RuntimeException("fallback path is also unavailable in this test");
+        };
+        StageCatalog catalog = new StageCatalog(
+                Map.of("flaky_doc", ALWAYS_FAILS),
+                Map.of(),
+                Map.of("doc_fallback", fallbackThatAlsoFails));
         List<StageDefinition> stages = List.of(
-                new StageDefinition("docs", List.of(), primary, false, false, 0, 5, null));
+                new StageDefinition("flaky_doc", List.of(), ALWAYS_FAILS, false, false, 0, 5, null, null, "doc_fallback"));
 
-        WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository);
-        engine.registerFallback("docs", fallback);
+        // No CompensationRegistry configured (null) — this proves safe-stop is reached only after
+        // both fallback AND compensation are unavailable/exhausted, not as fallback's immediate
+        // alternative.
+        WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository,
+                approvalRepository, null, null, null, null, catalog);
+        String workflowId = engine.submit("fallback-also-fails", stages, "fb-2");
 
-        String workflowId = engine.submit("demo", stages, "run-fb-2");
-
-        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndName(workflowId, "docs").orElseThrow();
+        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "flaky_doc").orElseThrow();
         assertThat(step.getStatus()).isEqualTo(StepStatus.SAFE_STOPPED);
-        List<String> events = eventRepository.findByWorkflowId(workflowId).stream()
+
+        List<String> actions = eventRepository.findByWorkflowIdOrderById(workflowId).stream()
                 .map(WorkflowEventEntity::getAction).toList();
-        assertThat(events).contains("fallback_started:docs", "fallback_failed:docs");
+        assertThat(actions).contains("fallback_started:flaky_doc", "fallback_failed:flaky_doc");
+        assertThat(eventRepository.findByWorkflowIdOrderById(workflowId).stream()
+                .filter(e -> e.getAction().equals("fallback_failed:flaky_doc"))
+                .allMatch(e -> e.getReason() != null)).isTrue();
+
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.SAFE_STOPPED);
     }
 }
 ```
-- [ ] **Step 2: Run to confirm failure** — compile error, `SUCCEEDED_WITH_FALLBACK` doesn't exist;
-  `registerFallback` doesn't exist.
-- [ ] **Step 3: Implement**
-```java
-// StepStatus.java — add one constant
-PENDING, RUNNING, WAITING_APPROVAL, SUCCEEDED, SUCCEEDED_WITH_FALLBACK, FAILED, RETRYING,
-ROLLED_BACK, COMPENSATED, SAFE_STOPPED, INVALIDATED, SKIPPED
-```
-```java
-// WorkflowEngine.java additions
-private final Map<String, StageHandler> fallbackHandlers = new java.util.HashMap<>();
+  No new production code beyond what this task's `WorkflowEngine`/`StageCatalog`/`WorkflowContext`
+  already implement above — this is a validation-only step against that implementation. If either
+  test fails, the defect is in `runStage`'s fallback block or `WorkflowContext`'s thread-safety
+  above, not new logic to add here.
+- [ ] **Step 4: Run to confirm pass** — both restart tests and both `FallbackTest` tests PASS. Tasks 22–38's code blocks are
+  historical/pedagogical (each shows one capability landing at a time, per this task's own opening
+  note) and are not separately compiled or re-run — there is exactly one `WorkflowEngine.java`,
+  ending at this task's form, with exactly one constructor (the 9-arg one above). The tests that
+  must actually pass against this final form are: `StageCatalogTest` (Task 49), the four tests above
+  (`WorkflowEngineRestartTest`'s two, `FallbackTest`'s two), and Tasks 39–41's scenario tests, which
+  are written directly against this constructor and this catalog-based construction — not against
+  an earlier incremental version.
+- [ ] **Step 5: Commit** — `git commit -m "feat(orchestration): consolidate WorkflowEngine into a restart-safe, plan-version-safe final form"`
 
-public void registerFallback(String stageName, StageHandler fallback) {
-    fallbackHandlers.put(stageName, fallback);
-}
-```
-  In `runStage`, insert a fallback attempt **between** the retry-exhaustion loop and the existing
-  compensation check (i.e., right after the `for` loop that sets `succeeded`, before the
-  `if (!succeeded) { ... compensationRegistry ... }` block from Task 33):
-```java
-    if (!succeeded) {
-        StageHandler fallback = fallbackHandlers.get(stage.name());
-        if (fallback != null) {
-            recordEvent(workflowId, "engine", "fallback_started:" + stage.name(), "OK", null);
-            try {
-                Map<String, Object> fallbackResult = com.schwab.urlshortener.reliability.TimeoutExecutor
-                        .withTimeout(fallback, stage.timeoutSeconds() * 1000L)
-                        .run(ctx);
-                step.setStatus(StepStatus.SUCCEEDED_WITH_FALLBACK);
-                step.setEndedAt(Instant.now());
-                step.setResult(fallbackResult != null ? fallbackResult : Map.of());
-                stepRepository.save(step);
-                recordEvent(workflowId, "engine", "fallback_succeeded:" + stage.name(), "OK", null);
-                return; // recovered via fallback; batch and workflow continue normally
-            } catch (Exception fallbackFailure) {
-                recordEvent(workflowId, "engine", "fallback_failed:" + stage.name(), "FAILED",
-                        fallbackFailure.getMessage());
-                // falls through to the existing compensation-or-safe-stop path below, unchanged
-            }
-        }
-        boolean compensated = compensationRegistry != null
-                && compensationRegistry.run(stage.name(), result != null ? result : Map.of());
-        // ... rest of Task 33's exhaustion handling, unchanged from here
-    }
-```
-  Update `ReleaseReadinessStage` (Task 39) to scan the run's `workflow_steps` for any
-  `SUCCEEDED_WITH_FALLBACK` status and include a disclosure in its result map (e.g.
-  `"reducedGuarantees": ["docs: used minimal-doc fallback, full auto-generated documentation not produced"]`)
-  so the disclosure requirement is met at the point a human reviews release-readiness, not buried
-  only in the audit log.
-- [ ] **Step 4:** Update CLR-13 (`spec.md`) to fold fallback into the safe-stop enumeration
-  correctly rather than as a misnomer for it: "Safe-stop is entered when (a) a mandatory policy
-  check resolves FAIL without an approved exception, or (b) bounded retries are exhausted **and**
-  no fallback path is registered for that stage, or the registered fallback itself also fails,
-  **and** no applicable compensation exists." This keeps the enumeration at exactly two top-level
-  categories (matching Task 34's own convergence test, which proves no third category exists) while
-  correctly nesting fallback and compensation as the two recovery attempts inside category (b),
-  tried in that order.
-- [ ] **Step 5: Run to confirm pass** — PASS
-- [ ] **Step 6: Commit** — `git commit -m "feat(reliability): implement fallback distinct from retry/compensation/safe-stop"`
+### Task 51 (folded into Tasks 39/41 — retained as a historical marker, do not implement separately)
 
-**`DocumentationFallbackStage`'s minimum criteria (per external review: "a mere placeholder is
-insufficient"):** the fallback documentation artifact is not empty or trivial. At minimum it must
-include: the API surface (endpoint list + request/response shape) taken directly from the approved
-design artifact (`ctx.artifacts().get("design")`), explicitly labeled `"degraded": true` and
-`"omittedSections": ["narrative usage examples", "architecture rationale prose"]` — i.e., the
-*structural* content a reviewer needs (what exists, how to call it) is always present; only the
-*narrative* content (why it was designed this way, worked examples) is what the fallback omits.
-This is a deterministic, testable minimum, not "whatever text happens to be shortest."
-
-### Task 51: Real 12-node stage graph — split `RequirementStage`, persist Stages 4 and 12
-
-**Corrects** the original Task 20/39 design, which realized `spec.md` Stages 1–3 as one Java method
-with one retry policy (an unvalidatable claim once `plan.md`'s table asserted per-stage-differentiated
-retry/timeout/audit behavior for what was actually one atomic execution), left Stage 4 (Human
-clarification) as an implicit property of an approval gate rather than its own persisted,
-independently-auditable node, and never represented Stage 12 (Final engineering summary) as a
-workflow node.
-
-**Files:**
-- Modify: `src/main/java/com/schwab/urlshortener/orchestration/stages/RequirementStage.java` →
-  split into three files: `RequirementIngestionStage.java`, `RequirementNormalizationStage.java`,
-  `AmbiguityDetectionStage.java`
-- Create: `src/main/java/com/schwab/urlshortener/orchestration/stages/FinalSummaryStage.java`
-- Modify: every scenario wiring that referenced the combined `requirement` stage (Tasks 39, 40, 41)
-- Test: `src/test/java/com/schwab/urlshortener/orchestration/scenarios/GreenfieldScenarioTest.java`
-  (extended), `src/test/java/com/schwab/urlshortener/orchestration/scenarios/AmbiguousScenarioTest.java`
-  (rewritten to use the real conditional Stage 4 instead of the ad-hoc "make ambiguity-detection
-  itself exit-gated" workaround)
-
-**Interfaces:**
-- `RequirementIngestionStage.run(WorkflowContext) -> Map<String,Object>` — captures the requirement,
-  `maxRetries=0` (permanent-only, per `plan.md`'s original per-stage table).
-- `RequirementNormalizationStage.run(...)` — `dependsOn=["requirement_ingestion"]`, `maxRetries=2`
-  (transient-classified, CLR-12).
-- `AmbiguityDetectionStage.run(...)` — `dependsOn=["requirement_normalization"]`, `maxRetries=0`,
-  returns `{"ambiguityDetected": bool, "reason": String}`.
-- A new stage named `human_clarification`, `dependsOn=["ambiguity_detection"]`, `entryApproval=true`,
-  handler is a no-op (`ctx -> Map.of()` — the actual "work" is the human's approval decision
-  itself), registered via `engine.registerActivationCondition("human_clarification", ctx -> Boolean.TRUE.equals(ctx.artifacts().get("ambiguityDetected")))`.
-  When the condition is false (the well-defined/greenfield path), Task 49's mechanism marks it
-  `SKIPPED` immediately — the entry-gate check never runs, no approval is ever requested. When true
-  (the ambiguous path, SCN-C), it behaves as an ordinary `entryApproval` stage: blocked until a
-  human calls `approve()`.
-- `task_decomposition` (existing `DecompositionStage`) now `dependsOn=["human_clarification"]`
-  instead of `["requirement"]` — satisfied whether that stage ends `SUCCEEDED` (approved) or
-  `SKIPPED` (wasn't needed), per Task 49's design.
-- `FinalSummaryStage.run(...)` — `dependsOn=["release_readiness"]`, plain (no approval gate — see
-  design note below), reads the full persisted audit trail and produces a per-run summary artifact
-  (distinct from Task 47's project-wide final engineering summary; this is one workflow run's own
-  terminal evidence record).
-
-**Design note (why `final_engineering_summary` has no `exitApproval`, though `spec.md` says
-"Agent, human-reviewed"):** `release_readiness` (Stage 11) already carries `exitApproval=true` —
-gating on both Stage 11 *and* Stage 12 would be two human sign-off events back to back for the same
-run, with nothing new to review in between (Stage 12 only compiles evidence Stage 11 already
-approved). "Human-reviewed" is read here as "a human reads this artifact as part of reviewing the
-run," not "workflow completion blocks on a second live approval." This is a judgment call, recorded
-here rather than silently made — if a future reviewer disagrees, the fix is a one-line
-`exitApproval=true` addition, not a redesign.
-
-- [ ] **Step 1: Write failing test** — extend `GreenfieldScenarioTest` to assert exactly 12 distinct
-  `workflow_steps` rows exist by name (`requirement_ingestion, requirement_normalization,
-  ambiguity_detection, human_clarification, decomposition, design, implementation, testing,
-  security, documentation, release_readiness, final_engineering_summary`), that
-  `human_clarification`'s status is `SKIPPED` for the well-defined greenfield case (since the
-  requirement is unambiguous by construction), and that `final_engineering_summary` runs last and
-  reaches `SUCCEEDED`.
-- [ ] **Step 2: Run to confirm failure** — only 8 step rows exist today; `human_clarification` and
-  `final_engineering_summary` don't exist as stages at all.
-- [ ] **Step 3: Implement** the three split stages, `FinalSummaryStage`, and rewire
-  `ScenarioRunner`'s greenfield case to register all 12 stages plus
-  `engine.registerActivationCondition("human_clarification", ...)` before calling `submit`.
-- [ ] **Step 4:** Rewrite `AmbiguousScenarioTest` (Task 41) to use the real `human_clarification`
-  stage instead of the original workaround (making `ambiguity_detection` itself `exitApproval`):
-  the ambiguous-input run now shows `ambiguity_detection` completing `SUCCEEDED` (it did its job:
-  detected and reported the ambiguity), then `human_clarification` entering `WAITING_APPROVAL`
-  (its condition evaluated true), rather than the old design where the detection stage itself sat
-  in a gated state. This is a more faithful realization of `spec.md`'s own Stage 3/Stage 4
-  distinction (detection is Agent work with a deterministic outcome; clarification is a distinct
-  Human-owned node) and was the root cause Task 51 exists to fix.
-- [ ] **Step 5: Run to confirm pass** — PASS
-- [ ] **Step 6: Commit** — `git commit -m "feat(orchestration): realize the full 12-node stage graph with real conditional Stage 4/12"`
+**What this task originally covered — real 12-node stage graph, `RequirementStage` split into three
+stages, `FinalSummaryStage`, and `DecompositionStage`'s clarification read-and-fold logic — is now
+written directly into Task 39 (which creates every one of those files in its authoritative final
+form) and exercised by Task 41's first test (`decompositionIncorporatesTheHumansActualResolution`,
+renamed there to `ambiguousRequirementSuspendsAtHumanClarificationThenDecompositionUsesTheResolution`).
+This corrects the ordering defect the fourth external review flagged: this task, as originally
+numbered, modified `RequirementStage.java` and extended `GreenfieldScenarioTest` — files Task 39
+alone creates — while sitting after Task 48 in this document, i.e. after every task that could ever
+reach it in execution order. Nothing to implement here; implement Tasks 39 and 41 instead.**
 
 ### Task 52: SCN-B — seven genuinely parallel impact-analysis branches + joined approval gate
 
-**Corrects** Task 40's original single `ImpactAnalysisStage`, which did not satisfy `spec.md`
-Section 4's explicit requirement for seven concurrently-executing sibling branches joined by a
-mandatory Approval Gate before Implementation.
-
-**Files:**
-- Create: `src/main/java/com/schwab/urlshortener/orchestration/stages/impact/` — seven classes:
-  `ImpactedComponentsStage`, `ImpactedInterfacesStage`, `ImpactedDataFlowsStage`,
-  `ImpactedTestsStage`, `ImpactedDocumentationStage`, `RegressionRiskStage`,
-  `RolloutRollbackStage`
-- Create: `src/main/java/com/schwab/urlshortener/orchestration/stages/ChangeImpactReportStage.java`
-- Delete: the original single `ImpactAnalysisStage.java` (superseded, not kept alongside)
-- Test: `src/test/java/com/schwab/urlshortener/orchestration/scenarios/BrownfieldScenarioTest.java`
-  (rewritten)
-
-**Interfaces:**
-- Each of the seven stages: `dependsOn=["decomposition"]`, no dependency on each other
-  (genuinely parallel-safe — disjoint concerns, disjoint `ctx.artifacts()` keys written), returns a
-  `Map<String,Object>` with at minimum a `"finding"` string and a `"risk"` enum-like string
-  (`"low"|"medium"|"high"`). `RolloutRollbackStage` additionally returns `"rollbackPlan"` — this
-  becomes, per `spec.md`, "a required exit-criterion input to Release-readiness": `ReleaseReadinessStage`
-  (Task 39/50) must read it from the joined report and refuse a "ready" outcome if it is absent for
-  a brownfield run (REQ-020 negative criterion).
-- `ChangeImpactReportStage`: `dependsOn` = all seven above, `exitApproval=true`. Its handler reads
-  all seven predecessor results from `ctx` (each stage's own `ctx.recordDecision(...)` call, per
-  the existing `WorkflowContext` pattern) and assembles one `Map` keyed by dimension name. This is
-  the "single Change Impact Report" and the "mandatory Approval Gate (REQ-013)" `spec.md` names —
-  `implementation.dependsOn` now includes `["change_impact_report"]` in addition to `["design"]`
-  for the brownfield path.
-
-- [ ] **Step 1: Write failing test**
-```java
-// BrownfieldScenarioTest.java — key assertions (full test class follows the same
-// @DataJpaTest / WorkflowEngine-construction pattern as every other scenario test)
-@Test
-void sevenImpactBranchesRunInParallelAndJoinBeforeImplementation() {
-    // ... construct engine, submit brownfield stage set (7 impact stages + report + baseline stages) ...
-    List<WorkflowStepEntity> impactSteps = stepRepository.findByWorkflowIdAndNameIn(workflowId,
-            List.of("impact_components", "impact_interfaces", "impact_data_flows", "impact_tests",
-                    "impact_documentation", "impact_regression_risk", "impact_rollout_rollback"));
-    assertThat(impactSteps).hasSize(7);
-    assertThat(impactSteps).allMatch(s -> s.getStatus() == StepStatus.SUCCEEDED);
-
-    // Genuine overlap, not fast-sequential: at least two of the seven have overlapping
-    // [startedAt, endedAt) intervals — the same style of assertion Task 22's parallel test uses,
-    // with the same documented fallback to a CountDownLatch-based deterministic check if timing
-    // proves flaky in CI.
-    boolean anyOverlap = /* pairwise interval-overlap check across impactSteps */ true;
-    assertThat(anyOverlap).isTrue();
-
-    WorkflowStepEntity reportStep = stepRepository.findByWorkflowIdAndName(workflowId, "change_impact_report").orElseThrow();
-    assertThat(reportStep.getStartedAt()).isAfterOrEqualTo(
-            impactSteps.stream().map(WorkflowStepEntity::getEndedAt).max(Instant::compareTo).orElseThrow());
-    // Report started only after every one of the seven branches finished — proves the join
-    // does not fire early.
-
-    WorkflowStepEntity implStep = stepRepository.findByWorkflowIdAndName(workflowId, "implementation").orElseThrow();
-    assertThat(implStep.getStatus()).isEqualTo(StepStatus.PENDING); // blocked: report is exitApproval, unapproved
-}
-
-@Test
-void rejectedChangeImpactReportBlocksImplementationPermanently() {
-    // ... submit, then engine.approve(workflowId, "change_impact_report", "rejected", "human", "regression risk too high") ...
-    WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
-    assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.FAILED);
-    WorkflowStepEntity implStep = stepRepository.findByWorkflowIdAndName(workflowId, "implementation").orElseThrow();
-    assertThat(implStep.getStatus()).isEqualTo(StepStatus.PENDING); // never ran
-}
-```
-- [ ] **Step 2: Run to confirm failure** — compile errors, none of the eight new classes exist.
-- [ ] **Step 3: Implement** the seven stages and `ChangeImpactReportStage` per the Interfaces
-  section above; rewire `ScenarioRunner`'s brownfield case.
-- [ ] **Step 4: Run to confirm pass** — PASS
-- [ ] **Step 5:** Update `docs/scenarios/brownfield.md`'s Dependency Map / Regression Risk Matrix
-  sections to reflect the real seven-branch structure instead of the original single-stage
-  impact map.
-- [ ] **Step 6: Commit** — `git commit -m "feat(scenarios): realize SCN-B's seven parallel impact-analysis branches"`
+**Folded into Task 40 (retained as a historical marker, do not implement separately).** What this
+task originally covered — the seven parallel impact stages and `ChangeImpactReportStage` — is now
+written directly into Task 40, for the same ordering reason as Task 51 above: this task modified
+`BrownfieldScenarioTest`, a file Task 40 alone creates. Implement Task 40 instead. The corrected
+target this task originally described (`spec.md` Section 4's SCN-B: seven concurrently-executing
+sibling branches joined by a mandatory Approval Gate before Implementation) is unchanged — it now
+just lives at Task 40.
 
 ### Task 53: Fix `computeReliabilitySummary`'s workflow-scoping bug for real
 
@@ -5286,10 +6280,9 @@ void perWorkflowMetricsDoNotContaminateAcrossWorkflows() {
   compensation, per Task 50's CLR-13 update."
 - Task 37 (MTTR/metrics): add a note: "The `computeReliabilitySummary` workflow-scoping bug
   disclosed in this task's original code comment is fixed for real by Task 53 — see Phase 12."
-- Task 39 (greenfield): add a note: "The combined `RequirementStage` and the 8-stage wiring
-  described here are superseded by Task 51's real 12-node graph — see Phase 12."
-- Task 40 (brownfield): add a note: "The single `ImpactAnalysisStage` described here is superseded
-  by Task 52's seven-branch design — see Phase 12."
-- Task 41 (ambiguous): add a note: "The 'make ambiguity-detection itself exitApproval' workaround
-  described here is superseded by Task 51's real, conditionally-activated `human_clarification`
-  stage — see Phase 12."
+- Tasks 39/40/41 (the three scenarios): **no pointer note** — corrected 2026-09-13 to be written
+  directly in authoritative final form (real 12-node graph, seven-branch SCN-B, real
+  `human_clarification` gate), per the explicit instruction that no running code exists yet, so
+  there is nothing to preserve by building an obsolete version first and patching it later. Their
+  bodies each carry an "Execution order note" instead, naming which Phase 12 tasks (49-51) must be
+  implemented first even though this document lists them later.

@@ -54,9 +54,11 @@ Authority line above; corrected by the Task 10 corrective batch, `codex-recommen
   observably proves the wrong or unsafe behavior does *not* happen). Neither is omitted for any
   requirement.
 - Numeric performance/reliability-style targets appear **only** under a heading explicitly marked
-  **"Proposed validation target (assumption — requires approval)."** No numeric target in this
-  document is to be read as a confirmed client requirement; the assignment source material
-  supplied no numeric targets, and none has been invented as if it had.
+  **"Demonstration acceptance target."** The assignment source material supplied no numeric
+  targets originally; all eleven were proposed as assumptions and then **approved as binding
+  demonstration acceptance targets, not production SLAs, by ASM-2 (Section 13.2, closed
+  2026-09-13)** — none is a confirmed client requirement at production scale, but each is binding
+  for whether this iteration's own demonstration scenarios pass.
 - Wherever this document was tempted to name a technology, language, framework, database, cloud
   service, or agent-orchestration library, it instead records a **deferred technology decision
   pointer** (Section 10) to the ADR/plan stage.
@@ -645,11 +647,15 @@ test, and exception state.
 
 ## 7. Non-Functional Requirements
 
-The assignment source material names eleven non-functional requirement areas but supplies no
-numeric targets. Per this project's explicit rule (and the task brief), each area below states a
-MUST-hold *verifiable capability*, and — only where the area implies a number — a clearly labeled
-**Proposed validation target (assumption — requires approval)**. No number below is a confirmed
-requirement.
+The assignment source material names eleven non-functional requirement areas but supplied no
+numeric targets originally. Per this project's explicit rule (and the task brief), each area below
+states a MUST-hold *verifiable capability*, and — only where the area implies a number — a clearly
+labeled **Demonstration acceptance target**. **ASM-2 (Section 13.2, closed 2026-09-13)** approved
+all eleven figures below as binding demonstration acceptance targets for this iteration's three
+required scenarios — none is a production SLA, and every figure is scaled to this prototype's local
+H2/laptop execution environment and labeled as demonstration data wherever it appears (constitution
+Principle IX). A failed target is a real, reportable finding against the named evidence test, not a
+number to shrug off.
 
 **REQ-021 — Security**
 The system MUST validate and normalize all externally supplied input against an explicit
@@ -660,9 +666,11 @@ scheme/format allow-list before use, and MUST treat named abuse classes as in-sc
   demonstrate safe failure.
 - *Negative*: The system never accepts a disallowed scheme, never emits secrets or disproportionate
   personal data into logs/errors, and never ships with an insecure-by-default configuration.
-- *Proposed validation target (assumption — requires approval)*: the security test suite includes
-  at least the four abuse classes above, and a dependency-vulnerability scan and secret-scan are
-  clean (or carry a recorded, approved exception) before any release-readiness "ready" outcome.
+- *Demonstration acceptance target (binding for this iteration's three scenario demonstrations;
+  explicitly NOT a production SLA — approved 2026-09-13 per ASM-2)*: the security test suite
+  includes at least the four abuse classes above, and a dependency-vulnerability scan and
+  secret-scan are clean (or carry a recorded, approved exception) before any release-readiness
+  "ready" outcome.
 - *Evidence*: security test suite results; dependency/secret scan reports.
 - **[RESOLVED — CLR-11, Section 13.1]** No rate-limiting/quota enforcement is in scope for this
   iteration (see CLR-11). Consequently, the mass-creation-denial-of-service abuse class named above
@@ -683,10 +691,10 @@ terminal outcome without data corruption.
   enumerated terminal outcomes.
 - *Negative*: The system never silently swallows a failure without a recorded terminal outcome, and
   never exhibits unbounded retry or indefinite hang behavior.
-- *Proposed validation target (assumption — requires approval)*: 100% of the fault-injection test
-  scenarios in the test suite resolve to an enumerated terminal outcome (success / permanent
-  failure / safe-stop) — measured in the demonstration test environment, explicitly not a
-  production SLA.
+- *Demonstration acceptance target (binding for this iteration's three scenario demonstrations;
+  explicitly NOT a production SLA — approved 2026-09-13 per ASM-2)*: 100% of the fault-injection
+  test scenarios in the test suite resolve to an enumerated terminal outcome (success / permanent
+  failure / safe-stop / `SUCCEEDED_WITH_FALLBACK`) — measured in the demonstration test environment.
 - *Evidence*: reliability/failure-injection test suite results.
 
 **REQ-023 — Scalability**
@@ -714,8 +722,11 @@ an unrelated concern.
   constitution Principle VII requires.
 - *Negative*: The system's design never requires modifying domain/validation logic to change a
   persistence detail, or vice versa.
-- *Proposed validation target (assumption — requires approval)*: a structural/dependency-direction
-  check is defined at the plan/ADR stage; no numeric target is set here.
+- *Demonstration acceptance target (binding for this iteration's three scenario demonstrations;
+  explicitly NOT a production SLA — approved 2026-09-13 per ASM-2)*: a structural/dependency-direction
+  check, defined at the plan/ADR stage (`plan.md`'s layering rules); this is the one area of the
+  eleven with no numeric figure — the approved target is the check's existence and a clean result,
+  not a number.
 - *Evidence*: architecture review; ADR record of layering decisions.
 
 **REQ-025 — Observability**
@@ -724,8 +735,9 @@ The system MUST correlate every event produced by a Workflow Run to a single run
   produced artifact carries the run/correlation identifier assigned at run start.
 - *Negative*: The system never produces a run-related log line or artifact without that identifier
   attached.
-- *Proposed validation target (assumption — requires approval)*: 100% of audit-relevant events in
-  demonstration test runs carry the run/correlation identifier.
+- *Demonstration acceptance target (binding for this iteration's three scenario demonstrations;
+  explicitly NOT a production SLA — approved 2026-09-13 per ASM-2)*: 100% of audit-relevant events
+  in demonstration test runs carry the run/correlation identifier.
 - *Evidence*: correlation-ID completeness check against captured run logs.
 
 **REQ-026 — Auditability**
@@ -735,7 +747,8 @@ artifact/state, result, and reason.
   when recorded, then all six fields are present.
 - *Negative*: The system never records an audit event missing any of the six fields, and never
   allows an existing audit record to be edited or deleted after the fact.
-- *Proposed validation target (assumption — requires approval)*: schema completeness verified
+- *Demonstration acceptance target (binding for this iteration's three scenario demonstrations;
+  explicitly NOT a production SLA — approved 2026-09-13 per ASM-2)*: schema completeness verified
   against 100% of events in a demonstration run exercising every event type.
 - *Evidence*: audit-trail schema-conformance test.
 
@@ -743,12 +756,12 @@ artifact/state, result, and reason.
 The system MUST serve a redirect-resolution request, under nominal conditions, within an
 operationally reasonable bound for a redirect-class operation.
 - *Positive*: Given a redirect-resolution request under nominal conditions, when served, then it
-  completes within the bound proposed below (once approved).
+  completes within the bound below.
 - *Negative*: The system never degrades redirect latency silently, without a measurable metric
   surfacing the degradation.
-- *Proposed validation target (assumption — requires approval)*: p95 redirect-resolution latency
-  ≤ 200 ms measured in the demonstration environment — explicitly not a production SLA; the exact
-  figure and measurement conditions are subject to human approval at the plan stage.
+- *Demonstration acceptance target (binding for this iteration's three scenario demonstrations;
+  explicitly NOT a production SLA — approved 2026-09-13 per ASM-2)*: p95 redirect-resolution
+  latency ≤ 200 ms measured in the demonstration environment.
 - *Evidence*: latency measurement from a load test, labeled as demonstration-scale.
 
 **REQ-028 — Recoverability**
@@ -788,7 +801,8 @@ control, or release criterion MUST NOT change without recorded impact analysis a
 - *Negative*: The system never allows such a change to be introduced silently as a side effect of
   an unrelated task, and work completed under a prior version is never treated as automatically
   still valid without re-evaluation.
-- *Proposed validation target (assumption — requires approval)*: 100% of material post-approval
+- *Demonstration acceptance target (binding for this iteration's three scenario demonstrations;
+  explicitly NOT a production SLA — approved 2026-09-13 per ASM-2)*: 100% of material post-approval
   changes have a corresponding recorded impact-analysis/change-approval artifact, verified by
   traceability audit at the plan/tasks stage.
 - *Evidence*: change-log / impact-analysis records cross-referenced to affected artifacts.
@@ -801,7 +815,8 @@ stage's declared exit criteria.
 - *Negative*: The system never allows an agent to act outside the stage it currently owns, to
   bypass a mandatory human Approval Gate under any autonomy setting, or to mark a stage's exit
   criteria satisfied when they are not.
-- *Proposed validation target (assumption — requires approval)*: 100% of agent actions in a
+- *Demonstration acceptance target (binding for this iteration's three scenario demonstrations;
+  explicitly NOT a production SLA — approved 2026-09-13 per ASM-2)*: 100% of agent actions in a
   demonstration run are attributable to a declared stage owner and pass that stage's exit-criteria
   check, verified via audit-trail review.
 - *Evidence*: audit-trail review; a stage-boundary violation test in which an out-of-scope agent
@@ -1017,21 +1032,25 @@ recorded open deferral rather than an invented answer.
   — only the generic policy-guardrail categories named in constitution Principle VI apply unless a
   future clarification names a specific regime.
 
-### 9.7 Proposed Validation Targets (assumption — requires approval) — consolidated
+### 9.7 Demonstration Acceptance Targets (approved 2026-09-13, ASM-2) — consolidated
 
-| REQ | Non-functional area | Proposed target | Status |
+All eleven targets below are **approved, binding demonstration acceptance targets** for this
+iteration's three required scenarios — not production SLAs, not open assumptions. See ASM-2
+(Section 13.2) for the closure record.
+
+| REQ | Non-functional area | Approved target | Planned evidence |
 |---|---|---|---|
-| REQ-021 | Security | 4 named abuse classes in test suite; clean dependency/secret scans | Assumption — requires approval |
-| REQ-022 | Reliability | 100% of fault-injection scenarios resolve to an enumerated terminal outcome | Assumption — requires approval |
-| REQ-023 | Scalability | Correctness at a demonstration-scale concurrency count (exact figure deferred to plan stage) | Assumption — requires approval |
-| REQ-024 | Maintainability | Structural/dependency-direction check defined at plan/ADR stage; no number set | Assumption — requires approval |
-| REQ-025 | Observability | 100% of audit-relevant events carry the run/correlation ID | Assumption — requires approval |
-| REQ-026 | Auditability | 100% schema-complete audit records across all event types | Assumption — requires approval |
-| REQ-027 | Performance | p95 redirect-resolution latency ≤ 200 ms, demonstration environment only | Assumption — requires approval |
-| REQ-028 | Recoverability | Recovery-time objective to be proposed at plan stage; no number set here | Assumption — requires approval |
-| REQ-029 | Testability | N/A — qualitative (all requirements carry acceptance criteria) | Not numeric |
-| REQ-030 | Change safety | 100% of material post-approval changes have a recorded impact-analysis artifact | Assumption — requires approval |
-| REQ-031 | Controlled autonomy | 100% of agent actions attributable to a declared stage owner and exit-criteria-checked | Assumption — requires approval |
+| REQ-021 | Security | 4 named abuse classes in test suite; clean dependency/secret scans | Security test suite; dependency/secret scan reports |
+| REQ-022 | Reliability | 100% of fault-injection scenarios resolve to an enumerated terminal outcome (incl. `SUCCEEDED_WITH_FALLBACK`) | `FallbackTest`, retry/compensation/safe-stop test suite (runbook Tasks 30–34a, 50) |
+| REQ-023 | Scalability | Correctness holds for **at least 20 concurrent** creation/resolution requests: zero incorrect mappings, zero duplicate active short codes, zero silently-dropped requests | `LinkConcurrencyTest` (runbook Task 17, Step 6) — not yet implemented; no code exists yet |
+| REQ-024 | Maintainability | Structural/dependency-direction check defined at plan/ADR stage; no numeric target | `plan.md` layering rules; architecture review |
+| REQ-025 | Observability | 100% of audit-relevant events carry the run/correlation ID | Correlation-ID completeness check against captured run logs |
+| REQ-026 | Auditability | 100% schema-complete audit records across all event types | Audit-trail schema-conformance test |
+| REQ-027 | Performance | p95 redirect-resolution latency ≤ 200 ms, demonstration environment only | Latency measurement from a load test, labeled demonstration-scale |
+| REQ-028 | Recoverability | A workflow interrupted mid-run resumes to its correct next state within **5 seconds** of process restart | `WorkflowEngineRestartTest` (runbook Task 50) — not yet implemented; no code exists yet |
+| REQ-029 | Testability | N/A — qualitative (all requirements carry acceptance criteria) | This document's own Section 6/7 acceptance criteria |
+| REQ-030 | Change safety | 100% of material post-approval changes have a recorded impact-analysis artifact | Change-log/impact-analysis records cross-referenced to affected artifacts |
+| REQ-031 | Controlled autonomy | 100% of agent actions attributable to a declared stage owner and exit-criteria-checked | Audit-trail review; `T036a` stage-boundary violation test |
 
 ## 10. Deferred Technology Decisions — Pointer
 

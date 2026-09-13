@@ -106,10 +106,15 @@ enforces.
   (not a production SLA claim). **Fail if**: any fault-injection scenario in the test suite is left
   unresolved or unlabeled. **Cites**: REQ-022 (proposed validation target), Principle IX.
 
-- **[MANDATORY] REL-CHK-014** — Verify fallback (retry-then-safe-stop, per `plan.md` Section 6) is
-  distinct from retry and from rollback/compensation in both design and test evidence: a fallback is
-  only taken after failure classification, only when a defined fallback path exists for that stage,
-  and states explicitly what capability/guarantee is reduced relative to the primary path. **Fail
+- **[MANDATORY] REL-CHK-014** — Verify fallback (a real, distinct mechanism per constitution
+  Principle VIII — corrected 2026-09-13; `retry-then-safe-stop` was an earlier mislabeling of a
+  different, already-real mechanism, not fallback) is distinct from retry and from
+  rollback/compensation in both design and test evidence: a fallback is only attempted after retry
+  exhaustion, only when a `StageCatalog`-registered fallback handler exists for that stage
+  (`docs/engineering-runbook.md` Task 50), produces `SUCCEEDED_WITH_FALLBACK` with
+  `fallback_started`/`fallback_succeeded`/`fallback_failed` audit events, and states explicitly what
+  capability/guarantee is reduced relative to the primary path (`ReleaseReadinessStage` discloses
+  this). **Fail
   if**: a fallback outcome is presented as equivalent to a primary-path success without disclosing
   the reduction. **Cites**: Principle VIII ("Fallback behavior"), REQ-014.
 

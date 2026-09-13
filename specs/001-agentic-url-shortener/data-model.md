@@ -128,6 +128,22 @@ without reconstructing anything from an agent transcript.
 | `retry_count` | `INT` | No | Default `0`. Incremented once per failed attempt (REQ-014); the reliability-metrics layer (`plan.md` Section 7) reads this directly rather than re-deriving it from event logs. |
 | `result` | `CLOB` (JSON map) | Yes | Serialized `Map<String,Object>` — the stage handler's output, merged into the run's context artifacts. This is the durable record of "outputs" for the node table in `plan.md` Section 3. |
 | `plan_version` | `INT` | No | **Added post-Task-10 (see closing note below).** The `workflow_instances.plan_version` value active when this step row was created or replaced (by `submit()` or by `replan()`). Without this column, a step and its replan-produced replacement cannot be reliably distinguished, and `(workflow_id, name)` alone is not a safe uniqueness assumption once a replan can reintroduce a retired stage name. Uniqueness for a live step is over `(workflow_id, plan_version, name)`, not `(workflow_id, name)` alone. |
+| `entry_approval` | `BOOLEAN` | No | **Added 2026-09-13 (`docs/engineering-runbook.md` Phase 12, Task 49/20b).** Copied from `StageDefinition.entryApproval()` at `submit()`/`replan()` time. Gates the handler from running at all until approved. Persisted (not read from a live `StageDefinition` object) so `runFrom` can reconstruct the full stage list from this table alone after a process restart. |
+| `exit_approval` | `BOOLEAN` | No | Copied from `StageDefinition.exitApproval()`. Lets the handler run first, then gates only its dependents. Same restart-safety rationale as `entry_approval`. |
+| `max_retries` | `INT` | No | Copied from `StageDefinition.maxRetries()`. Read by `runStage`'s retry loop on every `runFrom` call, not cached in memory. |
+| `timeout_seconds` | `INT` | No | Copied from `StageDefinition.timeoutSeconds()`. Used by `TimeoutExecutor` on every attempt, including a fallback attempt. |
+| `parallel_group` | `VARCHAR(64)` | Yes | Copied from `StageDefinition.parallelGroup()`. Null for a stage that runs alone in its topological batch. |
+| `activation_condition_key` | `VARCHAR(128)` | Yes | **Added 2026-09-13 (`docs/engineering-runbook.md` Phase 12, Task 49).** Stable string key into `StageCatalog.activationConditionFor(...)` — never a serialized `Predicate`, which cannot survive a process restart. Null for a stage with no conditional activation (always runs when its dependencies are satisfied). |
+| `fallback_handler_key` | `VARCHAR(128)` | Yes | Stable string key into `StageCatalog.fallbackFor(...)` — never a serialized `StageHandler`. Null for a stage with no registered fallback (a failure exhausting retries goes straight to compensation/safe-stop). |
+
+**Restart-safety note (added 2026-09-13, fourth review round):** these seven columns exist so that
+`WorkflowEngine.runFrom` never needs an in-memory registry of handlers/conditions/fallbacks keyed by
+workflow ID — every `StageDefinition` needed to resume a workflow is reconstructed from this table's
+columns plus a `StageCatalog` (stable keys → `StageHandler`/`Predicate` objects, built once at
+application boot) on every call, including the first call after a process restart. This directly
+implements REQ-017 (resumption) and the binding REQ-028 5-second recovery-time objective; an earlier
+design that stored `registerActivationCondition`/`registerFallback` maps directly on the live
+`WorkflowEngine` instance did not survive a restart and is superseded by this column set.
 
 ---
 

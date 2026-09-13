@@ -1630,16 +1630,23 @@ this round corrected task *content*, not task *count*.
 Sequential-blocking groups: T011–T019 (URL-shortener domain, mostly sequential after the
 T014/T015/T016 parallel trio; `T017a` inserted between T017 and T018, same file/test class,
 strictly sequential), T020–T026 (orchestration engine core, strictly sequential; `T020b` inserted
-after T020 but sequenced after T023 per its own Prerequisites; `T020c` after `T020b`), `T026a`
-(sequential immediately after T026, same file/test class), T027 (independent) → T028–T029
-(sequential, depend on the full engine), T030–T032 (mutually parallel) → T033–T034 (sequential
-fan-in) → `T034a` (fallback, depends on all four), T035 (replanning, depends on the full Phase 4–6
-engine), T036–T038 (observability, T036/T037 parallel, T038 depends on T037; `T036a` inserted
-after T036, parallel with T037, depending on T022–T024/T036; `T037a` inserted immediately after
-T037, sequential, fixes T037's own disclosed bug), T039–T041 (three scenarios, T039/T041 and
-T040/T041 parallel-safe pairs, T040 depends on T039, both depend on `T020c`; `T040a` inserted after
-T040, sequential, supersedes T040's impact-analysis portion only — T040's IPv6 fix is untouched),
-T042–T048 (fully sequential convergence chain). Seven tasks carry `human-approval: true`: T015,
+after T020 but sequenced after T023 per its own Prerequisites — `T020b` now specifies `StageCatalog`,
+the restart-safe lookup mechanism T039/T040/T041 depend on directly; `T020c` is **not** part of this
+sequence — corrected 2026-09-13, its content is folded into T039 and it is retained only as a
+historical marker, carrying no dependency edges of its own), `T026a` (sequential immediately after
+T026, same file/test class), T027 (independent) → T028–T029 (sequential, depend on the full
+engine), T030–T032 (mutually parallel) → T033–T034 (sequential fan-in) → `T034a` (fallback, depends
+on all four), T035 (replanning, depends on the full Phase 4–6 engine), T036–T038 (observability,
+T036/T037 parallel, T038 depends on T037; `T036a` inserted after T036, parallel with T037, depending
+on T022–T024/T036; `T037a` inserted immediately after T037, sequential, fixes T037's own disclosed
+bug), T039–T041 (three scenarios, corrected 2026-09-13: T039 depends directly on `T020b`
+(`StageCatalog`) and `T034a` (`SUCCEEDED_WITH_FALLBACK`/`fallbacksUsed`), not on `T020c`, which
+carries no live dependency edges; T040 and T041 both depend on T039 — T040 for its reused
+`StageCatalog` pattern, T041 for its reused `human_clarification`/`DecompositionStage` — so neither
+is parallel-safe with T039, though T040/T041 are mutually parallel-safe with each other (disjoint
+files); `T040a` is **not** part of this sequence — its seven-branch SCN-B content is folded directly
+into T040, and it is retained only as a historical marker), T042–T048 (fully sequential convergence
+chain). Seven tasks carry `human-approval: true`: T015,
 T026, T029, T040, T046, T047, T048 — see each task's own entry above and the Task 9 report for the
 per-task justification. All eight letter-suffixed tasks (`T017a`, `T026a`, `T036a`, `T020b`,
 `T020c`, `T034a`, `T037a`, `T040a`) are `human-approval: false` (see each task's own entry for the

@@ -4845,6 +4845,7 @@ class WorkflowRecoveryBootTest {
         String workflowId;
         try (ConfigurableApplicationContext firstProcess =
                      SpringApplication.run(UrlShortenerApplication.class, "--server.port=0")) {
+            WorkflowInstanceJpaRepository instances = firstProcess.getBean(WorkflowInstanceJpaRepository.class);
             WorkflowStepJpaRepository steps = firstProcess.getBean(WorkflowStepJpaRepository.class);
             WorkflowEngine engine = firstProcess.getBean(WorkflowEngine.class);
 
@@ -4860,16 +4861,27 @@ class WorkflowRecoveryBootTest {
                             RequirementNormalizationStage::run, false, false, 0, 30, null, null, null));
             workflowId = engine.submit("boot-recovery smoke workflow", stages, "boot-recovery-1");
 
-            // Simulate the process dying mid-stage: force the in-flight step back to RUNNING with
-            // no completion recorded — exactly what a genuine crash leaves behind, not the earlier
-            // draft's approach of hand-editing a SAFE_STOPPED step to PENDING.
+            // submit() ran both stages to completion synchronously — this two-stage graph has no
+            // gate to stop at, so by this point the workflow is genuinely COMPLETED. Simulate the
+            // process dying mid-stage by rewriting that finished state back to exactly what a
+            // crash mid-"requirement_normalization" would have left on disk: the step RUNNING with
+            // no completion recorded, and — this is the part an earlier draft of this test missed —
+            // the *workflow instance* also still RUNNING, since a real crash never gets the chance
+            // to update either one to a terminal status. Leaving the instance at COMPLETED here
+            // would make resumeAll() skip it entirely on the next boot (it only picks up
+            // RUNNING/PENDING_APPROVAL/REPLANNING instances), and the assertion below could never
+            // pass.
+            WorkflowInstanceEntity instance = instances.findById(workflowId).orElseThrow();
+            instance.setStatus(WorkflowStatus.RUNNING);
+            instances.save(instance);
+
             WorkflowStepEntity normalization = steps.findByWorkflowIdAndPlanVersionAndName(
                     workflowId, 1, "requirement_normalization").orElseThrow();
             normalization.setStatus(StepStatus.RUNNING);
             normalization.setStartedAt(Instant.now());
+            normalization.setEndedAt(null);
+            normalization.setResult(null);
             steps.save(normalization);
-            // The instance itself is left RUNNING too — a real crash never gets the chance to
-            // update it to any terminal/pending status.
         } // context closed — the "first process" is gone, exactly like a killed JVM.
 
         // A brand-new process, pointed at the same file-mode data/app.mv.db. Nothing in this test

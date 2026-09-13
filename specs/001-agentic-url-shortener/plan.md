@@ -849,7 +849,7 @@ columns with concrete task IDs once it exists.
 | REQ-022, REQ-023 | SCN-A, SCN-B | Section 6, 7 | ADR-008 | — | Fault-injection + concurrency test suites |
 | REQ-024 | SCN-B | Section 1.4, 2 | ADR-004 | — | Architecture/dependency-direction review |
 | REQ-025 | SCN-A, SCN-B, SCN-C | Section 7 | — | — | Correlation-ID completeness check |
-| REQ-027 | SCN-A | — (deferred numeric target, spec.md ASM-2) | — | — | Latency measurement, demonstration-scale |
+| REQ-027 | SCN-A | — (binding demonstration acceptance target, spec.md ASM-2, closed 2026-09-13) | — | — | Latency measurement, demonstration-scale |
 | REQ-029 | all | Sections 6–7 of `spec.md` themselves | — | — | This plan's own acceptance-criteria citations |
 | REQ-030 | SCN-B | Section 9 (change control) | — | `docs/scenarios/brownfield.md` | Change-log/impact-analysis cross-reference |
 | REQ-031 | SCN-A, SCN-B, SCN-C | Section 3 (actor column per node) | — | — | Audit-trail review; stage-boundary violation test |

@@ -2,8 +2,8 @@
 
 ## Status
 
-**Proposed** — drafted 2026-09-13, alongside ADR-001, ahead of the formal Task 7 ADR Generation
-Gate. Awaiting explicit human accept/reject.
+**Accepted** — drafted 2026-09-13, alongside ADR-001, ahead of the formal Task 7 ADR Generation
+Gate. Accepted by the human candidate (Prudhvidhar Reddy Katta) on 2026-09-13, after review.
 
 ## Context
 

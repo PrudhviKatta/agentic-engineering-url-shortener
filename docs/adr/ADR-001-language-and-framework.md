@@ -2,11 +2,10 @@
 
 ## Status
 
-**Proposed** — drafted 2026-09-13, ahead of the formal Task 7 ADR Generation Gate, at the human
-candidate's explicit direction (see Context). Awaiting explicit human accept/reject per the
-project's own guardrail: the agent may propose, compare, and recommend, but only the human
-candidate may mark this Accepted (guide Section 29, "Do Not Allow Claude to Approve Its Own
-Decisions").
+**Accepted** — drafted 2026-09-13, ahead of the formal Task 7 ADR Generation Gate, at the human
+candidate's explicit direction (see Context). Accepted by the human candidate (Prudhvidhar Reddy
+Katta) on 2026-09-13, after review, per the project's own guardrail that only the human candidate
+may mark an ADR Accepted (guide Section 29, "Do Not Allow Claude to Approve Its Own Decisions").
 
 ## Context
 

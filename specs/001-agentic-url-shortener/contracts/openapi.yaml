@@ -1,0 +1,504 @@
+openapi: 3.0.3
+info:
+  title: Agentic URL Shortener & Orchestration API
+  version: "0.1.0"
+  description: |
+    DRAFT contract produced at the `/speckit.plan` stage (Task 6). Not yet implemented, not yet
+    independently reviewed. Covers two independently inspectable surfaces sharing one process
+    (constitution Principle VII):
+
+    * **URL-shortener domain** (`/links`, `/r/{code}`) — REQ-001..010, REQ-021.
+    * **Orchestration engine** (`/workflows/**`) — REQ-011..020, REQ-025, REQ-026.
+    * **Operational** (`/healthz`, `/readyz`, `/metrics`) — REQ-010, REQ-022, REQ-025, REQ-026.
+
+    No authentication is enforced on any endpoint in this iteration (CLR-10; ADR-010 proposed).
+    All endpoints are documented as trusted-caller-only. This is a disclosed assumption, not an
+    oversight — see `plan.md` Section 8 (Security).
+
+    Compatibility rule for this iteration: this is version `0.1.0` of a pre-release contract: any
+    breaking change before the first tagged release requires an updated `research.md` entry
+    (owner, version bump, affected consumers, migration note) per `plan.md` Section 2's
+    change-approval requirement, even though no external consumer yet exists to break.
+servers:
+  - url: http://localhost:8080
+    description: Local prototype (no TLS, no auth — see Security notes above)
+
+tags:
+  - name: links
+    description: URL-shortener domain (REQ-001–REQ-010, REQ-021)
+  - name: redirect
+    description: Redirect resolution (REQ-004, REQ-005)
+  - name: workflows
+    description: Orchestration engine (REQ-011–REQ-020, REQ-025, REQ-026)
+  - name: operations
+    description: Health, readiness, reliability metrics (REQ-010, REQ-022, REQ-025, REQ-026)
+
+paths:
+
+  /links:
+    post:
+      tags: [links]
+      operationId: createLink
+      summary: Create a short link for a long URL (REQ-001, REQ-002, REQ-003)
+      description: |
+        Every accepted request produces a **new, independent** short code (CLR-2: no
+        implicit URL-based deduplication, even for a byte-identical repeat request — REQ-007 is
+        superseded for this iteration). Rejects malformed URLs, disallowed schemes, URLs over
+        2048 characters, and SSRF-risk hosts (loopback/link-local/private RFC1918) per REQ-002/
+        CLR-1/CLR-5.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateLinkRequest'
+            examples:
+              basic:
+                value: { longUrl: "https://example.com/some/very/long/path" }
+              withExpiry:
+                value: { longUrl: "https://example.com/promo", expiresAt: "2026-12-31T23:59:59Z" }
+      responses:
+        '201':
+          description: Link created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LinkResponse'
+              example:
+                code: "9Kd3aZ1"
+                longUrl: "https://example.com/some/very/long/path"
+                shortUrl: "/r/9Kd3aZ1"
+                expiresAt: null
+        '422':
+          description: |
+            Rejected input — malformed URL, disallowed scheme, over-length URL, or SSRF-risk
+            host (REQ-002). No mapping is created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: { reason: "disallowed_scheme" }
+
+  /links/{code}:
+    get:
+      tags: [links]
+      operationId: getLinkMetadata
+      summary: Retrieve a link's metadata without redirecting (REQ-004, REQ-012 analog for the domain)
+      description: |
+        Read-only metadata lookup — does **not** perform a redirect and does **not** count as a
+        redirect resolution for analytics purposes (REQ-006's redirect-count/last-accessed
+        columns are only updated by `GET /r/{code}`). Returns metadata for an expired link too
+        (distinguishing "the mapping exists but is expired" from "the mapping never existed" is
+        the caller's job via `expiresAt`, not this endpoint's — the expired/unknown distinction
+        that matters for REQ-004/REQ-005 is enforced at `/r/{code}`, not here).
+      parameters:
+        - $ref: '#/components/parameters/CodePathParam'
+      responses:
+        '200':
+          description: Link metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LinkResponse'
+        '404':
+          description: No link exists for this code (REQ-004 negative criterion).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: { reason: "short_code_not_found" }
+
+  /r/{code}:
+    get:
+      tags: [redirect]
+      operationId: redirect
+      summary: Resolve a short code and redirect to its destination (REQ-004, REQ-005)
+      description: |
+        The only endpoint that performs the actual redirect, records a `redirect_events` row, and
+        updates `short_links.redirect_count`/`last_accessed_at` (REQ-006, eventually consistent
+        per CLR-8/CLR-9). Expired and unknown codes are distinguishable (CLR-7): expired → `410`,
+        unknown → `404`. Neither ever redirects to any destination, including a fallback one.
+      parameters:
+        - $ref: '#/components/parameters/CodePathParam'
+      responses:
+        '307':
+          description: Temporary redirect to the original destination URL.
+          headers:
+            Location:
+              description: The original long URL.
+              schema: { type: string, format: uri }
+        '404':
+          description: Unknown/never-issued short code (REQ-004 negative criterion).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: { reason: "short_code_not_found" }
+        '410':
+          description: Short code exists but has passed its expiration (REQ-005, CLR-7).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: { reason: "short_link_expired" }
+
+  /links/{code}/analytics:
+    get:
+      tags: [links]
+      operationId: getLinkAnalytics
+      summary: Retrieve basic redirect analytics for a short code (REQ-006)
+      parameters:
+        - $ref: '#/components/parameters/CodePathParam'
+      responses:
+        '200':
+          description: Analytics snapshot (eventually consistent — CLR-8).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyticsResponse'
+              example:
+                code: "9Kd3aZ1"
+                redirectCount: 42
+                lastAccessedAt: "2026-09-12T18:04:11Z"
+        '404':
+          description: Unknown short code.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /workflows:
+    post:
+      tags: [workflows]
+      operationId: createWorkflow
+      summary: Create a new Workflow Run from an ingested requirement (REQ-011)
+      description: |
+        **Plan-level design decision, flagged for Task 7/9 implementation attention:** the
+        execution runbook's current reference implementation only exercises workflow creation
+        through `ScenarioRunner` (a CLI harness) calling `WorkflowEngine.submit(feature, stages,
+        correlationId)` directly — no generic HTTP creation endpoint exists there yet, because
+        each of the three mandatory scenarios (Section 11) uses a scenario-specific, hand-built
+        stage list. This contract formalizes the HTTP-facing shape REQ-011 requires ("the system
+        MUST allow a new Workflow Run to be created... via a new requirement input") so that the
+        capability is not only reachable from a CLI demo. The implementing task must instantiate
+        the baseline 12-node stage graph (`plan.md` Section 3) for a generic `feature`/
+        `requirementText` pair, or reject with `501` for a request that does not match one of the
+        three demonstrated scenario shapes if generic instantiation is descoped under the
+        Section 4 scope-control rules — either outcome must be an explicit, documented choice at
+        implementation time, not a silent gap.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWorkflowRequest'
+            examples:
+              greenfield:
+                value: { feature: "add-expiration-endpoint", requirementText: "Add an optional expiresAt field to link creation." }
+      responses:
+        '201':
+          description: Workflow Run created and graph instantiated (persisted in an inspectable form).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowCreatedResponse'
+        '422':
+          description: Requirement input unreadable/absent (REQ-016 safe-stop at Stage 1).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '501':
+          description: Generic instantiation not implemented for this iteration (see description above).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /workflows/{id}:
+    get:
+      tags: [workflows]
+      operationId: getWorkflow
+      summary: Inspect the full current state of a Workflow Run (REQ-012)
+      parameters:
+        - $ref: '#/components/parameters/WorkflowIdPathParam'
+      responses:
+        '200':
+          description: Current workflow and per-step state, from persisted state alone.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowStateResponse'
+        '404':
+          description: Unknown workflow id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /workflows/{id}/approvals/{step}:
+    post:
+      tags: [workflows]
+      operationId: recordApproval
+      summary: Record a human decision on a pending Approval Gate (REQ-013)
+      description: |
+        Never inferred from silence — there is no timeout-based auto-approval anywhere in this
+        design (REQ-013 negative criterion). `decision` must be `approved` or `rejected`; any
+        other value is a `400`.
+      parameters:
+        - $ref: '#/components/parameters/WorkflowIdPathParam'
+        - name: step
+          in: path
+          required: true
+          schema: { type: string }
+          description: The stage name the pending gate blocks.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApprovalRequest'
+            example:
+              decision: "approved"
+              actor: "human-candidate"
+              reason: "matches ADR-003/006"
+      responses:
+        '204':
+          description: Decision recorded; dependent branch released (approved) or blocked (rejected).
+        '400':
+          description: Invalid decision value.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown workflow id or step name, or no gate currently pending on that step.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /workflows/{id}/audit:
+    get:
+      tags: [workflows]
+      operationId: getWorkflowAudit
+      summary: Retrieve the full, independently reconstructable evidence trail for a run (REQ-019, REQ-026)
+      parameters:
+        - $ref: '#/components/parameters/WorkflowIdPathParam'
+      responses:
+        '200':
+          description: Ordered list of audit events (insertion order = event order).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuditEventResponse'
+        '404':
+          description: Unknown workflow id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /metrics:
+    get:
+      tags: [operations]
+      operationId: getReliabilityMetrics
+      summary: Reliability/observability summary (REQ-022, REQ-025, REQ-026; MTTR mechanics — plan.md Section 7)
+      description: |
+        Always tagged `isDemonstrationData: true`. Never presented as a production SLA
+        (constitution Principle IX; `plan.md` Section 7's explicit MTTR-reporting rules).
+      responses:
+        '200':
+          description: Current reliability summary computed from persisted workflow/step state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReliabilitySummary'
+
+  /healthz:
+    get:
+      tags: [operations]
+      operationId: healthz
+      summary: Liveness signal (REQ-010)
+      responses:
+        '200':
+          description: Process is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [ok] }
+                example: { status: "ok" }
+
+  /readyz:
+    get:
+      tags: [operations]
+      operationId: readyz
+      summary: Readiness signal reflecting real dependency state (REQ-010)
+      description: |
+        Must never report ready while the persistence layer is actually unreachable (REQ-010
+        negative criterion) — backed by a real connection check, not a hardcoded constant.
+      responses:
+        '200':
+          description: Critical dependencies (at minimum, the database) are reachable.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [ready] }
+                example: { status: "ready" }
+        '503':
+          description: A critical dependency (the database) is not reachable.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [not_ready] }
+
+components:
+  parameters:
+    CodePathParam:
+      name: code
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[a-zA-Z0-9]{7}$' }
+      description: 7-character base62 short code (CLR-3).
+    WorkflowIdPathParam:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+      description: Workflow Run identifier assigned at creation.
+
+  schemas:
+    CreateLinkRequest:
+      type: object
+      required: [longUrl]
+      properties:
+        longUrl:
+          type: string
+          format: uri
+          maxLength: 2048
+          description: Must use http or https (CLR-1); must not resolve to a loopback/link-local/private-RFC1918 host (SSRF guard, CLR-1).
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Optional. Omitted/null = no expiration (CLR-6 default).
+
+    LinkResponse:
+      type: object
+      required: [code, longUrl, shortUrl]
+      properties:
+        code: { type: string, pattern: '^[a-zA-Z0-9]{7}$' }
+        longUrl: { type: string, format: uri }
+        shortUrl: { type: string, description: "Relative redirect path, e.g. /r/{code}." }
+        expiresAt: { type: string, format: date-time, nullable: true }
+
+    AnalyticsResponse:
+      type: object
+      required: [code, redirectCount]
+      properties:
+        code: { type: string }
+        redirectCount: { type: integer, format: int32, minimum: 0 }
+        lastAccessedAt: { type: string, format: date-time, nullable: true }
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [reason]
+          properties:
+            reason:
+              type: string
+              description: Machine-parseable rejection/failure reason, e.g. disallowed_scheme, url_too_long, ssrf_blocked_host, short_code_not_found, short_link_expired.
+
+    CreateWorkflowRequest:
+      type: object
+      required: [feature]
+      properties:
+        feature:
+          type: string
+          description: Free-text label for the requirement/feature this run executes against.
+        requirementText:
+          type: string
+          description: The ingested requirement text (Stage 1, Section 3.1) — captured verbatim with provenance.
+
+    WorkflowCreatedResponse:
+      type: object
+      required: [id, status, correlationId, planVersion]
+      properties:
+        id: { type: string }
+        status:
+          $ref: '#/components/schemas/WorkflowStatus'
+        correlationId: { type: string }
+        planVersion: { type: integer, format: int32 }
+
+    WorkflowStatus:
+      type: string
+      enum: [CREATED, RUNNING, PENDING_APPROVAL, SAFE_STOPPED, REPLANNING, COMPLETED, FAILED]
+
+    StepStatus:
+      type: string
+      enum: [PENDING, RUNNING, WAITING_APPROVAL, SUCCEEDED, FAILED, RETRYING, ROLLED_BACK, COMPENSATED, SAFE_STOPPED, INVALIDATED, SKIPPED]
+
+    WorkflowStateResponse:
+      type: object
+      required: [id, status, steps]
+      properties:
+        id: { type: string }
+        status:
+          $ref: '#/components/schemas/WorkflowStatus'
+        steps:
+          type: array
+          items:
+            type: object
+            required: [name, status, retryCount]
+            properties:
+              name: { type: string }
+              status:
+                $ref: '#/components/schemas/StepStatus'
+              startedAt: { type: string, format: date-time, nullable: true }
+              endedAt: { type: string, format: date-time, nullable: true }
+              retryCount: { type: integer, format: int32, minimum: 0 }
+
+    ApprovalRequest:
+      type: object
+      required: [decision, actor]
+      properties:
+        decision: { type: string, enum: [approved, rejected] }
+        actor: { type: string, description: "Self-asserted identity — no authentication enforced this iteration (CLR-10)." }
+        reason: { type: string }
+
+    AuditEventResponse:
+      type: object
+      required: [actorType, action, timestamp]
+      properties:
+        actorType: { type: string, enum: [agent, human, orchestrator] }
+        action: { type: string }
+        timestamp: { type: string, format: date-time }
+        result: { type: string, nullable: true }
+        reason: { type: string, nullable: true }
+
+    ReliabilitySummary:
+      type: object
+      required: [successRate, retryFrequency, rollbackOrCompensationFrequency, isDemonstrationData]
+      properties:
+        successRate: { type: number, format: double, minimum: 0, maximum: 1 }
+        retryFrequency: { type: number, format: double, minimum: 0 }
+        rollbackOrCompensationFrequency: { type: number, format: double, minimum: 0 }
+        endToEndLatencySeconds: { type: number, format: double, nullable: true }
+        isDemonstrationData:
+          type: boolean
+          description: Always true in this iteration — never a production SLA claim (constitution Principle IX).

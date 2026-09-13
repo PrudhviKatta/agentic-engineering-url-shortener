@@ -233,6 +233,18 @@ from step-level status, so the two never drift out of sync.
 
 ### 3.2 Baseline stage graph — full node table
 
+**Correction (2026-09-13):** the table below still shows Stages 1-3 "Realized by" one combined
+`RequirementStage`, and Stage 4/12 as engine-mechanism/external-artifact rather than real nodes —
+this was the exact claim an external review correctly identified as unvalidatable (one Java method
+cannot mechanically deliver three differentiated retry policies) and incomplete (Stage 4 was never
+independently persisted/auditable). The corrected design — three real split stages
+(`requirement_ingestion`, `requirement_normalization`, `ambiguity_detection`), a real persisted
+`human_clarification` node using a new conditional-activation mechanism, and a real
+`final_engineering_summary` terminal node — is fully specified in `docs/engineering-runbook.md`
+Phase 12 (Tasks 49/51) and `tasks.md` (`T020b`, `T020c`), not re-tabulated here to avoid the same
+content drifting out of sync in two places. Treat rows 1-4 and 12 below as superseded by those
+tasks; rows 5-11 are unaffected.
+
 This is the same 12-stage graph `spec.md` Section 3.1 defines, restated here with the concrete
 orchestration-engine mechanics (gate type, timeout, retry, failure classification, fallback,
 audit events) that realize each spec-level stage. "Realized by" names the concrete stage
@@ -289,12 +301,18 @@ These are cross-cutting states any node above may enter, not separate nodes:
 - **Timeout:** `TimeoutExecutor.withTimeout` wraps each attempt independently — a slow attempt is
   a distinct failure event from a thrown exception, both funneled into the same retry/safe-stop
   path.
-- **Fallback:** for this iteration, "fallback" is realized as *retry-then-safe-stop* — there is no
-  third, alternate-implementation fallback path beyond retry and safe-stop in this prototype's
-  scope (a disclosed scope decision, not an oversight: a real "fallback to a degraded mode"
-  behavior was not named as a concrete requirement beyond REQ-014's own "fallback support"
-  language, which this design satisfies via the compensation path, Section 6, rather than a third
-  distinct mechanism).
+- **Fallback (corrected 2026-09-13 — see `docs/engineering-runbook.md` Phase 12, Task 50):** a real,
+  distinct mechanism, not a rename of retry-then-safe-stop. The original text here directly
+  contradicted constitution Principle VIII, which requires fallback to be distinguishable from
+  *both* retry and safe-stop — an external review caught this before any code existed. A stage may
+  register a fallback handler; when the primary handler exhausts retries, the fallback is attempted
+  once (timeout-wrapped, not itself retried); success reaches `SUCCEEDED_WITH_FALLBACK` (a distinct
+  step status, disclosed in the Release-readiness report as a reduced guarantee, never presented as
+  equivalent to primary-path success); failure falls through to the existing compensation-or-
+  safe-stop path unchanged. The normative source is constitution Principle VIII directly — the
+  citation to REQ-014 in the original text was also a correction target: REQ-014's own text is
+  about retries/timeouts, not fallback; `spec.md`'s characteristics-table cross-reference to
+  REQ-014 is a mapping-table artifact, not fallback's actual normative source.
 - **Rollback / compensation:** `CompensationRegistry` — an in-transaction, not-yet-committed
   effect rolls back for free (transaction abort); an externally-observed effect (the canonical
   example, a served redirect, CLR-14) runs its registered compensating action instead. See
@@ -696,14 +714,21 @@ not assume they are already covered by the existing `LinkControllerContractTest`
   capability.
 - **Decomposition:** the fix is scoped to exactly one production file (`UrlValidator.java`) and
   its test suite.
-- **Orchestration path:** baseline graph plus an inserted `ImpactAnalysisStage` (`dependsOn=[]`),
-  with `implementation.dependsOn` extended to `["impact_analysis", "design"]` — the seven impact
-  dimensions (spec.md Section 4, SCN-B) are represented in the stage's structured result
-  (`impactedModules`, `impactedTests`, `regressionRisk`; the remaining four — interfaces, data
-  flows, documentation, rollout/rollback — are covered in `docs/scenarios/brownfield.md`'s
-  narrative for this specific, contract-shape-unchanged fix, since a private-method-level security
-  hardening has no interface/data-flow/rollout impact to report beyond "none," which is itself a
-  recorded finding, not an omission).
+- **Orchestration path (corrected 2026-09-13 — see `docs/engineering-runbook.md` Phase 12,
+  Task 52; `tasks.md` T040a):** the original design here collapsed `spec.md` Section 4's seven
+  required parallel impact dimensions into one stage's structured result fields, with the four
+  dimensions lacking a field (interfaces, data flows, documentation, rollout/rollback) covered only
+  in narrative prose — an external review correctly identified this as not satisfying `spec.md`'s
+  explicit requirement for seven *concurrently-executing* sibling branches, regardless of how
+  low-impact any individual dimension's finding turns out to be for this specific fix. The
+  corrected design: baseline graph plus seven parallel stages
+  (`impact_components`, `impact_interfaces`, `impact_data_flows`, `impact_tests`,
+  `impact_documentation`, `impact_regression_risk`, `impact_rollout_rollback`), all
+  `dependsOn=["decomposition"]` with no dependency on each other, joined by
+  `ChangeImpactReportStage` (`dependsOn` = all seven, `exitApproval=true`). For this specific fix, a
+  low-impact finding ("none beyond X") is still a real, separately-persisted, separately-audited
+  result from its own stage — not the absence of a stage. `implementation.dependsOn` extends to
+  `["change_impact_report", "design"]`.
 - **Approvals:** the joined Change Impact Report gates `implementation` (REQ-013) — brownfield's
   defining difference from greenfield, since existing behavior and existing consumers are at risk.
 - **Failure paths:** if the regression suite (`UrlValidatorTest` + `UrlValidatorSsrfTest`) fails

@@ -1320,6 +1320,8 @@ public AnalyticsResponse analytics(@PathVariable String code) {
 
 ### Task 20: Stage/graph model + topological + parallel-group resolution
 
+> **Extended by Phase 12 (2026-09-13):** Task 49 adds conditional stage activation (additive — no change to this record). Task 50 adds `SUCCEEDED_WITH_FALLBACK` (additive enum constant). See Phase 12.
+
 **Files:**
 - Create: `src/main/java/com/schwab/urlshortener/orchestration/StepStatus.java`, `WorkflowStatus.java`, `StageHandler.java`, `StageDefinition.java`, `DependencyGraph.java`, `CycleException.java`, `UnknownDependencyException.java`
 - Test: `src/test/java/com/schwab/urlshortener/orchestration/DependencyGraphTest.java`
@@ -3716,6 +3718,8 @@ private void runStage(String workflowId, StageDefinition stage, WorkflowContext 
 
 ### Task 34: Safe-stop conditions consolidated
 
+> **Corrected by Phase 12 (2026-09-13):** the "fallback realized as retry-then-safe-stop" language originally implied here was a mislabeling that directly contradicted the constitution's own fallback definition — corrected by Task 50, which builds a real fallback mechanism. The two-category safe-stop enumeration itself is unchanged; category (b) now nests a real fallback attempt before compensation. See Phase 12.
+
 **Files:** No code change expected — this task is a verification checkpoint, not new logic. Both "mandatory policy FAIL without exception" (Task 28) and "retries exhausted with no registered compensation" (Task 33) already throw the same `SafeStopException`, caught in the same place in `runFrom` (Task 28), landing on the same `WorkflowStatus.SAFE_STOPPED` terminal state. This task exists to prove that convergence with a dedicated test, per constitution Principle VIII's requirement that safe-stop be a single, well-defined terminal path — not to introduce a third safe-stop trigger.
 
 **Test:** `src/test/java/com/schwab/urlshortener/orchestration/WorkflowEngineSafeStopTest.java`
@@ -4013,6 +4017,8 @@ public class AuditRecorder {
 
 ### Task 37: MTTR and reliability metrics computation
 
+> **Bug fixed for real by Phase 12 (2026-09-13):** the `computeReliabilitySummary` workflow-scoping bug disclosed in this task's own code comment (steps never filtered by `workflowId`) is fixed by Task 53 — see Phase 12.
+
 **Files:**
 - Create: `src/main/java/com/schwab/urlshortener/observability/RecoveryEvent.java`, `MttrReport.java`, `ReliabilitySummary.java`, `MetricsService.java`
 - Test: `src/test/java/com/schwab/urlshortener/observability/MetricsMttrTest.java`
@@ -4259,6 +4265,8 @@ void printMetricsReport(PrintStream out) throws Exception {
 
 ### Task 39: Greenfield scenario — well-defined requirement proceeds without artificial clarification
 
+> **Superseded in part by Phase 12 (2026-09-13):** the combined `RequirementStage` and the 8-stage wiring described here are superseded by Task 51's real 12-node graph (real Stage 4 `human_clarification` and Stage 12 `final_engineering_summary`, split Stages 1-3). See Phase 12.
+
 **Files:**
 - Create: `src/main/java/com/schwab/urlshortener/orchestration/stages/{RequirementStage,DecompositionStage,DesignStage,ImplementationStage,TestingStage,DocumentationStage,SecurityStage,ReleaseReadinessStage}.java`
 - Modify: `src/main/java/com/schwab/urlshortener/scenarios/ScenarioRunner.java` (wire the real `greenfield` scenario stage set, replacing the trivial 2-stage placeholder from Task 25)
@@ -4464,6 +4472,8 @@ public final class ReleaseReadinessStage {
 
 ### Task 40: Brownfield scenario — enhancement against existing code with impact analysis gate
 
+> **Superseded by Phase 12 (2026-09-13):** the single `ImpactAnalysisStage` described here is superseded by Task 52's seven-genuinely-parallel-branch design, matching `spec.md` Section 4's explicit SCN-B requirement. See Phase 12.
+
 **Chosen brownfield change (fixed 2026-09-13, after CLR-15's human confirmation):** the original
 draft of this task targeted a `PATCH /links/{code}/expiration` endpoint — that is no longer valid.
 CLR-15 (Section 13.1 of `spec.md`) was explicitly confirmed by the human candidate on 2026-09-13:
@@ -4586,6 +4596,8 @@ public final class ImpactAnalysisStage {
 - [ ] **Step 6: Commit** — `git commit -m "fix(security): reject IPv6 unique local addresses in SSRF guard"` for the fix itself, then `git commit -m "test(scenarios): validate brownfield change workflow"` for the scenario/orchestration wiring — two coherent commits, not one bundling both concerns.
 
 ### Task 41: Ambiguous-requirement scenario — real suspension, real replanning
+
+> **Superseded in part by Phase 12 (2026-09-13):** the "make ambiguity-detection itself `exitApproval`" workaround described here is superseded by Task 51's real, conditionally-activated `human_clarification` stage — a more faithful realization of `spec.md`'s Stage 3 (detection) vs. Stage 4 (clarification) distinction. See Phase 12.
 
 **Files:**
 - Create: `docs/scenarios/ambiguous.md`
@@ -4761,3 +4773,523 @@ if (Boolean.TRUE.equals(result != null ? result.get("ambiguityDetected") : null)
 - **No placeholders:** every code step above contains runnable code or an explicit, concrete implementer note where a design choice is intentionally left to the implementer's judgment (flagged inline, e.g., Task 17's two-`save()` ID-assignment approach, Task 22's flaky-timing test risk, Task 18's repeated redirect-disabling boilerplate).
 - **Type/signature consistency checked:** `StageHandler.run(WorkflowContext) -> Map<String,Object>` is identical across Tasks 20, 22, 39–41; `StageDefinition` is constructed either via `.of(name, dependsOn, handler)` (the common no-gate/no-retry/no-parallel-group case) or the full 8-arg canonical constructor everywhere — no third construction style anywhere in the plan; `WorkflowEngine`'s constructor overloads grow additively (4 → 6 → 7 → 8 positional params across Tasks 22/23, 28, 29, 33) with each shorter overload's tests staying valid — flagged as a backlog cleanup item (a builder would be cleaner) in Task 33 and carried into Task 47's final summary, not silently left implicit; `WorkflowContext.recordDecision`/`addArtifact` signatures from Task 21 are used unchanged through Task 41.
 - **Stack-pivot specific:** this plan was originally written for Python/FastAPI/SQLAlchemy/SQLite and was translated task-by-task to Java 21/Spring Boot 3.3/Spring Data JPA/H2 after Tasks 1–3 had already executed against the original stack (Task 1 — SpecKit init — is language-independent and untouched; Task 2 was redone from scratch for Maven; Task 3 — the constitution — is language-independent and untouched). Every design decision validated during the original plan's preflight review (the `entryApproval`/`exitApproval` split, the `blocked`-batch idempotent re-halt in `runFrom`, the replan-before-approve ordering, the MTTR formula, the policy PASS/FAIL/EXCEPTION_REQUESTED/NOT_APPLICABLE model) carried over unchanged — only the implementation language and its idiomatic libraries changed.
+
+---
+
+## Phase 12 — Post-Task-10 Corrective Design Round (2026-09-13)
+
+**Why this section exists, and why it's an addendum rather than an edit to Tasks 20–41 in place:**
+three rounds of pre-implementation review (this plan's own Task 10 analysis, and two rounds of an
+external Codex review — see `codex-recommend.md` and `CODEX-REVIEW-BRIEFING.md` Section 9 in the
+repo, outside this plan file) found real, confirmed design gaps discovered *before any code was
+written* — which is exactly what a pre-implementation gate is for. Rather than silently rewriting
+Tasks 20, 23, 24, 34, 37, 39, 40, 41 in place (erasing the record of what was originally designed
+and why it changed), this section is the corrective design, and each affected original task gets a
+one-line pointer added to it saying "superseded by Phase 12, Task N below — see there for the
+reason." This preserves the plan's own history-preservation convention (never delete the record of
+what was asked/designed, append the correction alongside it) applied to itself, not just to
+`spec.md`.
+
+**Scope of this round, confirmed real by direct inspection before any fix was proposed:**
+1. `spec.md`'s SCN-B requires 7 genuinely parallel impact-analysis branches joined by a mandatory
+   approval gate; the original Task 40 built one monolithic `ImpactAnalysisStage`.
+2. The constitution defines a "fallback" mechanism distinct from retry/rollback/safe-stop; zero
+   code or design anywhere in this plan built one, and the original Task 34/plan language
+   incorrectly redefined "fallback" as "retry-then-safe-stop," directly contradicting the
+   constitution's own principle.
+3. `spec.md`'s Section 3.1 stage graph has 12 stages, each with independently differentiated
+   retry/timeout/failure-classification behavior; the original design realized Stages 1–3 as one
+   Java method (`RequirementStage`) with one retry policy, made Stage 4 (Human clarification) an
+   implicit property of Stage 3's approval gate rather than its own persisted node, and never
+   represented Stage 12 (Final engineering summary) as a workflow node at all.
+4. `computeReliabilitySummary` (Task 37) has a confirmed, self-disclosed bug: `steps` is never
+   filtered by `workflowId`, so per-workflow retry/compensation frequency figures silently
+   aggregate across every workflow in the database.
+
+**Explicitly out of scope for this round** (unchanged from the original design, already correct):
+the `entryApproval`/`exitApproval` gate mechanism itself, the `blocked`-batch replan guard, the
+replan-before-approve ordering, the policy PASS/FAIL/EXCEPTION_REQUESTED/NOT_APPLICABLE model, and
+every already-Accepted ADR's decision. This round adds capability; it does not revisit those.
+
+### Task 49: Conditional stage activation — `WorkflowEngine.registerActivationCondition`
+
+**Design constraint driving this task's shape:** `StageDefinition` is a Java `record` already
+constructed positionally in 15+ places across Tasks 20–41. Adding a field to the record would
+break every existing call site for a capability only two stages (Human clarification, and SCN-C's
+`requirement`-stage predecessor) actually need. Instead of touching the record, this task adds an
+**optional, additive side-channel** on `WorkflowEngine` itself: a stage name that has no registered
+condition is always active (today's behavior, unchanged); a stage name with a registered condition
+is evaluated against the current `WorkflowContext` when its batch is reached, and marked `SKIPPED`
+(satisfying its dependents' preconditions without running) if the condition is false.
+
+**Files:**
+- Modify: `src/main/java/com/schwab/urlshortener/orchestration/WorkflowEngine.java` (add
+  `Map<String, Predicate<WorkflowContext>> activationConditions` field, defaulting to an empty
+  `HashMap`; add `public void registerActivationCondition(String stageName, Predicate<WorkflowContext> condition)`;
+  modify `runFrom`'s batch loop to check the condition, if any, before the existing entry-gate
+  check)
+- Test: `src/test/java/com/schwab/urlshortener/orchestration/ConditionalActivationTest.java`
+
+**Interfaces:**
+- Produces: `WorkflowEngine.registerActivationCondition(String, Predicate<WorkflowContext>)`.
+  Called after constructing the engine, before `submit()`. A stage with no registered condition is
+  always active (backward-compatible default).
+
+- [ ] **Step 1: Write failing test**
+```java
+// src/test/java/com/schwab/urlshortener/orchestration/ConditionalActivationTest.java
+package com.schwab.urlshortener.orchestration;
+
+import com.schwab.urlshortener.orchestration.persistence.*;
+import java.util.List;
+import java.util.Map;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+@DataJpaTest
+class ConditionalActivationTest {
+
+    @Autowired private WorkflowInstanceJpaRepository instanceRepository;
+    @Autowired private WorkflowStepJpaRepository stepRepository;
+    @Autowired private WorkflowEventJpaRepository eventRepository;
+    @Autowired private ApprovalJpaRepository approvalRepository;
+
+    @Test
+    void stageWithFalseConditionIsSkippedNotRun() {
+        StageHandler shouldNotRun = ctx -> { throw new AssertionError("must not run"); };
+        List<StageDefinition> stages = List.of(
+                StageDefinition.of("gate_check", List.of(), ctx -> Map.of()),
+                StageDefinition.of("conditional_stage", List.of("gate_check"), shouldNotRun),
+                StageDefinition.of("after", List.of("conditional_stage"), ctx -> Map.of()));
+
+        WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository);
+        engine.registerActivationCondition("conditional_stage", ctx -> false);
+
+        String workflowId = engine.submit("demo", stages, "run-cond-1");
+
+        WorkflowStepEntity condStep = stepRepository.findByWorkflowIdAndName(workflowId, "conditional_stage").orElseThrow();
+        assertThat(condStep.getStatus()).isEqualTo(StepStatus.SKIPPED);
+        // "after" still ran, proving SKIPPED satisfies a dependent's precondition:
+        WorkflowStepEntity afterStep = stepRepository.findByWorkflowIdAndName(workflowId, "after").orElseThrow();
+        assertThat(afterStep.getStatus()).isEqualTo(StepStatus.SUCCEEDED);
+    }
+
+    @Test
+    void stageWithTrueConditionRunsNormally() {
+        List<StageDefinition> stages = List.of(
+                StageDefinition.of("conditional_stage", List.of(), ctx -> Map.of("ran", true)));
+        WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository);
+        engine.registerActivationCondition("conditional_stage", ctx -> true);
+        String workflowId = engine.submit("demo", stages, "run-cond-2");
+        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndName(workflowId, "conditional_stage").orElseThrow();
+        assertThat(step.getStatus()).isEqualTo(StepStatus.SUCCEEDED);
+    }
+}
+```
+- [ ] **Step 2: Run to confirm failure** — compile error, no `registerActivationCondition` method.
+- [ ] **Step 3: Implement**
+```java
+// WorkflowEngine.java additions
+private final Map<String, java.util.function.Predicate<WorkflowContext>> activationConditions = new java.util.HashMap<>();
+
+public void registerActivationCondition(String stageName, java.util.function.Predicate<WorkflowContext> condition) {
+    activationConditions.put(stageName, condition);
+}
+```
+  In `runFrom`'s per-batch loop, immediately after computing `pending` (the `PENDING`-status
+  stages for this batch) and before the existing entry-gate check, add:
+```java
+    for (StageDefinition stage : new java.util.ArrayList<>(pending)) {
+        var condition = activationConditions.get(stage.name());
+        if (condition != null && !condition.test(ctx)) {
+            WorkflowStepEntity step = stepRepository.findByWorkflowIdAndName(workflowId, stage.name()).orElseThrow();
+            step.setStatus(StepStatus.SKIPPED);
+            step.setEndedAt(Instant.now());
+            stepRepository.save(step);
+            recordEvent(workflowId, "engine", "stage_skipped:" + stage.name(), "OK", "activation condition false");
+            pending.remove(stage);
+        }
+    }
+```
+  No other change is needed: the existing `pending`/entry-gate/exit-gate loop already only
+  processes what remains in `pending` after this filter, and a dependent stage's precondition
+  check (`_step_status(...) == PENDING`) already treats `SKIPPED` the same as `SUCCEEDED` for the
+  purpose of "is this batch's dependency satisfied" — because dependency satisfaction is derived
+  from `graph.topologicalBatches()`'s structural ordering, not from re-checking each dependency's
+  terminal status value, per Task 20's original design. Confirm this holds with the test above
+  rather than assuming it.
+- [ ] **Step 4: Run to confirm pass** — PASS
+- [ ] **Step 5: Commit** — `git commit -m "feat(orchestration): support conditional stage activation"`
+
+### Task 50: Fallback subsystem — distinct from retry, rollback/compensation, and safe-stop
+
+**Corrects Task 34's original mislabeling** ("fallback realized as retry-then-safe-stop"), which
+directly contradicted the constitution's Principle VIII definition. Also corrects a citation error
+made during investigation: the "Fallback support" line in `spec.md` Section 3.2's characteristics-
+to-requirement mapping points to REQ-014, but REQ-014's own text is about retries/timeouts — the
+actual normative source for fallback is constitution Principle VIII directly, with REQ-014 only
+carrying the characteristics-table cross-reference. Cite Principle VIII, not REQ-014, going
+forward.
+
+**Files:**
+- Modify: `src/main/java/com/schwab/urlshortener/orchestration/StepStatus.java` (add
+  `SUCCEEDED_WITH_FALLBACK`)
+- Modify: `src/main/java/com/schwab/urlshortener/orchestration/WorkflowEngine.java` (add
+  `Map<String, StageHandler> fallbackHandlers` field + `registerFallback(String, StageHandler)`;
+  modify `runStage`'s exhaustion branch)
+- Create: `src/main/java/com/schwab/urlshortener/orchestration/stages/DocumentationFallbackStage.java`
+  (the concrete example stage exercising this mechanism)
+- Test: `src/test/java/com/schwab/urlshortener/orchestration/FallbackTest.java`
+
+**Interfaces:**
+- Produces: `WorkflowEngine.registerFallback(String stageName, StageHandler fallback)` — called
+  before `submit()`, same registration pattern as Task 49's activation conditions. A stage with no
+  registered fallback behaves exactly as before (retry-exhaustion falls straight to
+  compensation-or-safe-stop, unchanged).
+- The fallback handler itself is timeout-wrapped (`TimeoutExecutor.withTimeout`, same per-attempt
+  timeout as the primary handler) and is **not itself retried** — a fallback that times out or
+  throws is a single, final attempt; if it fails, the stage proceeds to the existing
+  compensation-or-safe-stop path exactly as if no fallback had been registered. This is what
+  "safe-stop if both primary and fallback fail" means concretely: the fallback failing does not
+  invent a *third* recovery path, it falls through to the path that already existed.
+
+- [ ] **Step 1: Write failing test**
+```java
+// src/test/java/com/schwab/urlshortener/orchestration/FallbackTest.java
+package com.schwab.urlshortener.orchestration;
+
+import com.schwab.urlshortener.orchestration.persistence.*;
+import com.schwab.urlshortener.reliability.TransientStageException;
+import java.util.List;
+import java.util.Map;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+@DataJpaTest
+class FallbackTest {
+
+    @Autowired private WorkflowInstanceJpaRepository instanceRepository;
+    @Autowired private WorkflowStepJpaRepository stepRepository;
+    @Autowired private WorkflowEventJpaRepository eventRepository;
+    @Autowired private ApprovalJpaRepository approvalRepository;
+
+    @Test
+    void primaryFailsFallbackSucceedsRecordsDegradedOutcome() {
+        StageHandler primary = ctx -> { throw new TransientStageException("primary tool unavailable"); };
+        StageHandler fallback = ctx -> Map.of("degraded", true, "reason", "used minimal-doc fallback");
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("docs", List.of(), primary, false, false, 1, 5, null));
+
+        WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository);
+        engine.registerFallback("docs", fallback);
+
+        String workflowId = engine.submit("demo", stages, "run-fb-1");
+
+        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndName(workflowId, "docs").orElseThrow();
+        assertThat(step.getStatus()).isEqualTo(StepStatus.SUCCEEDED_WITH_FALLBACK);
+        assertThat(step.getResult()).containsEntry("degraded", true);
+
+        List<String> events = eventRepository.findByWorkflowId(workflowId).stream()
+                .map(WorkflowEventEntity::getAction).toList();
+        assertThat(events).contains("fallback_started:docs", "fallback_succeeded:docs");
+    }
+
+    @Test
+    void primaryAndFallbackBothFailSafeStops() {
+        StageHandler primary = ctx -> { throw new TransientStageException("primary fails"); };
+        StageHandler fallback = ctx -> { throw new TransientStageException("fallback also fails"); };
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("docs", List.of(), primary, false, false, 0, 5, null));
+
+        WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository);
+        engine.registerFallback("docs", fallback);
+
+        String workflowId = engine.submit("demo", stages, "run-fb-2");
+
+        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndName(workflowId, "docs").orElseThrow();
+        assertThat(step.getStatus()).isEqualTo(StepStatus.SAFE_STOPPED);
+        List<String> events = eventRepository.findByWorkflowId(workflowId).stream()
+                .map(WorkflowEventEntity::getAction).toList();
+        assertThat(events).contains("fallback_started:docs", "fallback_failed:docs");
+    }
+}
+```
+- [ ] **Step 2: Run to confirm failure** — compile error, `SUCCEEDED_WITH_FALLBACK` doesn't exist;
+  `registerFallback` doesn't exist.
+- [ ] **Step 3: Implement**
+```java
+// StepStatus.java — add one constant
+PENDING, RUNNING, WAITING_APPROVAL, SUCCEEDED, SUCCEEDED_WITH_FALLBACK, FAILED, RETRYING,
+ROLLED_BACK, COMPENSATED, SAFE_STOPPED, INVALIDATED, SKIPPED
+```
+```java
+// WorkflowEngine.java additions
+private final Map<String, StageHandler> fallbackHandlers = new java.util.HashMap<>();
+
+public void registerFallback(String stageName, StageHandler fallback) {
+    fallbackHandlers.put(stageName, fallback);
+}
+```
+  In `runStage`, insert a fallback attempt **between** the retry-exhaustion loop and the existing
+  compensation check (i.e., right after the `for` loop that sets `succeeded`, before the
+  `if (!succeeded) { ... compensationRegistry ... }` block from Task 33):
+```java
+    if (!succeeded) {
+        StageHandler fallback = fallbackHandlers.get(stage.name());
+        if (fallback != null) {
+            recordEvent(workflowId, "engine", "fallback_started:" + stage.name(), "OK", null);
+            try {
+                Map<String, Object> fallbackResult = com.schwab.urlshortener.reliability.TimeoutExecutor
+                        .withTimeout(fallback, stage.timeoutSeconds() * 1000L)
+                        .run(ctx);
+                step.setStatus(StepStatus.SUCCEEDED_WITH_FALLBACK);
+                step.setEndedAt(Instant.now());
+                step.setResult(fallbackResult != null ? fallbackResult : Map.of());
+                stepRepository.save(step);
+                recordEvent(workflowId, "engine", "fallback_succeeded:" + stage.name(), "OK", null);
+                return; // recovered via fallback; batch and workflow continue normally
+            } catch (Exception fallbackFailure) {
+                recordEvent(workflowId, "engine", "fallback_failed:" + stage.name(), "FAILED",
+                        fallbackFailure.getMessage());
+                // falls through to the existing compensation-or-safe-stop path below, unchanged
+            }
+        }
+        boolean compensated = compensationRegistry != null
+                && compensationRegistry.run(stage.name(), result != null ? result : Map.of());
+        // ... rest of Task 33's exhaustion handling, unchanged from here
+    }
+```
+  Update `ReleaseReadinessStage` (Task 39) to scan the run's `workflow_steps` for any
+  `SUCCEEDED_WITH_FALLBACK` status and include a disclosure in its result map (e.g.
+  `"reducedGuarantees": ["docs: used minimal-doc fallback, full auto-generated documentation not produced"]`)
+  so the disclosure requirement is met at the point a human reviews release-readiness, not buried
+  only in the audit log.
+- [ ] **Step 4:** Update CLR-13 (`spec.md`) to fold fallback into the safe-stop enumeration
+  correctly rather than as a misnomer for it: "Safe-stop is entered when (a) a mandatory policy
+  check resolves FAIL without an approved exception, or (b) bounded retries are exhausted **and**
+  no fallback path is registered for that stage, or the registered fallback itself also fails,
+  **and** no applicable compensation exists." This keeps the enumeration at exactly two top-level
+  categories (matching Task 34's own convergence test, which proves no third category exists) while
+  correctly nesting fallback and compensation as the two recovery attempts inside category (b),
+  tried in that order.
+- [ ] **Step 5: Run to confirm pass** — PASS
+- [ ] **Step 6: Commit** — `git commit -m "feat(reliability): implement fallback distinct from retry/compensation/safe-stop"`
+
+**`DocumentationFallbackStage`'s minimum criteria (per external review: "a mere placeholder is
+insufficient"):** the fallback documentation artifact is not empty or trivial. At minimum it must
+include: the API surface (endpoint list + request/response shape) taken directly from the approved
+design artifact (`ctx.artifacts().get("design")`), explicitly labeled `"degraded": true` and
+`"omittedSections": ["narrative usage examples", "architecture rationale prose"]` — i.e., the
+*structural* content a reviewer needs (what exists, how to call it) is always present; only the
+*narrative* content (why it was designed this way, worked examples) is what the fallback omits.
+This is a deterministic, testable minimum, not "whatever text happens to be shortest."
+
+### Task 51: Real 12-node stage graph — split `RequirementStage`, persist Stages 4 and 12
+
+**Corrects** the original Task 20/39 design, which realized `spec.md` Stages 1–3 as one Java method
+with one retry policy (an unvalidatable claim once `plan.md`'s table asserted per-stage-differentiated
+retry/timeout/audit behavior for what was actually one atomic execution), left Stage 4 (Human
+clarification) as an implicit property of an approval gate rather than its own persisted,
+independently-auditable node, and never represented Stage 12 (Final engineering summary) as a
+workflow node.
+
+**Files:**
+- Modify: `src/main/java/com/schwab/urlshortener/orchestration/stages/RequirementStage.java` →
+  split into three files: `RequirementIngestionStage.java`, `RequirementNormalizationStage.java`,
+  `AmbiguityDetectionStage.java`
+- Create: `src/main/java/com/schwab/urlshortener/orchestration/stages/FinalSummaryStage.java`
+- Modify: every scenario wiring that referenced the combined `requirement` stage (Tasks 39, 40, 41)
+- Test: `src/test/java/com/schwab/urlshortener/orchestration/scenarios/GreenfieldScenarioTest.java`
+  (extended), `src/test/java/com/schwab/urlshortener/orchestration/scenarios/AmbiguousScenarioTest.java`
+  (rewritten to use the real conditional Stage 4 instead of the ad-hoc "make ambiguity-detection
+  itself exit-gated" workaround)
+
+**Interfaces:**
+- `RequirementIngestionStage.run(WorkflowContext) -> Map<String,Object>` — captures the requirement,
+  `maxRetries=0` (permanent-only, per `plan.md`'s original per-stage table).
+- `RequirementNormalizationStage.run(...)` — `dependsOn=["requirement_ingestion"]`, `maxRetries=2`
+  (transient-classified, CLR-12).
+- `AmbiguityDetectionStage.run(...)` — `dependsOn=["requirement_normalization"]`, `maxRetries=0`,
+  returns `{"ambiguityDetected": bool, "reason": String}`.
+- A new stage named `human_clarification`, `dependsOn=["ambiguity_detection"]`, `entryApproval=true`,
+  handler is a no-op (`ctx -> Map.of()` — the actual "work" is the human's approval decision
+  itself), registered via `engine.registerActivationCondition("human_clarification", ctx -> Boolean.TRUE.equals(ctx.artifacts().get("ambiguityDetected")))`.
+  When the condition is false (the well-defined/greenfield path), Task 49's mechanism marks it
+  `SKIPPED` immediately — the entry-gate check never runs, no approval is ever requested. When true
+  (the ambiguous path, SCN-C), it behaves as an ordinary `entryApproval` stage: blocked until a
+  human calls `approve()`.
+- `task_decomposition` (existing `DecompositionStage`) now `dependsOn=["human_clarification"]`
+  instead of `["requirement"]` — satisfied whether that stage ends `SUCCEEDED` (approved) or
+  `SKIPPED` (wasn't needed), per Task 49's design.
+- `FinalSummaryStage.run(...)` — `dependsOn=["release_readiness"]`, plain (no approval gate — see
+  design note below), reads the full persisted audit trail and produces a per-run summary artifact
+  (distinct from Task 47's project-wide final engineering summary; this is one workflow run's own
+  terminal evidence record).
+
+**Design note (why `final_engineering_summary` has no `exitApproval`, though `spec.md` says
+"Agent, human-reviewed"):** `release_readiness` (Stage 11) already carries `exitApproval=true` —
+gating on both Stage 11 *and* Stage 12 would be two human sign-off events back to back for the same
+run, with nothing new to review in between (Stage 12 only compiles evidence Stage 11 already
+approved). "Human-reviewed" is read here as "a human reads this artifact as part of reviewing the
+run," not "workflow completion blocks on a second live approval." This is a judgment call, recorded
+here rather than silently made — if a future reviewer disagrees, the fix is a one-line
+`exitApproval=true` addition, not a redesign.
+
+- [ ] **Step 1: Write failing test** — extend `GreenfieldScenarioTest` to assert exactly 12 distinct
+  `workflow_steps` rows exist by name (`requirement_ingestion, requirement_normalization,
+  ambiguity_detection, human_clarification, decomposition, design, implementation, testing,
+  security, documentation, release_readiness, final_engineering_summary`), that
+  `human_clarification`'s status is `SKIPPED` for the well-defined greenfield case (since the
+  requirement is unambiguous by construction), and that `final_engineering_summary` runs last and
+  reaches `SUCCEEDED`.
+- [ ] **Step 2: Run to confirm failure** — only 8 step rows exist today; `human_clarification` and
+  `final_engineering_summary` don't exist as stages at all.
+- [ ] **Step 3: Implement** the three split stages, `FinalSummaryStage`, and rewire
+  `ScenarioRunner`'s greenfield case to register all 12 stages plus
+  `engine.registerActivationCondition("human_clarification", ...)` before calling `submit`.
+- [ ] **Step 4:** Rewrite `AmbiguousScenarioTest` (Task 41) to use the real `human_clarification`
+  stage instead of the original workaround (making `ambiguity_detection` itself `exitApproval`):
+  the ambiguous-input run now shows `ambiguity_detection` completing `SUCCEEDED` (it did its job:
+  detected and reported the ambiguity), then `human_clarification` entering `WAITING_APPROVAL`
+  (its condition evaluated true), rather than the old design where the detection stage itself sat
+  in a gated state. This is a more faithful realization of `spec.md`'s own Stage 3/Stage 4
+  distinction (detection is Agent work with a deterministic outcome; clarification is a distinct
+  Human-owned node) and was the root cause Task 51 exists to fix.
+- [ ] **Step 5: Run to confirm pass** — PASS
+- [ ] **Step 6: Commit** — `git commit -m "feat(orchestration): realize the full 12-node stage graph with real conditional Stage 4/12"`
+
+### Task 52: SCN-B — seven genuinely parallel impact-analysis branches + joined approval gate
+
+**Corrects** Task 40's original single `ImpactAnalysisStage`, which did not satisfy `spec.md`
+Section 4's explicit requirement for seven concurrently-executing sibling branches joined by a
+mandatory Approval Gate before Implementation.
+
+**Files:**
+- Create: `src/main/java/com/schwab/urlshortener/orchestration/stages/impact/` — seven classes:
+  `ImpactedComponentsStage`, `ImpactedInterfacesStage`, `ImpactedDataFlowsStage`,
+  `ImpactedTestsStage`, `ImpactedDocumentationStage`, `RegressionRiskStage`,
+  `RolloutRollbackStage`
+- Create: `src/main/java/com/schwab/urlshortener/orchestration/stages/ChangeImpactReportStage.java`
+- Delete: the original single `ImpactAnalysisStage.java` (superseded, not kept alongside)
+- Test: `src/test/java/com/schwab/urlshortener/orchestration/scenarios/BrownfieldScenarioTest.java`
+  (rewritten)
+
+**Interfaces:**
+- Each of the seven stages: `dependsOn=["decomposition"]`, no dependency on each other
+  (genuinely parallel-safe — disjoint concerns, disjoint `ctx.artifacts()` keys written), returns a
+  `Map<String,Object>` with at minimum a `"finding"` string and a `"risk"` enum-like string
+  (`"low"|"medium"|"high"`). `RolloutRollbackStage` additionally returns `"rollbackPlan"` — this
+  becomes, per `spec.md`, "a required exit-criterion input to Release-readiness": `ReleaseReadinessStage`
+  (Task 39/50) must read it from the joined report and refuse a "ready" outcome if it is absent for
+  a brownfield run (REQ-020 negative criterion).
+- `ChangeImpactReportStage`: `dependsOn` = all seven above, `exitApproval=true`. Its handler reads
+  all seven predecessor results from `ctx` (each stage's own `ctx.recordDecision(...)` call, per
+  the existing `WorkflowContext` pattern) and assembles one `Map` keyed by dimension name. This is
+  the "single Change Impact Report" and the "mandatory Approval Gate (REQ-013)" `spec.md` names —
+  `implementation.dependsOn` now includes `["change_impact_report"]` in addition to `["design"]`
+  for the brownfield path.
+
+- [ ] **Step 1: Write failing test**
+```java
+// BrownfieldScenarioTest.java — key assertions (full test class follows the same
+// @DataJpaTest / WorkflowEngine-construction pattern as every other scenario test)
+@Test
+void sevenImpactBranchesRunInParallelAndJoinBeforeImplementation() {
+    // ... construct engine, submit brownfield stage set (7 impact stages + report + baseline stages) ...
+    List<WorkflowStepEntity> impactSteps = stepRepository.findByWorkflowIdAndNameIn(workflowId,
+            List.of("impact_components", "impact_interfaces", "impact_data_flows", "impact_tests",
+                    "impact_documentation", "impact_regression_risk", "impact_rollout_rollback"));
+    assertThat(impactSteps).hasSize(7);
+    assertThat(impactSteps).allMatch(s -> s.getStatus() == StepStatus.SUCCEEDED);
+
+    // Genuine overlap, not fast-sequential: at least two of the seven have overlapping
+    // [startedAt, endedAt) intervals — the same style of assertion Task 22's parallel test uses,
+    // with the same documented fallback to a CountDownLatch-based deterministic check if timing
+    // proves flaky in CI.
+    boolean anyOverlap = /* pairwise interval-overlap check across impactSteps */ true;
+    assertThat(anyOverlap).isTrue();
+
+    WorkflowStepEntity reportStep = stepRepository.findByWorkflowIdAndName(workflowId, "change_impact_report").orElseThrow();
+    assertThat(reportStep.getStartedAt()).isAfterOrEqualTo(
+            impactSteps.stream().map(WorkflowStepEntity::getEndedAt).max(Instant::compareTo).orElseThrow());
+    // Report started only after every one of the seven branches finished — proves the join
+    // does not fire early.
+
+    WorkflowStepEntity implStep = stepRepository.findByWorkflowIdAndName(workflowId, "implementation").orElseThrow();
+    assertThat(implStep.getStatus()).isEqualTo(StepStatus.PENDING); // blocked: report is exitApproval, unapproved
+}
+
+@Test
+void rejectedChangeImpactReportBlocksImplementationPermanently() {
+    // ... submit, then engine.approve(workflowId, "change_impact_report", "rejected", "human", "regression risk too high") ...
+    WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+    assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.FAILED);
+    WorkflowStepEntity implStep = stepRepository.findByWorkflowIdAndName(workflowId, "implementation").orElseThrow();
+    assertThat(implStep.getStatus()).isEqualTo(StepStatus.PENDING); // never ran
+}
+```
+- [ ] **Step 2: Run to confirm failure** — compile errors, none of the eight new classes exist.
+- [ ] **Step 3: Implement** the seven stages and `ChangeImpactReportStage` per the Interfaces
+  section above; rewire `ScenarioRunner`'s brownfield case.
+- [ ] **Step 4: Run to confirm pass** — PASS
+- [ ] **Step 5:** Update `docs/scenarios/brownfield.md`'s Dependency Map / Regression Risk Matrix
+  sections to reflect the real seven-branch structure instead of the original single-stage
+  impact map.
+- [ ] **Step 6: Commit** — `git commit -m "feat(scenarios): realize SCN-B's seven parallel impact-analysis branches"`
+
+### Task 53: Fix `computeReliabilitySummary`'s workflow-scoping bug for real
+
+**Corrects** Task 37's self-disclosed, previously-deferred bug: `steps` was never filtered by
+`workflowId` even when one was supplied for `instances`.
+
+**Files:** Modify: `src/main/java/com/schwab/urlshortener/observability/MetricsService.java`;
+`src/main/java/com/schwab/urlshortener/orchestration/persistence/WorkflowStepJpaRepository.java`
+(add `List<WorkflowStepEntity> findByWorkflowId(String workflowId);` — a Spring Data derived query,
+zero implementation code needed)
+
+**Test:** `src/test/java/com/schwab/urlshortener/observability/MetricsServiceIsolationTest.java`
+
+- [ ] **Step 1: Write failing test**
+```java
+@Test
+void perWorkflowMetricsDoNotContaminateAcrossWorkflows() {
+    // Workflow A: one stage retried 3 times then succeeds.
+    // Workflow B: one stage succeeds on the first attempt, zero retries.
+    // ... submit both via the engine ...
+    ReliabilitySummary summaryForB = MetricsService.computeReliabilitySummary(
+            instanceRepository, stepRepository, workflowIdB);
+    assertThat(summaryForB.retryFrequency()).isZero(); // must NOT reflect workflow A's retries
+}
+```
+- [ ] **Step 2: Run to confirm failure** — `retryFrequency` for workflow B is non-zero, polluted by
+  workflow A's steps.
+- [ ] **Step 3: Implement** — replace `stepRepository.findAll()` with
+  `workflowId != null ? stepRepository.findByWorkflowId(workflowId) : stepRepository.findAll()`,
+  mirroring the existing `instances` pattern two lines above it.
+- [ ] **Step 4: Run to confirm pass** — PASS
+- [ ] **Step 5: Commit** — `git commit -m "fix(observability): scope reliability metrics to the requested workflow"`
+
+### Superseded-task pointers (add these one-line notes to the original tasks, do not delete their content)
+
+- Task 20 (StageDefinition/StepStatus): add a note after its Interfaces section: "Extended by
+  Task 49 (conditional activation, additive — no change to this record) and Task 50
+  (`SUCCEEDED_WITH_FALLBACK`, additive enum constant) — see Phase 12."
+- Task 34 (safe-stop): add a note: "The 'fallback realized as retry-then-safe-stop' language
+  originally here was a mislabeling, corrected by Task 50 — see Phase 12. The two-category safe-stop
+  enumeration itself is unchanged; category (b) now nests a real fallback attempt before
+  compensation, per Task 50's CLR-13 update."
+- Task 37 (MTTR/metrics): add a note: "The `computeReliabilitySummary` workflow-scoping bug
+  disclosed in this task's original code comment is fixed for real by Task 53 — see Phase 12."
+- Task 39 (greenfield): add a note: "The combined `RequirementStage` and the 8-stage wiring
+  described here are superseded by Task 51's real 12-node graph — see Phase 12."
+- Task 40 (brownfield): add a note: "The single `ImpactAnalysisStage` described here is superseded
+  by Task 52's seven-branch design — see Phase 12."
+- Task 41 (ambiguous): add a note: "The 'make ambiguity-detection itself exitApproval' workaround
+  described here is superseded by Task 51's real, conditionally-activated `human_clarification`
+  stage — see Phase 12."

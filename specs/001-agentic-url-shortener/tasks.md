@@ -432,6 +432,71 @@ marked `parallel: true` against another task in this block.
   graph model"`.
 - **Human approval**: false.
 
+### T020b: Conditional stage activation *(added post-Task-10, Codex round 3: `codex-recommend.md`,
+"a static exitApproval boolean cannot make approval conditional on ambiguityDetected")*
+
+- **Objective**: Let a stage be marked `SKIPPED` (never runs, satisfies dependents' preconditions
+  anyway) when a registered predicate over `WorkflowContext` evaluates false at the point its batch
+  is reached — an additive, non-breaking capability, not a change to `StageDefinition`'s record
+  shape.
+- **REQ/SCN/ADR**: REQ-011, REQ-013, REQ-016; SCN-C; ADR-004 (extends, does not amend).
+- **Files**: Modify `orchestration/WorkflowEngine.java` (add
+  `Map<String,Predicate<WorkflowContext>> activationConditions` + `registerActivationCondition(...)`;
+  modify `runFrom`'s batch loop); Test `orchestration/ConditionalActivationTest.java`.
+- **Prerequisites**: T023 (this task's activation check sits alongside the existing entry-gate
+  check in the same batch loop T023 established).
+- **Parallel**: false.
+- **Expected artifact**: a stage with a registered condition that evaluates false reaches
+  `SKIPPED`, never invoking its handler; a dependent stage runs normally regardless of whether its
+  prerequisite ended `SUCCEEDED` or `SKIPPED`.
+- **TDD**: yes.
+- **Validation command**: `./mvnw test -Dtest=ConditionalActivationTest`
+- **Doc impact**: `plan.md` Section 3 gains a description of this mechanism.
+- **Traceability update**: REQ-011/013/016 rows gain `T020b`.
+- **Risk/guardrail**: deliberately does **not** add fields to the `StageDefinition` record — that
+  would break 15+ existing positional call sites across T020–T041 for a capability only two stages
+  need. The registration side-channel is the reason this stays additive.
+- **Completion criteria**: test passes; `git commit -m "feat(orchestration): support conditional
+  stage activation"`.
+- **Human approval**: false.
+
+### T020c: Real 12-node stage graph — split `RequirementStage`, persist Stages 4 and 12
+*(added post-Task-10, Codex round 3: "splitting Stages 1-3 changes the runtime graph from eight to
+ten stages — not twelve... implement twelve genuine persisted nodes rather than weakening the
+specification")*
+
+- **Objective**: Realize all 12 of `spec.md` Section 3.1's stages as independently persisted,
+  independently auditable `WorkflowStepEntity` rows — split the combined `RequirementStage` into
+  three (ingestion, normalization, ambiguity detection), make Stage 4 (Human clarification) a real
+  node using T020b's conditional-activation mechanism, and add Stage 12 (Final engineering summary)
+  as a real terminal node.
+- **REQ/SCN/ADR**: REQ-011, REQ-012, REQ-013, REQ-016, REQ-019; SCN-A, SCN-B, SCN-C; ADR-004.
+- **Files**: Modify `orchestration/stages/RequirementStage.java` → split into
+  `RequirementIngestionStage.java`, `RequirementNormalizationStage.java`,
+  `AmbiguityDetectionStage.java`; Create `orchestration/stages/FinalSummaryStage.java`; Test:
+  extends `GreenfieldScenarioTest` (T039), rewrites `AmbiguousScenarioTest` (T041).
+- **Prerequisites**: T020b, T021 (WorkflowContext), T023 (entryApproval mechanics for Stage 4).
+- **Parallel**: false.
+- **Expected artifact**: a well-defined greenfield run shows 12 distinct named step rows, with
+  `human_clarification` reaching `SKIPPED` (condition false — requirement is unambiguous); an
+  ambiguous run shows `ambiguity_detection` reaching `SUCCEEDED` (it did its job) and
+  `human_clarification` reaching `WAITING_APPROVAL` (condition true) as a genuinely separate node,
+  not the same stage wearing two hats.
+- **TDD**: yes.
+- **Validation command**: `./mvnw test -Dtest=GreenfieldScenarioTest,AmbiguousScenarioTest`
+- **Doc impact**: `plan.md` Section 3.2's node table gains three real rows for Stages 1-3 (each
+  with its own, now-actually-achievable, differentiated retry policy) instead of one combined row;
+  Stage 4 and Stage 12 rows change from "realized by an engine-level mechanism / external to
+  WorkflowEngine" to real stage classes.
+- **Traceability update**: REQ-011/012/013/016/019 rows gain `T020c`.
+- **Risk/guardrail**: `final_engineering_summary` is deliberately **not** `exitApproval` — gating
+  both Stage 11 (release-readiness) and Stage 12 back-to-back would be two human sign-offs with
+  nothing new to review in between. This is a documented judgment call (see the runbook's Phase 12,
+  Task 51 design note), reversible with a one-line change if a reviewer disagrees, not a redesign.
+- **Completion criteria**: both test classes pass; `git commit -m "feat(orchestration): realize the
+  full 12-node stage graph with real conditional Stage 4/12"`.
+- **Human approval**: false.
+
 ### T021: Workflow persistence tables + context/decision-lineage object
 
 - **Objective**: Persist workflow instances/steps/events and define `WorkflowContext` as the
@@ -883,6 +948,47 @@ not-implemented response.
   failures converge on safe-stop terminal state"`.
 - **Human approval**: false.
 
+### T034a: Fallback subsystem, distinct from retry/compensation/safe-stop *(added post-Task-10,
+Codex round 3: "a mere placeholder is insufficient... add explicit fallback start/success/failure
+audit events, a distinct SUCCEEDED_WITH_FALLBACK outcome, timeout/failure behavior for the fallback
+itself, release-readiness disclosure, safe-stop if both primary and fallback fail")*
+
+- **Objective**: Build the fallback mechanism the constitution's Principle VIII defines and that,
+  before this task, existed nowhere in the codebase — a distinct, declared-in-advance, lower-risk
+  alternate path attempted after retry exhaustion and before compensation/safe-stop, never
+  presented as equivalent to primary-path success without disclosure.
+- **REQ/SCN/ADR**: constitution Principle VIII (primary normative source — not REQ-014, whose own
+  text is about retries/timeouts; REQ-014 only carries the spec's characteristics-table
+  cross-reference); REQ-016 (safe-stop, category (b) now nests this); SCN-A (documentation fallback
+  example). No new ADR — extends ADR-004/ADR-009's existing reliability model.
+- **Files**: Modify `orchestration/StepStatus.java` (add `SUCCEEDED_WITH_FALLBACK`);
+  Modify `orchestration/WorkflowEngine.java` (add `fallbackHandlers` map + `registerFallback(...)`;
+  insert the fallback attempt into `runStage` between retry-exhaustion and compensation); Create
+  `orchestration/stages/DocumentationFallbackStage.java`; Test
+  `orchestration/FallbackTest.java`.
+- **Prerequisites**: T030, T031, T032, T033 (the retry/timeout/compensation stack this task's new
+  path sits inside), T034 (the safe-stop path this task's failure case falls through to).
+- **Parallel**: false.
+- **Expected artifact**: a stage whose primary handler exhausts retries, with a registered
+  fallback that succeeds, reaches `SUCCEEDED_WITH_FALLBACK` (not plain `SUCCEEDED`) with
+  `fallback_started`/`fallback_succeeded` audit events; if the fallback also fails, the stage
+  reaches `SAFE_STOPPED` with `fallback_started`/`fallback_failed` events, exactly as if no
+  fallback had been registered (no third recovery path invented).
+- **TDD**: yes.
+- **Validation command**: `./mvnw test -Dtest=FallbackTest`
+- **Doc impact**: `spec.md` CLR-13 updated (terminology correction: the mechanism CLR-13 always
+  meant to describe now actually exists; safe-stop's category (b) restated as nesting fallback then
+  compensation, not a new category). `ReleaseReadinessStage` (T039) must scan for
+  `SUCCEEDED_WITH_FALLBACK` steps and disclose any reduced guarantee in its result map.
+- **Traceability update**: Principle VIII, REQ-016 rows gain `T034a`.
+- **Risk/guardrail**: `DocumentationFallbackStage`'s output must satisfy a deterministic minimum
+  (the design's real API surface, explicitly labeled `degraded: true` and naming what's omitted) —
+  a placeholder with no defined minimum content does not satisfy this task; see the runbook's
+  Phase 12, Task 50 for the exact minimum-criteria specification.
+- **Completion criteria**: test passes; `spec.md` CLR-13 updated; `git commit -m
+  "feat(reliability): implement fallback distinct from retry/compensation/safe-stop"`.
+- **Human approval**: false.
+
 ---
 
 ## Phase 7 — Dynamic Replanning
@@ -1028,12 +1134,38 @@ release-readiness gate runs.
 - **Doc impact**: none yet.
 - **Traceability update**: REQ-022/027 rows gain `T037`; measured-demonstration-metrics evidence
   source.
-- **Risk/guardrail**: **disclosed, not silently fixed, scoping inconsistency carried over from the
-  original design** — `computeReliabilitySummary`'s `steps` list is never filtered by
-  `workflowId` even when one is supplied for `instances`. Not covered by any test in this plan;
-  carry into T047's limitations/tech-debt section as a named backlog cleanup item.
+- **Risk/guardrail**: **fixed for real by T037a, not carried as backlog** — see T037a immediately
+  below. (Originally disclosed here as a deferred scoping inconsistency; an external review
+  correctly argued the fix was smaller than the comment explaining why it wasn't fixed.)
 - **Completion criteria**: test passes; `git commit -m "feat(observability): implement MTTR and
   reliability metrics computation"`.
+- **Human approval**: false.
+
+### T037a: Fix `computeReliabilitySummary`'s workflow-scoping bug *(added post-Task-10, Codex round
+2: "remove known, intentionally untested metric defects from the delivery plan")*
+
+- **Objective**: Scope `steps` to the requested `workflowId` exactly as `instances` already is, so
+  per-workflow retry/compensation frequency figures stop silently aggregating across every
+  workflow in the database.
+- **REQ/SCN/ADR**: REQ-022, REQ-027; no new ADR.
+- **Files**: Modify `orchestration/persistence/WorkflowStepJpaRepository.java` (add
+  `findByWorkflowId(String)` — a zero-code Spring Data derived query);
+  Modify `observability/MetricsService.java`; Test
+  `observability/MetricsServiceIsolationTest.java`.
+- **Prerequisites**: T037.
+- **Parallel**: false.
+- **Expected artifact**: `computeReliabilitySummary(repo1, repo2, workflowIdB)` reflects only
+  workflow B's steps even when workflow A (submitted earlier, in the same database) has unrelated
+  retries/compensations.
+- **TDD**: yes.
+- **Validation command**: `./mvnw test -Dtest=MetricsServiceIsolationTest`
+- **Doc impact**: none.
+- **Traceability update**: REQ-022/027 rows' `T037` note updated to reflect the fix landed, not
+  deferred.
+- **Risk/guardrail**: trivial, one-line fix — the risk was always in *not* fixing it, not in the
+  fix itself.
+- **Completion criteria**: test passes, proving a two-workflow isolation scenario; `git commit -m
+  "fix(observability): scope reliability metrics to the requested workflow"`.
 - **Human approval**: false.
 
 ### T038: `GET /metrics` endpoint + CLI report
@@ -1138,6 +1270,44 @@ release-readiness gate runs.
   (constitution Principle III/V), on top of being a live fix to a previously-shipped security
   control (T015) with genuine regression risk. The human candidate should see this fix distinctly
   from ordinary feature work before it ships, exactly as T015 was flagged for the same reason.
+
+### T040a: SCN-B's seven genuinely parallel impact-analysis branches *(added post-Task-10, Codex
+round 3: "preserve SCN-B's seven parallel impact-analysis branches and join rather than reducing
+them to one stage")*
+
+- **Objective**: Replace the single `ImpactAnalysisStage` with seven independently-executing
+  sibling stages (one per `spec.md` Section 4 SCN-B dimension: components, interfaces, data flows,
+  tests, documentation, regression risk, rollout/rollback) joined by one `ChangeImpactReportStage`
+  that is itself a mandatory Approval Gate before Implementation — matching `spec.md`'s explicit
+  requirement, not a collapsed approximation of it.
+- **REQ/SCN/ADR**: REQ-011, REQ-012, REQ-013, REQ-015, REQ-020; SCN-B (primary). No new ADR.
+- **Files**: Create `orchestration/stages/impact/{ImpactedComponentsStage,ImpactedInterfacesStage,
+  ImpactedDataFlowsStage,ImpactedTestsStage,ImpactedDocumentationStage,RegressionRiskStage,
+  RolloutRollbackStage}.java`; Create
+  `orchestration/stages/ChangeImpactReportStage.java`; Delete the original single
+  `ImpactAnalysisStage.java`; Test: rewrites `BrownfieldScenarioTest`.
+- **Prerequisites**: T020c (stage graph must support the decomposition stage these seven depend
+  on), T040 (this task supersedes its single-stage impact analysis).
+- **Parallel**: false (supersedes T040's impact-analysis portion in place; the IPv6 SSRF fix
+  portion of T040 is untouched and unaffected).
+- **Expected artifact**: all seven impact stages reach `SUCCEEDED` with genuine overlapping
+  `[startedAt, endedAt)` intervals (same overlap-proof pattern as T022's parallel test, with the
+  same documented `CountDownLatch` fallback if timing proves flaky); `ChangeImpactReportStage`
+  starts only after all seven finish (never early); a rejected report leaves `implementation` at
+  `PENDING` permanently for that plan version.
+- **TDD**: yes.
+- **Validation command**: `./mvnw test -Dtest=BrownfieldScenarioTest`
+- **Doc impact**: `docs/scenarios/brownfield.md`'s Dependency Map / Regression Risk Matrix sections
+  rewritten to reflect the real seven-branch structure; `plan.md` Section 3.2 gains an SCN-B-only
+  sub-table (the baseline 12-stage table doesn't carry brownfield-only nodes).
+- **Traceability update**: REQ-011/012/013/015/020 rows gain `T040a`.
+- **Risk/guardrail**: the rollout/rollback branch's output becomes a required exit-criterion input
+  to Release-readiness (T039) for brownfield runs specifically — `ReleaseReadinessStage` must
+  refuse a "ready" outcome if it's absent, per `spec.md`'s own stated rule.
+- **Completion criteria**: rewritten test passes; `git commit -m "feat(scenarios): realize SCN-B's
+  seven parallel impact-analysis branches"`.
+- **Human approval**: false (the security-sensitive decision remains T040's own IPv6 fix, unchanged
+  by this task).
 
 ### T041: Ambiguous-requirement scenario — real suspension, real replanning
 
@@ -1391,27 +1561,47 @@ release-readiness gate runs.
 
 ## Summary
 
-**Updated by the Task 10 corrective batch.** 38 tasks (T011–T048) were originally transcribed from
-the runbook's Phases 2–12. Three tasks — `T017a`, `T026a`, `T036a` — were added post-Task-10 to
-close two HIGH findings both Task 10's own `/speckit.analyze` + Independent Reviewer Gate
+**Updated twice by post-Task-10 corrective rounds.** 38 tasks (T011–T048) were originally
+transcribed from the runbook's Phases 2–12.
+
+**Round 1 (Task 10 corrective batch):** three tasks — `T017a`, `T026a`, `T036a` — added to close
+two HIGH findings both Task 10's own `/speckit.analyze` + Independent Reviewer Gate
 (`docs/assessment/pre_implementation_analysis.md` Section 7) and an external Codex review
-(`codex-recommend.md`, Findings #4, #8, #9) independently confirmed: `POST /workflows` and
+(`codex-recommend.md` round 2, Findings #4, #8, #9) independently confirmed: `POST /workflows` and
 `GET /links/{code}` had no implementing/contract-testing task despite being contract-mandated
 (`T017a`, `T026a`), and REQ-031's own named stage-boundary-violation test had no implementing task
-(`T036a`). This brings the total to 41 tasks. Letter-suffixed IDs (rather than a full renumbering)
-were used deliberately so every pre-existing `T0NN` cross-reference elsewhere in this document, in
-`plan.md`'s traceability table, and in `pre_implementation_analysis.md` itself stays valid without
-a repository-wide renumbering pass.
+(`T036a`). Brought the total to 41 tasks.
+
+**Round 2 (post-Codex-round-3, 2026-09-13):** five more tasks — `T020b`, `T020c`, `T034a`, `T037a`,
+`T040a` — added after a third Codex review pass on the corrected repository found the round-1 fixes
+sound but flagged real design gaps still open: `spec.md`'s SCN-B requires seven genuinely parallel
+impact-analysis branches, not the single stage originally built (`T040a`); the constitution defines
+a fallback mechanism distinct from retry/rollback/safe-stop that existed nowhere in the design
+(`T034a`); `spec.md`'s 12-stage graph was realized as 8 stages with Stage 4 as an implicit property
+of an approval gate rather than its own persisted node (`T020b` adds the conditional-activation
+mechanism this requires; `T020c` uses it to realize the real 12-node graph); and
+`computeReliabilitySummary`'s disclosed workflow-scoping bug should be fixed for real, not carried
+as backlog (`T037a`). Brings the total to 46 tasks.
+
+Letter-suffixed IDs (rather than a full renumbering) were used for both rounds deliberately so
+every pre-existing `T0NN` cross-reference elsewhere in this document, in `plan.md`'s traceability
+table, and in `pre_implementation_analysis.md` itself stays valid without a repository-wide
+renumbering pass.
 
 Sequential-blocking groups: T011–T019 (URL-shortener domain, mostly sequential after the
 T014/T015/T016 parallel trio; `T017a` inserted between T017 and T018, same file/test class,
-strictly sequential), T020–T026 (orchestration engine core, strictly sequential), `T026a`
+strictly sequential), T020–T026 (orchestration engine core, strictly sequential; `T020b` inserted
+after T020 but sequenced after T023 per its own Prerequisites; `T020c` after `T020b`), `T026a`
 (sequential immediately after T026, same file/test class), T027 (independent) → T028–T029
 (sequential, depend on the full engine), T030–T032 (mutually parallel) → T033–T034 (sequential
-fan-in), T035 (replanning, depends on the full Phase 4–6 engine), T036–T038 (observability,
-T036/T037 parallel, T038 depends on T037; `T036a` inserted after T036, parallel with T037,
-depending on T022–T024/T036), T039–T041 (three scenarios, T039/T041 and T040/T041 parallel-safe
-pairs, T040 depends on T039), T042–T048 (fully sequential convergence chain). Seven tasks carry
-`human-approval: true`: T015, T026, T029, T040, T046, T047, T048 — see each task's own entry above
-and the Task 9 report for the per-task justification. `T017a`, `T026a`, and `T036a` are all
-`human-approval: false` (see each task's own entry for the specific reasoning).
+fan-in) → `T034a` (fallback, depends on all four), T035 (replanning, depends on the full Phase 4–6
+engine), T036–T038 (observability, T036/T037 parallel, T038 depends on T037; `T036a` inserted
+after T036, parallel with T037, depending on T022–T024/T036; `T037a` inserted immediately after
+T037, sequential, fixes T037's own disclosed bug), T039–T041 (three scenarios, T039/T041 and
+T040/T041 parallel-safe pairs, T040 depends on T039, both depend on `T020c`; `T040a` inserted after
+T040, sequential, supersedes T040's impact-analysis portion only — T040's IPv6 fix is untouched),
+T042–T048 (fully sequential convergence chain). Seven tasks carry `human-approval: true`: T015,
+T026, T029, T040, T046, T047, T048 — see each task's own entry above and the Task 9 report for the
+per-task justification. All eight letter-suffixed tasks (`T017a`, `T026a`, `T036a`, `T020b`,
+`T020c`, `T034a`, `T037a`, `T040a`) are `human-approval: false` (see each task's own entry for the
+specific reasoning).

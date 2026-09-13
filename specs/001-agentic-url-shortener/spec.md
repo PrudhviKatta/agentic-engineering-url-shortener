@@ -436,29 +436,39 @@ The system MUST record a basic analytics event for each successful redirect reso
   guarantee (this requirement's critical-path/failure-isolation obligation above is unaffected and
   remains a hard MUST).
 
-**REQ-007 — Duplicate request / idempotency behavior [SUPERSEDED IN PART — see CLR-2, Section 13.1]**
-Original text (preserved for history): *The system MUST avoid creating functionally duplicate
-mappings from a request the caller reasonably intended as a single retried operation.*
-- *Positive (original)*: Given a creation request that is a retry of a prior request under the
-  project's (to-be-clarified, see AMB-1) definition of "duplicate," when resubmitted, then the
+**REQ-007 — No creation-time deduplication (formerly "Duplicate request / idempotency behavior") [RESTATED 2026-09-13 — see CLR-2, Section 13.1; original text and criteria preserved below as historical/backlog, per this document's never-delete convention]**
+
+**Current text (operative, post-CLR-2):** The system MUST treat every accepted creation request as
+independent: no destination-URL match or payload match against a prior request causes the system
+to return a previously-issued short code, reject the request as a duplicate, or otherwise alter
+the request's outcome.
+- *Positive (current, operative)*: Given two creation requests with identical destination URLs (or
+  even a byte-for-byte identical full payload), when both are submitted, then each independently
+  produces a distinct, new short code with its own database row — neither is treated as a repeat of
+  the other.
+- *Negative (current, operative)*: The system never returns a previously-issued short code in
+  response to a new creation request, regardless of how closely that request matches an earlier
+  one, and never rejects a creation request on the grounds that it duplicates a prior one.
+- *Evidence*: a duplicate-URL creation test asserting two independently-created, distinct short
+  codes for the same destination URL (replacing the original idempotency-replay test, which tested
+  for behavior this iteration does not implement).
+- *Status*: confirmed MUST for this iteration's release-readiness determination (REQ-020) — this is
+  now what the system must actually do, not a downgraded/backlog item itself. What *is* backlog is
+  the original idempotency-key/payload-based dedup behavior, preserved below.
+
+**Original text and criteria (historical — NOT current behavior, preserved for traceability and
+possible future revival, per CLR-2's resolution):** *The system MUST avoid creating functionally
+duplicate mappings from a request the caller reasonably intended as a single retried operation.*
+- *Positive (original, backlog)*: Given a creation request that is a retry of a prior request under
+  the project's (to-be-clarified, see AMB-1) definition of "duplicate," when resubmitted, then the
   system returns a consistent, previously-issued result rather than creating a second independent
   mapping.
-- *Negative (original)*: The system does not silently create two independent short codes for what
-  was, by the applicable duplicate-detection rule, a single retried request, and does not leave the
-  caller unable to determine whether their retry succeeded.
-- *Evidence*: idempotency-replay test.
+- *Negative (original, backlog)*: The system does not silently create two independent short codes
+  for what was, by the applicable duplicate-detection rule, a single retried request, and does not
+  leave the caller unable to determine whether their retry succeeded.
 - **Resolution (CLR-2, Human Gate 3, 2026-09-12)**: AMB-1 is resolved by explicitly rejecting
-  "identical destination URL" as a duplicate/dedup trigger. Creating a short link for a long URL
-  that was already shortened previously (by the same or a different prior request) MUST return a
-  **new, independent short code** — no implicit URL-based deduplication is performed. This applies
-  even to a byte-for-byte identical creation request; per-request idempotency-key/payload-based
-  deduplication is explicitly **not implemented in this iteration** and is backlog. Consequently,
-  the MUST-level obligation above is downgraded: REQ-007 is no longer a confirmed MUST for this
-  iteration's release-readiness determination (REQ-020) and is retained here only for traceability
-  and possible future revival. Updated acceptance behavior: every accepted creation request
-  (REQ-001), regardless of whether its destination URL or full payload matches an earlier request,
-  produces a distinct new mapping and a distinct new short code; callers responsible for avoiding
-  duplicate creations must track their own previously issued short codes.
+  "identical destination URL" as a duplicate/dedup trigger. Per-request idempotency-key/payload-based
+  deduplication is explicitly **not implemented in this iteration** and is backlog.
   - *Rationale*: simplest, most predictable behavior for a demonstration prototype; avoids
     committing to an idempotency-key design (header format, storage, TTL) that the source material
     never asked for. Full dedup/idempotency is explicitly named as backlog scope, not omitted by
@@ -686,10 +696,13 @@ range.
   applied, then correctness (REQ-008) holds even if latency increases.
 - *Negative*: The system never produces an incorrect mapping, a duplicate active short code, or
   silent request loss purely as a function of increased concurrency within the tested range.
-- *Proposed validation target (assumption — requires approval)*: correctness holds up to a
-  demonstration-scale concurrent-request count appropriate to the actual execution environment
-  (laptop/CI-scale) — the exact figure is deferred to the plan stage once that environment is known,
-  and is explicitly not a production capacity claim.
+- *Demonstration acceptance target (binding for this iteration's three scenario demonstrations;
+  explicitly NOT a production SLA — approved 2026-09-13, closing the deferral this line originally
+  made to "the plan stage")*: correctness holds for **at least 20 concurrent creation/resolution
+  requests** against this prototype's H2/laptop-scale execution environment, verified by a
+  concurrent-request test producing zero incorrect mappings, zero duplicate active short codes, and
+  zero silently-dropped requests. This number is binding for whether this iteration's demonstration
+  passes REQ-023 — it is not a claim about production capacity at any different scale.
 - *Evidence*: load/concurrency test results, labeled as demonstration-scale (constitution Principle
   IX).
 
@@ -746,9 +759,13 @@ work (ties to REQ-017).
   already-completed stage outputs.
 - *Negative*: The system never loses a completed stage's output on restart, and recovery never
   requires manual reconstruction of run state from logs alone.
-- *Proposed validation target (assumption — requires approval)*: a recovery-time objective for
-  resuming a demonstration-scale interrupted run is proposed and approved at the plan stage; no
-  number is confirmed here.
+- *Demonstration acceptance target (binding for this iteration's three scenario demonstrations;
+  explicitly NOT a production SLA — approved 2026-09-13, closing the deferral this line originally
+  made to "the plan stage")*: a workflow interrupted mid-run resumes to its correct next state
+  within **5 seconds** of the process restarting, for a demonstration-scale interrupted run against
+  this prototype's H2/laptop-scale execution environment. This number is binding for whether this
+  iteration's demonstration passes REQ-028 — it is not a claim about production recovery-time
+  guarantees at any different scale or under real infrastructure failure modes.
 - *Evidence*: crash/restart-and-resume test.
 
 **REQ-029 — Testability**
@@ -1294,15 +1311,37 @@ REQ-009)*
 
 ---
 
-**CLR-13 — Safe-stop trigger conditions** *(newly surfaced; sharpens REQ-016)*
+**CLR-13 — Safe-stop trigger conditions** *(newly surfaced; sharpens REQ-016)* **[UPDATED 2026-09-13 —
+terminology correction, no change to the two-category enumeration]**
 - **Question**: Precisely which conditions trigger safe-stop?
 - **Impact**: Affects REQ-016's testability (a safe-stop trigger test needs a concrete, closed
   enumeration of trigger conditions) and downstream orchestration-engine design.
 - **Resolution**: Safe-stop is entered when (a) a mandatory policy check resolves `FAIL` without an
-  approved exception, or (b) bounded retries (REQ-014) are exhausted with no applicable fallback
-  path.
+  approved exception, or (b) bounded retries are exhausted **and** no fallback path is registered
+  for that stage (or the registered fallback itself also fails) **and** no applicable compensation
+  exists. Category (b) nests exactly two recovery attempts, tried in order — fallback (constitution
+  Principle VIII; a distinct, lower-risk alternate path, never a retry of the same operation), then
+  compensation (Principle VIII; a corrective action for an already-externally-observed effect) —
+  before falling through to safe-stop. This is a **terminology correction**, not a new trigger
+  category: the original 2026-09-12 wording said "fallback path" but no fallback mechanism existed
+  yet at that time, and the concrete implementation built afterward actually checked compensation —
+  a real drift between this record and the built system, caught during pre-implementation review
+  and corrected here once a real fallback mechanism was designed (see `docs/engineering-runbook.md`
+  Phase 12, Task 50). The enumeration remains exactly two top-level categories, unchanged from the
+  original resolution's intent.
+- **`PENDING_APPROVAL` vs. `SAFE_STOPPED` (added 2026-09-13, per external review):** both are
+  "halt forward progress" states under REQ-016's general requirement, but they are not the same
+  thing and must not be conflated. `PENDING_APPROVAL` is entered when an `entryApproval`/
+  `exitApproval` gate is awaiting a human decision (SCN-C's Stage 4, Stage 6's design review,
+  Stage 11's release sign-off) — it is a **normal, expected, recoverable** pause, not a failure; it
+  resolves the moment a human calls `approve()`. `SAFE_STOPPED` (this CLR's actual subject) is
+  entered only via the two conditions above — it is a **failure** state, and resuming from it
+  requires either a granted policy exception (`retrySafeStopped`) or a fixed root cause, not simply
+  a human's routine sign-off. A test asserting REQ-016 must distinguish which of the two states a
+  given halt produced, not treat "the workflow stopped" as one undifferentiated outcome.
 - **Owner**: human candidate (via controlling session).
-- **Date**: 2026-09-12.
+- **Date**: 2026-09-12 (original); terminology corrected and `PENDING_APPROVAL`/`SAFE_STOPPED`
+  distinction added 2026-09-13.
 
 ---
 
@@ -1385,7 +1424,7 @@ per constitution Principle I — none is force-resolved to appear closed.
 |---|---|---|---|---|---|
 | AMB-7 | What is the retention period for analytics data and for audit evidence? | Affects storage design, compliance posture, and whether audit-trail completeness (REQ-019, REQ-026) has an implicit expiry that could break "independently reconstructable" evidence claims. | **RESOLVED via CLR-17 (2026-09-13) — approved temporary assumption, not a confirmed production requirement.** 90-day placeholder retention approved by the human candidate to unblock planning. See Section 13.1. | human candidate (via controlling session) | Before any production-scale deployment, this placeholder must be replaced with a real compliance-derived figure. |
 | CLR-11 residual | What is the approved rate-limiting threshold, if/when rate-limiting is implemented? | Affects REQ-021's mass-creation-DoS control design once actually built. | **Backlog assumption, not approved.** Proposed figure on record: 100 req/min/IP (see CLR-11). | human candidate (via controlling session) | Before rate-limiting is implemented (not required for this iteration's release-readiness outcome, since CLR-11 confirms it is out of scope now). |
-| ASM-2 (11 NFR targets) | Are the eleven numeric "Proposed validation target" figures in Section 7 (REQ-021–REQ-031) approved as confirmed requirements? | Determines whether Section 7's numbers are binding for this iteration's release-readiness outcome (REQ-020). | **OPEN — unchanged by this clarification pass**, except where CLR-8 (analytics) and CLR-11 (rate-limiting) narrowed an individual target's scope. Out of scope for this clarify pass by this document's own design (Section 7 explicitly defers these to later gates). | human candidate (via controlling session) | At the `/speckit.plan` stage or a later gate, per Section 7's existing framing. |
+| ASM-2 (11 NFR targets) | Are the eleven numeric "Proposed validation target" figures in Section 7 (REQ-021–REQ-031) approved as confirmed requirements? | Determines whether Section 7's numbers are binding for this iteration's release-readiness outcome (REQ-020). | **CLOSED 2026-09-13.** All eleven figures in Section 7 are approved as **binding demonstration acceptance targets** for this iteration's three required scenarios (SCN-A/B/C) — each is checked by its named evidence test, and a failed target is a real, reportable finding, not a number to shrug off. None is a **production SLA**: every figure is scaled to this prototype's local H2/laptop execution environment and labeled as demonstration data wherever it appears (constitution Principle IX), per the pattern already used for CLR-8 (analytics) and CLR-11 (rate-limiting). The two figures this document originally left with no number at all — REQ-023's concurrency count and REQ-028's recovery-time objective — are now set to 20 concurrent requests and 5 seconds respectively, closing the "deferred to the plan stage" gap those two lines originally left open past the point the plan stage actually ran. | human candidate (via controlling session) | Closed — no longer a required decision point. Revisit only if this system is ever scoped toward a real deployment, at which point every figure here needs re-derivation from real capacity/SLA requirements, not reuse of these demonstration numbers. |
 
 ### 13.3 Mapping to Original Ambiguities/Assumptions
 

@@ -921,9 +921,10 @@ constitution-consistent:
   a future iteration revisits this.
 - **ASM-2**: All eleven "Proposed validation target" figures in Section 7 (REQ-021–REQ-031) are
   placeholder assumptions pending human approval, explicitly not confirmed client requirements.
-  **Unchanged by this clarification pass** — these numeric targets remain deferred to the plan
-  stage per this document's own design (Section 7's framing), except where a specific clarification
-  above (CLR-8 analytics, CLR-11 rate-limiting) touched an individual target's scope.
+  **[RESOLVED AND PROMOTED — Section 13.2, 2026-09-13]** All eleven figures are now **confirmed,
+  binding demonstration acceptance targets** for this iteration's three required scenarios — not
+  production SLAs. See Section 13.2 for the closure record; Section 7/9.7 relabel these
+  "Demonstration acceptance target" accordingly.
 - **ASM-3**: The demonstration/test execution environment is assumed to be a single-machine or
   small-CI-scale environment (not a production cluster), which is why scalability/performance
   targets in Section 7 are scoped as "demonstration-scale." **Unchanged by this clarification

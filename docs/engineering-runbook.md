@@ -4734,6 +4734,175 @@ public final class FinalSummaryStage {
   `GET /workflows/{id}/audit` JSON output from a real run), acceptance criteria, terminal outcome.
 - [ ] **Step 6: Commit** — `git commit -m "test(scenarios): validate greenfield workflow against the real 12-node graph"`
 
+- [ ] **Step 7: Wire the production `StageCatalog`/`WorkflowEngine` as Spring beans, and start
+  `resumeAll()` at application boot** (fourth review's finding 3: "the document declares the Spring
+  `StageCatalog` configuration out of scope... add the configuration/application-runner and a
+  boot-level integration test" — this is not out of scope; a restart-recovery mechanism that nothing
+  ever calls does not satisfy REQ-017/REQ-028). This is the first task where every production stage
+  class exists, so it is where the composition root belongs, not Task 50 (which only has synthetic
+  test stages available):
+```java
+// src/main/java/com/schwab/urlshortener/orchestration/OrchestrationConfig.java
+package com.schwab.urlshortener.orchestration;
+
+import com.schwab.urlshortener.orchestration.stages.*;
+import java.util.Map;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class OrchestrationConfig {
+
+    @Bean
+    public StageCatalog stageCatalog() {
+        return new StageCatalog(
+                Map.ofEntries(
+                        Map.entry("requirement_ingestion", (StageHandler) RequirementIngestionStage::run),
+                        Map.entry("requirement_normalization", (StageHandler) RequirementNormalizationStage::run),
+                        Map.entry("ambiguity_detection", (StageHandler) AmbiguityDetectionStage::run),
+                        Map.entry("human_clarification", (StageHandler) HumanClarificationStage::run),
+                        Map.entry("decomposition", (StageHandler) DecompositionStage::run),
+                        Map.entry("design", (StageHandler) DesignStage::run),
+                        Map.entry("implementation", (StageHandler) ImplementationStage::run),
+                        Map.entry("testing", (StageHandler) TestingStage::run),
+                        Map.entry("security", (StageHandler) SecurityStage::run),
+                        Map.entry("documentation", (StageHandler) DocumentationStage::run),
+                        Map.entry("release_readiness", (StageHandler) ReleaseReadinessStage::run),
+                        Map.entry("final_engineering_summary", (StageHandler) FinalSummaryStage::run)),
+                Map.of("ambiguity_gate", (java.util.function.Predicate<WorkflowContext>)
+                        c -> Boolean.TRUE.equals(c.artifacts().get("ambiguityDetected"))),
+                Map.of());
+        // Brownfield's seven impact stages (Task 40) and any fallback handlers (Task 50's
+        // DocumentationFallbackStage) are added to these same three maps when those tasks land —
+        // this bean is additive, not replaced, by later tasks.
+    }
+}
+```
+  `WorkflowEngine` itself becomes a `@Bean` too — add `@Bean public WorkflowEngine workflowEngine(...)`
+  next to `stageCatalog()` above, constructor-injecting the four JPA repositories (already
+  `@Repository`-scanned) plus `stageCatalog()` and `null` for the three optional policy/compensation
+  parameters until Phase 5/6 wires them in. `ScenarioRunner` (Task 25) is updated to `@Autowired` this
+  bean instead of constructing its own `WorkflowEngine`.
+```java
+// src/main/java/com/schwab/urlshortener/orchestration/WorkflowRecoveryRunner.java
+package com.schwab.urlshortener.orchestration;
+
+import org.springframework.boot.ApplicationArguments;
+import org.springframework.boot.ApplicationRunner;
+import org.springframework.core.annotation.Order;
+import org.springframework.stereotype.Component;
+
+@Component
+@Order(Integer.MIN_VALUE) // before ScenarioRunner's CommandLineRunner (Task 25) — recovery
+                           // must complete before any new workflow is submitted this boot.
+public class WorkflowRecoveryRunner implements ApplicationRunner {
+
+    private final WorkflowEngine engine;
+
+    public WorkflowRecoveryRunner(WorkflowEngine engine) {
+        this.engine = engine;
+    }
+
+    @Override
+    public void run(ApplicationArguments args) {
+        engine.resumeAll();
+    }
+}
+```
+- [ ] **Step 8: Write and pass a boot-level restart-recovery test** — proves recovery actually runs
+  at startup, not merely that `resumeAll()` exists as a callable method (`WorkflowEngineRestartTest`,
+  Task 50, already proves the method's own logic; this test proves something calls it):
+```java
+// src/test/java/com/schwab/urlshortener/orchestration/WorkflowRecoveryBootTest.java
+package com.schwab.urlshortener.orchestration;
+
+import com.schwab.urlshortener.UrlShortenerApplication;
+import com.schwab.urlshortener.orchestration.persistence.*;
+import com.schwab.urlshortener.orchestration.stages.RequirementIngestionStage;
+import com.schwab.urlshortener.orchestration.stages.RequirementNormalizationStage;
+import java.time.Instant;
+import java.util.List;
+import org.junit.jupiter.api.Test;
+import org.springframework.boot.SpringApplication;
+import org.springframework.context.ConfigurableApplicationContext;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+import static java.util.concurrent.TimeUnit.SECONDS;
+
+class WorkflowRecoveryBootTest {
+
+    // Uses the real, file-mode H2 datasource from application.yml (Task 13) — not @DataJpaTest's
+    // isolated in-memory context — because the point of this test is that a *second*, freshly
+    // started process picks up state a *first* process left on disk, exactly like a real restart.
+
+    // A minimal, self-contained two-stage graph (not the full 12-node greenfield graph — this
+    // test's job is to prove the boot wiring calls resumeAll(), not to re-prove the greenfield
+    // scenario itself, which GreenfieldScenarioTest already covers). Both stages are registered
+    // in the real production StageCatalog (OrchestrationConfig), so no test-only catalog is built.
+    @Test
+    void aWorkflowLeftRunningByOneProcessIsResumedAndCompletedByTheNextProcessAtBoot() {
+        String workflowId;
+        try (ConfigurableApplicationContext firstProcess =
+                     SpringApplication.run(UrlShortenerApplication.class, "--server.port=0")) {
+            WorkflowStepJpaRepository steps = firstProcess.getBean(WorkflowStepJpaRepository.class);
+            WorkflowEngine engine = firstProcess.getBean(WorkflowEngine.class);
+
+            // Real production method references, not throwaway lambdas: resolveHandler() always
+            // tries the catalog first (OrchestrationConfig's bean), so these two names resolve to
+            // the real stage classes regardless — passed here only so submit()'s persisted
+            // StageDefinition rows are self-explanatory, not because the handler reference itself
+            // is load-bearing after the first submit() call.
+            List<StageDefinition> stages = List.of(
+                    new StageDefinition("requirement_ingestion", List.of(),
+                            RequirementIngestionStage::run, false, false, 0, 30, null, null, null),
+                    new StageDefinition("requirement_normalization", List.of("requirement_ingestion"),
+                            RequirementNormalizationStage::run, false, false, 0, 30, null, null, null));
+            workflowId = engine.submit("boot-recovery smoke workflow", stages, "boot-recovery-1");
+
+            // Simulate the process dying mid-stage: force the in-flight step back to RUNNING with
+            // no completion recorded — exactly what a genuine crash leaves behind, not the earlier
+            // draft's approach of hand-editing a SAFE_STOPPED step to PENDING.
+            WorkflowStepEntity normalization = steps.findByWorkflowIdAndPlanVersionAndName(
+                    workflowId, 1, "requirement_normalization").orElseThrow();
+            normalization.setStatus(StepStatus.RUNNING);
+            normalization.setStartedAt(Instant.now());
+            steps.save(normalization);
+            // The instance itself is left RUNNING too — a real crash never gets the chance to
+            // update it to any terminal/pending status.
+        } // context closed — the "first process" is gone, exactly like a killed JVM.
+
+        // A brand-new process, pointed at the same file-mode data/app.mv.db. Nothing in this test
+        // calls resumeAll() — WorkflowRecoveryRunner (an ApplicationRunner bean) must do it during
+        // this context's own startup for the assertion below to ever pass.
+        try (ConfigurableApplicationContext secondProcess =
+                     SpringApplication.run(UrlShortenerApplication.class, "--server.port=0")) {
+            WorkflowInstanceJpaRepository instances = secondProcess.getBean(WorkflowInstanceJpaRepository.class);
+            WorkflowStepJpaRepository steps = secondProcess.getBean(WorkflowStepJpaRepository.class);
+            String id = workflowId;
+
+            await().atMost(5, SECONDS).untilAsserted(() -> {
+                WorkflowInstanceEntity instance = instances.findById(id).orElseThrow();
+                assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.COMPLETED);
+            });
+
+            WorkflowStepEntity normalization = steps.findByWorkflowIdAndPlanVersionAndName(
+                    id, 1, "requirement_normalization").orElseThrow();
+            assertThat(normalization.getStatus()).isEqualTo(StepStatus.SUCCEEDED);
+            assertThat(normalization.getRetryCount()).isZero(); // recovered by re-run, not by retry accounting
+        }
+    }
+}
+```
+  Add the `awaitility` test dependency to `pom.xml` (`org.awaitility:awaitility:4.2.2`, test scope)
+  — the 5-second bound here is not arbitrary busy-waiting, it is REQ-028's own recovery-time
+  objective, checked against the real Spring Boot startup path rather than a raw `WorkflowEngine`
+  object.
+- [ ] **Step 9: Run to confirm pass** — `./mvnw test -Dtest=WorkflowRecoveryBootTest` → PASS. If it
+  fails because `release_readiness` never leaves `RUNNING`, the defect is in `runFrom`'s abandoned-
+  `RUNNING` recovery (Task 50, corrected in this round — see there), not in this task.
+- [ ] **Step 10: Commit** — `git commit -m "feat(orchestration): wire production StageCatalog/WorkflowEngine as Spring beans and start resumeAll() at boot"`
+
 
 ### Task 40: Brownfield scenario — enhancement against existing code with seven-branch impact analysis gate
 
@@ -5460,9 +5629,11 @@ persisted columns for `entryApproval`, `exitApproval`, `maxRetries`, `timeoutSec
 by `WorkflowStepEntity.name` itself (one handler per stage name, already true throughout this
 design; no separate handler-key column needed). A `StageCatalog` maps these stable keys to the
 actual Java implementations, populated once (at test-construction time in tests; at Spring context
-startup in the real application, via a `@Configuration` class listing every known stage class — out
-of this plan's scope to fully wire, since it's an application-composition-root concern, not an
-orchestration-engine concern; tests construct their own small catalogs directly).
+startup in the real application, via a `@Configuration` class listing every known stage class).
+**Corrected 2026-09-13 (fourth review, finding 3): this composition-root wiring is not out of
+scope** — a `StageCatalog` and `WorkflowEngine` bean, plus a `WorkflowRecoveryRunner` that calls
+`resumeAll()` at boot, are specified in Task 39 (the first task where every production stage class
+exists to populate the catalog with).
 
 **Files:**
 - Modify: `src/main/java/com/schwab/urlshortener/orchestration/StageDefinition.java` (add the two
@@ -5658,74 +5829,115 @@ class WorkflowEngineRestartTest {
 
     @Test
     void interruptedWorkflowResumesFromAFreshEngineInstanceWithEmptyRuntimeState() {
-        StageHandler slowStep = ctx -> { throw new com.schwab.urlshortener.reliability.TransientStageException("simulated crash before this attempt persists success"); };
-        StageHandler after = ctx -> Map.of("done", true);
+        // A genuine interruption leaves a step RUNNING with no recorded completion — a unit test
+        // cannot literally kill the JVM mid-handler, so this constructs that exact DB state
+        // directly via the repositories, rather than running an engine to completion and then
+        // corrupting a finished result. This is deliberately NOT "an operator reset a SAFE_STOPPED
+        // step to PENDING" (a different, already-covered operational action, `retrySafeStopped`) —
+        // it is what `runFrom()` itself must recognize as abandoned and recover from (fourth
+        // review, finding 2).
+        String workflowId = java.util.UUID.randomUUID().toString();
+        WorkflowInstanceEntity instance = new WorkflowInstanceEntity();
+        instance.setId(workflowId);
+        instance.setFeature("demo");
+        instance.setStatus(WorkflowStatus.RUNNING); // a real crash never gets to set any terminal/pending status
+        instance.setCorrelationId("run-restart-1");
+        instance.setPlanVersion(1);
+        instance.setContextJson(Map.of());
+        instanceRepository.save(instance);
 
-        StageCatalog catalog = new StageCatalog(
-                Map.of("first", slowStep, "second", after),
-                Map.of(), Map.of());
-
-        // "Original" engine instance: submit, let "first" exhaust its retries and safe-stop
-        // (simulating a crash mid-run is modeled here as a real safe-stop rather than literally
-        // killing the JVM, which a unit test cannot do — the assertion that matters is the SECOND
-        // engine instance, constructed fresh with no shared in-memory state, correctly resuming).
-        WorkflowEngine original = new WorkflowEngine(instanceRepository, stepRepository,
-                eventRepository, approvalRepository, null, null, null, null, catalog);
-        List<StageDefinition> stages = List.of(
-                new StageDefinition("first", List.of(), slowStep, false, false, 0, 5, null, null, null),
-                new StageDefinition("second", List.of("first"), after, false, false, 0, 5, null, null, null));
-        String workflowId = original.submit("demo", stages, "run-restart-1");
-
-        WorkflowStepEntity firstStep = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "first").orElseThrow();
-        assertThat(firstStep.getStatus()).isEqualTo(StepStatus.SAFE_STOPPED);
-
-        // Grant a policy exception isn't relevant here; simulate operator intervention by directly
-        // resetting the step to PENDING (what a real fix-and-retry operational action would do) —
-        // then construct a BRAND NEW WorkflowEngine instance (simulating a fresh process) with a
-        // fresh handler for "first" that succeeds this time, and a catalog that knows nothing this
-        // fresh instance didn't just construct:
-        firstStep.setStatus(StepStatus.PENDING);
-        firstStep.setRetryCount(0);
+        WorkflowStepEntity firstStep = new WorkflowStepEntity();
+        firstStep.setWorkflowId(workflowId);
+        firstStep.setPlanVersion(1);
+        firstStep.setName("first");
+        firstStep.setSequence(0);
+        firstStep.setStatus(StepStatus.RUNNING); // abandoned mid-execution
+        firstStep.setStartedAt(Instant.now());
+        firstStep.setDependsOn(List.of());
+        firstStep.setMaxRetries(0);
+        firstStep.setTimeoutSeconds(5);
         stepRepository.save(firstStep);
 
-        StageHandler fixedFirst = ctx -> Map.of("recovered", true);
-        StageCatalog freshCatalog = new StageCatalog(Map.of("first", fixedFirst, "second", after), Map.of(), Map.of());
+        WorkflowStepEntity secondStep = new WorkflowStepEntity();
+        secondStep.setWorkflowId(workflowId);
+        secondStep.setPlanVersion(1);
+        secondStep.setName("second");
+        secondStep.setSequence(1);
+        secondStep.setStatus(StepStatus.PENDING); // never got the chance to start
+        secondStep.setDependsOn(List.of("first"));
+        secondStep.setMaxRetries(0);
+        secondStep.setTimeoutSeconds(5);
+        stepRepository.save(secondStep);
+
+        // A BRAND NEW WorkflowEngine instance (simulating a fresh process) with a fresh catalog
+        // this instance didn't just construct — proves recovery reads from the database, not from
+        // anything an earlier engine/catalog held in memory.
+        StageHandler first = ctx -> Map.of("recovered", true);
+        StageHandler after = ctx -> Map.of("done", true);
+        StageCatalog freshCatalog = new StageCatalog(Map.of("first", first, "second", after), Map.of(), Map.of());
         WorkflowEngine freshEngine = new WorkflowEngine(instanceRepository, stepRepository,
                 eventRepository, approvalRepository, null, null, null, null, freshCatalog);
 
         Instant before = Instant.now();
         freshEngine.runFrom(workflowId); // no submit() call — this is resumption, not re-submission
-        Instant after2 = Instant.now();
+        Instant afterInstant = Instant.now();
 
-        assertThat(java.time.Duration.between(before, after2).getSeconds()).isLessThan(5);
+        assertThat(java.time.Duration.between(before, afterInstant).getSeconds()).isLessThan(5);
 
-        WorkflowStepEntity secondStep = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "second").orElseThrow();
-        assertThat(secondStep.getStatus()).isEqualTo(StepStatus.SUCCEEDED); // "second" ran, proving resumption continued past "first"
-        assertThat(eventRepository.findByWorkflowId(workflowId).stream().map(WorkflowEventEntity::getAction))
-                .anyMatch(a -> a.startsWith("resumed:"));
+        WorkflowStepEntity recoveredFirst = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "first").orElseThrow();
+        assertThat(recoveredFirst.getStatus()).isEqualTo(StepStatus.SUCCEEDED);
+        assertThat(recoveredFirst.getResult()).containsEntry("recovered", true);
+        assertThat(recoveredFirst.getRetryCount()).isZero(); // recovered by re-run, not counted as a retry attempt
+
+        WorkflowStepEntity recoveredSecond = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "second").orElseThrow();
+        assertThat(recoveredSecond.getStatus()).isEqualTo(StepStatus.SUCCEEDED); // resumption continued past the recovered step
+
+        WorkflowInstanceEntity finalInstance = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(finalInstance.getStatus()).isEqualTo(WorkflowStatus.COMPLETED);
+
+        List<String> actions = eventRepository.findByWorkflowId(workflowId).stream()
+                .map(WorkflowEventEntity::getAction).toList();
+        assertThat(actions).anyMatch(a -> a.equals("recovered_abandoned_running:first"));
+        assertThat(actions).anyMatch(a -> a.startsWith("resumed:"));
     }
 
     @Test
     void resumeAllFindsEveryNonTerminalWorkflow() {
-        StageHandler stalled = ctx -> { throw new com.schwab.urlshortener.reliability.TransientStageException("x"); };
-        StageCatalog catalog = new StageCatalog(Map.of("stalled", stalled), Map.of(), Map.of());
-        WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository,
-                eventRepository, approvalRepository, null, null, null, null, catalog);
-        String workflowId = engine.submit("demo",
-                List.of(new StageDefinition("stalled", List.of(), stalled, false, false, 0, 5, null, null, null)),
-                "run-resume-all-1");
+        // Same direct-persistence approach as the test above: a workflow instance left RUNNING
+        // with one step abandoned mid-execution, exactly what resumeAll() must find without being
+        // told which workflow ID to look at (unlike runFrom(), which takes one explicitly).
+        String workflowId = java.util.UUID.randomUUID().toString();
+        WorkflowInstanceEntity instance = new WorkflowInstanceEntity();
+        instance.setId(workflowId);
+        instance.setFeature("demo");
+        instance.setStatus(WorkflowStatus.RUNNING);
+        instance.setCorrelationId("run-resume-all-1");
+        instance.setPlanVersion(1);
+        instance.setContextJson(Map.of());
+        instanceRepository.save(instance);
+
+        WorkflowStepEntity stalledStep = new WorkflowStepEntity();
+        stalledStep.setWorkflowId(workflowId);
+        stalledStep.setPlanVersion(1);
+        stalledStep.setName("stalled");
+        stalledStep.setSequence(0);
+        stalledStep.setStatus(StepStatus.RUNNING);
+        stalledStep.setStartedAt(Instant.now());
+        stalledStep.setDependsOn(List.of());
+        stalledStep.setMaxRetries(0);
+        stalledStep.setTimeoutSeconds(5);
+        stepRepository.save(stalledStep);
 
         StageCatalog freshCatalog = new StageCatalog(Map.of("stalled", (StageHandler) ctx -> Map.of()), Map.of(), Map.of());
         WorkflowEngine freshEngine = new WorkflowEngine(instanceRepository, stepRepository,
                 eventRepository, approvalRepository, null, null, null, null, freshCatalog);
-        stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "stalled").ifPresent(s -> {
-            s.setStatus(StepStatus.PENDING); s.setRetryCount(0); stepRepository.save(s);
-        });
 
         freshEngine.resumeAll();
 
-        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
-        assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.COMPLETED);
+        WorkflowInstanceEntity resumedInstance = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(resumedInstance.getStatus()).isEqualTo(WorkflowStatus.COMPLETED);
+        WorkflowStepEntity resumedStep = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "stalled").orElseThrow();
+        assertThat(resumedStep.getStatus()).isEqualTo(StepStatus.SUCCEEDED);
     }
 }
 ```
@@ -5849,6 +6061,24 @@ public class WorkflowEngine {
             recordEvent(workflowId, "engine", "resumed:" + workflowId, "OK", "runFrom invoked on a workflow with prior execution history");
         }
 
+        // Crash recovery for abandoned RUNNING steps (fourth review, finding 2: "a genuinely
+        // interrupted step would remain RUNNING... there must be a defined, idempotency-safe
+        // recovery rule"). Within a single runFrom() call, runStage() always runs to completion
+        // synchronously (via Future.get(), below) before this method returns — so a step found
+        // RUNNING at the *start* of a call can only be left over from a process that exited before
+        // finishing it. Reset it to PENDING so this call's own batch loop schedules it. This relies
+        // on the same assumption REQ-014's retry design already requires of every stage handler —
+        // safe to re-attempt, not necessarily side-effect-free — so it is not a new assumption.
+        for (WorkflowStepEntity row : rows) {
+            if (row.getStatus() == StepStatus.RUNNING) {
+                row.setStatus(StepStatus.PENDING);
+                row.setStartedAt(null);
+                stepRepository.save(row);
+                recordEvent(workflowId, "engine", "recovered_abandoned_running:" + row.getName(), "OK",
+                        "step was RUNNING with no recorded completion — treated as interrupted by a prior process exit, reset to PENDING for re-execution");
+            }
+        }
+
         for (List<StageDefinition> batch : graph.topologicalBatches()) {
             List<StageDefinition> blocked = batch.stream()
                     .filter(s -> stepStatus(workflowId, planVersion, s.name()) == StepStatus.WAITING_APPROVAL
@@ -5888,13 +6118,33 @@ public class WorkflowEngine {
                 }
             }
 
+            // Fourth review, finding 1: a SafeStopException thrown inside runStage() was being
+            // wrapped as a generic RuntimeException here and left to propagate out of runFrom()/
+            // submit() entirely — the workflow's status was never set to SAFE_STOPPED, and a
+            // caller (e.g. FallbackTest's failed-fallback case) would see an exception instead of
+            // a clean terminal state. Unwrap and handle it distinctly, mirroring Task 28's
+            // runBatch pattern.
             try (ExecutorService pool = Executors.newFixedThreadPool(Math.max(1, active.size()))) {
                 List<java.util.concurrent.Future<?>> futures = new ArrayList<>();
                 for (StageDefinition s : active) {
                     futures.add(pool.submit(() -> runStage(workflowId, planVersion, s, ctx)));
                 }
                 for (var f : futures) {
-                    try { f.get(); } catch (Exception e) { throw new RuntimeException(e); }
+                    try {
+                        f.get();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException(e);
+                    } catch (ExecutionException e) {
+                        Throwable cause = e.getCause();
+                        if (cause instanceof SafeStopException safeStop) {
+                            instance.setStatus(WorkflowStatus.SAFE_STOPPED);
+                            persistContext(instance, ctx);
+                            recordEvent(workflowId, "engine", "safe_stop_triggered", "SAFE_STOPPED", safeStop.getMessage());
+                            return;
+                        }
+                        throw new RuntimeException(cause);
+                    }
                 }
             }
             persistContext(instance, ctx);

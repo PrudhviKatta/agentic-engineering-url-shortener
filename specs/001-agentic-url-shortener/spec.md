@@ -11,6 +11,14 @@ or "in effect" until a human reviewer completes Human Gate 2 (Section 12) and re
 Until then, downstream artifacts (clarification records, plan, ADRs, tasks) that cite this
 specification are citing a draft.
 
+**Clarification status**: `/speckit.clarify` (Human Gate 3) was completed on 2026-09-12 — see
+Section 13. Every material ambiguity flagged in the original Section 9.5 has been either resolved
+by an explicit controller decision (recorded in Section 13.1) or carried forward as an explicitly
+recorded deferred question with an owner (Section 13.2). **This does not substitute for Human Gate
+2** (immediately below): the specification as a whole remains a DRAFT pending that separate,
+broader approval. Human Gate 3's completion means the *ambiguities* are resolved or explicitly
+deferred, not that the *specification* is approved.
+
 **Authority**: This specification sits directly beneath `docs/governance/constitution.md`
 (version 1.0.0, itself still in draft pending Human Gate 1) in the project's authority hierarchy.
 Nothing in this document may contradict any of the constitution's eleven principles; where a
@@ -82,12 +90,19 @@ here; concrete interfaces, data models, and technology are ADR/plan-stage decisi
 
 ### 2.1 Key Entities (conceptual — no schema, storage engine, or field types implied)
 
-- **Link (Short URL Mapping)**: an association between a system-issued or requested short
-  identifier and a destination (long) URL, with a creation time and an optional expiration
-  condition. Whether a Link is mutable after creation is an open ambiguity (Section 9, AMB-6).
+- **Link (Short URL Mapping)**: an association between a system-issued short identifier and a
+  destination (long) URL, with a creation time and an optional expiration condition. **[RESOLVED —
+  CLR-15, Section 13.1]** A Link is immutable once created: neither its destination URL nor its
+  expiration condition may be changed after creation in this iteration. There is no update/PATCH
+  capability. (Originally AMB-6; superseded here.)
 - **Short Code**: the identifier portion of a Link that a caller presents to be resolved. Uniqueness
-  of active Short Codes is a confirmed requirement (REQ-003); the generation strategy is not
-  specified here.
+  of active Short Codes is a confirmed requirement (REQ-003). **[RESOLVED — CLR-3/CLR-4, Section
+  13.1]** Every Short Code is exactly 7 characters drawn from the base62 character set
+  (`[a-zA-Z0-9]`) and is always system-generated; caller-supplied ("custom alias") short codes are
+  out of scope for this iteration. The concrete generation *algorithm* (e.g., random vs.
+  counter-based) is not decided here — it remains a Section 8 deferred technology/implementation
+  decision pointing to ADR-003 at the plan stage; only the code's testable *properties* (length,
+  character set, system-generated-only) are confirmed as requirements here.
 - **Redirect Event**: a record that a resolution of a given Short Code occurred, used as the basis
   for analytics (REQ-006). Conceptually distinct from the Link itself — a Link may have zero, one,
   or many associated Redirect Events.
@@ -346,6 +361,13 @@ or uses a scheme outside an explicit allow-list (constitution Principle V).
   policy-approved rule for doing so.
 - *Evidence*: rejection contract tests enumerating each disallowed input class; security test
   suite (Principle IV, V).
+- **[RESOLVED — CLR-1 and CLR-5, Section 13.1]** The explicit scheme allow-list is exactly `http`
+  and `https`; `javascript:`, `file:`, `data:`, and every other scheme are rejected. A long URL
+  whose host resolves to a loopback, link-local, or private RFC1918 address MUST also be rejected
+  at creation time (SSRF guard) — this is a confirmed requirement, not merely a "disallowed scheme"
+  example. The maximum accepted long-URL length is 2048 characters; longer input is rejected the
+  same way as a malformed URL. (These were previously open under AMB-5 and the undecided allow-list
+  content implied by this requirement's own text.)
 
 **REQ-003 — Short-code uniqueness**
 The system MUST ensure every active short code is unique among currently active mappings at the
@@ -372,10 +394,16 @@ condition.
 - *Positive*: Given a short code past its expiration point, when resolution is requested, then the
   system does not redirect and returns a distinguishable expired outcome.
 - *Negative*: The system does not redirect an expired code to its original destination under any
-  circumstance. (Whether "expired" and "not found" must be distinguishable to an external caller,
-  versus intentionally identical for information-disclosure reasons, is an open ambiguity — see
-  AMB-2, Section 9 — and is not silently resolved here.)
+  circumstance.
 - *Evidence*: expiration-boundary test (immediately before, at, and after expiry).
+- **[RESOLVED — CLR-7, Section 13.1]** "Expired" and "unknown/never-issued" (REQ-004) MUST be
+  distinguishable to the caller: an expired short code returns a distinguishable expired outcome
+  (`410 Gone`-equivalent), while an unknown code returns a distinguishable not-found outcome
+  (`404`-equivalent). Information-disclosure-by-indistinguishability was considered and explicitly
+  rejected as the operative model for this iteration. (Originally AMB-2.)
+- **[RESOLVED — CLR-6, Section 13.1]** Expiration is optional and caller-set at creation time via an
+  `expires_at` condition; the default when omitted is **no expiration** (the Link never expires on
+  its own). This was previously unspecified mechanism/default behavior underlying this requirement.
 
 **REQ-006 — Analytics capture**
 The system MUST record a basic analytics event for each successful redirect resolution.
@@ -388,17 +416,40 @@ The system MUST record a basic analytics event for each successful redirect reso
   explicitly declared acceptable (constitution Principle V).
 - *Evidence*: analytics-capture test; failure-injection test (analytics store unavailable, redirect
   still succeeds).
+- **[RESOLVED — CLR-8, Section 13.1]** The confirmed analytics data model is: redirect count
+  (a per-Link counter) and last-accessed timestamp. Consistency model: **eventually consistent** —
+  an asynchronous, non-blocking increment relative to the redirect response is acceptable. This is
+  recorded as a proposed validation target for the demonstration, not a hard production consistency
+  guarantee (this requirement's critical-path/failure-isolation obligation above is unaffected and
+  remains a hard MUST).
 
-**REQ-007 — Duplicate request / idempotency behavior**
-The system MUST avoid creating functionally duplicate mappings from a request the caller
-reasonably intended as a single retried operation.
-- *Positive*: Given a creation request that is a retry of a prior request under the project's
-  (to-be-clarified, see AMB-1) definition of "duplicate," when resubmitted, then the system returns
-  a consistent, previously-issued result rather than creating a second independent mapping.
-- *Negative*: The system does not silently create two independent short codes for what was, by the
-  applicable duplicate-detection rule, a single retried request, and does not leave the caller
-  unable to determine whether their retry succeeded.
+**REQ-007 — Duplicate request / idempotency behavior [SUPERSEDED IN PART — see CLR-2, Section 13.1]**
+Original text (preserved for history): *The system MUST avoid creating functionally duplicate
+mappings from a request the caller reasonably intended as a single retried operation.*
+- *Positive (original)*: Given a creation request that is a retry of a prior request under the
+  project's (to-be-clarified, see AMB-1) definition of "duplicate," when resubmitted, then the
+  system returns a consistent, previously-issued result rather than creating a second independent
+  mapping.
+- *Negative (original)*: The system does not silently create two independent short codes for what
+  was, by the applicable duplicate-detection rule, a single retried request, and does not leave the
+  caller unable to determine whether their retry succeeded.
 - *Evidence*: idempotency-replay test.
+- **Resolution (CLR-2, Human Gate 3, 2026-09-12)**: AMB-1 is resolved by explicitly rejecting
+  "identical destination URL" as a duplicate/dedup trigger. Creating a short link for a long URL
+  that was already shortened previously (by the same or a different prior request) MUST return a
+  **new, independent short code** — no implicit URL-based deduplication is performed. This applies
+  even to a byte-for-byte identical creation request; per-request idempotency-key/payload-based
+  deduplication is explicitly **not implemented in this iteration** and is backlog. Consequently,
+  the MUST-level obligation above is downgraded: REQ-007 is no longer a confirmed MUST for this
+  iteration's release-readiness determination (REQ-020) and is retained here only for traceability
+  and possible future revival. Updated acceptance behavior: every accepted creation request
+  (REQ-001), regardless of whether its destination URL or full payload matches an earlier request,
+  produces a distinct new mapping and a distinct new short code; callers responsible for avoiding
+  duplicate creations must track their own previously issued short codes.
+  - *Rationale*: simplest, most predictable behavior for a demonstration prototype; avoids
+    committing to an idempotency-key design (header format, storage, TTL) that the source material
+    never asked for. Full dedup/idempotency is explicitly named as backlog scope, not omitted by
+    oversight.
 
 **REQ-008 — Concurrent requests**
 The system MUST process concurrent creation and resolution requests correctly and independently.
@@ -408,6 +459,12 @@ The system MUST process concurrent creation and resolution requests correctly an
 - *Negative*: The system does not corrupt, lose, or cross-assign a mapping under concurrent load,
   and does not hang or deadlock indefinitely (bounded by the retry/timeout model of REQ-014).
 - *Evidence*: N-way concurrency test with per-request correctness assertions.
+- **[RESOLVED — CLR-9, Section 13.1]** The persistence layer MUST provide per-write transactional
+  isolation sufficient to guarantee REQ-003 (short-code uniqueness) holds under concurrent creation
+  requests. For analytics increment operations specifically (REQ-006), **last-writer-wins**
+  (eventually consistent) semantics are acceptable at prototype scale — analytics increments are
+  not required to be strictly serializable against each other. (This confirms the *behavioral*
+  concurrency model only; it does not select a persistence engine — see Section 8.)
 
 **REQ-009 — Persistence failures**
 The system MUST handle unavailability or transient errors from its persistence layer without
@@ -474,6 +531,11 @@ The system MUST apply bounded, classified retry to transient stage-operation fai
   error), and never retries beyond its declared bound.
 - *Evidence*: retry/backoff test with fault injection distinguishing transient vs. permanent
   failures.
+- **[RESOLVED — CLR-12, Section 13.1]** Retry eligibility rule (confirmed, newly surfaced during
+  clarification — not previously a numbered ambiguity): only genuinely **transient** failures are
+  retryable — e.g., a database lock/write-contention timeout, or a simulated transient stage
+  failure injected for testing. **Validation failures and policy failures are always classified
+  permanent and are never retried**, regardless of retry budget remaining.
 
 **REQ-015 — Rollback or compensation**
 The system MUST recover from a failed stage using rollback (undo of a reversible, not-yet-committed
@@ -487,6 +549,12 @@ per the distinction in constitution Principle VIII, never conflating the two.
   partially applied effect with neither rollback nor compensation performed.
 - *Evidence*: fault-injection test covering one rollback-eligible and one compensation-eligible
   scenario.
+- **[RESOLVED — CLR-14, Section 13.1]** Confirmed rollback-impossible case (newly surfaced during
+  clarification): once a redirect has been served to a caller, that delivery is a completed,
+  externally observed effect and can never be rolled back. Recovery for a problem discovered after
+  a redirect was served MUST use compensation (e.g., logging an incident/audit note, issuing a
+  corrective follow-up action) — never a rollback attempt against the already-served redirect
+  itself.
 
 **REQ-016 — Safe-stop**
 The system MUST halt forward progress on an affected branch, rather than guess, when continuation
@@ -498,6 +566,12 @@ would be unsafe.
   "to make progress," and never discards or corrupts already-completed upstream work upon entering
   safe-stop.
 - *Evidence*: safe-stop trigger test with post-condition state inspection.
+- **[RESOLVED — CLR-13, Section 13.1]** Confirmed safe-stop trigger conditions (newly surfaced
+  during clarification): a Workflow Run enters safe-stop when (a) a mandatory policy check
+  resolves `FAIL` without an approved exception, or (b) bounded retries (REQ-014) are exhausted with
+  no applicable fallback path. This is the concrete, closed enumeration of "non-recoverable state /
+  exhausted retries / unresolved mandatory gate" already named in this requirement's positive
+  criterion above.
 
 **REQ-017 — Workflow resumption**
 The system MUST resume an interrupted Workflow Run from persisted state.
@@ -540,6 +614,11 @@ test, and exception state.
   produces a release-readiness outcome unsupported by an evidence trail.
 - *Evidence*: release-readiness test covering both a passing run and a run blocked by an unresolved
   exception or failing policy.
+- **[RESOLVED — CLR-16, Section 13.1]** "Release-readiness" is **one combined gate** covering both
+  the orchestration engine and the URL shortener application as a single Workflow Run outcome — not
+  two independent gates. This confirms ASM-4 as a requirement and resolves AMB-9; it is also the
+  reading already implied by Section 3.1's Stage 11, which is modeled as a single synchronization
+  node joining Stages 8/9/10, not two parallel release-readiness nodes.
 
 ## 7. Non-Functional Requirements
 
@@ -562,6 +641,16 @@ scheme/format allow-list before use, and MUST treat named abuse classes as in-sc
   at least the four abuse classes above, and a dependency-vulnerability scan and secret-scan are
   clean (or carry a recorded, approved exception) before any release-readiness "ready" outcome.
 - *Evidence*: security test suite results; dependency/secret scan reports.
+- **[RESOLVED — CLR-11, Section 13.1]** No rate-limiting/quota enforcement is in scope for this
+  iteration (see CLR-11). Consequently, the mass-creation-denial-of-service abuse class named above
+  is scoped, for this iteration's security test suite, to demonstrating that: (a) the absence of
+  enforced rate-limiting is a documented, explicitly approved residual risk rather than a silent
+  gap, and (b) input-size/format bounds (REQ-002's 2048-character limit, REQ-021's other allow-list
+  checks) still hold correctly under high-volume submission. It does not attempt to demonstrate
+  actual volumetric-abuse prevention, since no enforcement mechanism exists to test.
+- **[RESOLVED — CLR-1, Section 13.1]** The SSRF guard (rejecting long URLs resolving to a loopback,
+  link-local, or private RFC1918 address — see REQ-002) is a confirmed in-scope control for the
+  open-redirect-chaining and shortener-as-phishing-relay abuse classes named above.
 
 **REQ-022 — Reliability**
 The system MUST resolve every injected transient failure in critical operations to a deterministic
@@ -696,11 +785,17 @@ stage (Tasks 6–7 of the governing plan):
 
 - Programming language(s) and runtime.
 - Application framework(s) for the API surface.
-- Persistence engine/database technology.
+- Persistence engine/database technology. (Clarification note, CLR-9: the *behavioral* concurrency
+  requirement — per-write transactional isolation, last-writer-wins analytics increments — is now
+  confirmed in REQ-008; the specific engine that satisfies it is still deferred here.)
 - Cloud provider, hosting platform, or deployment target.
 - Agent-orchestration framework or library used to implement the Section 3 dependency graph.
-- Concrete short-code generation algorithm (only its *properties* — uniqueness, REQ-003 — are
-  specified here).
+- Concrete short-code generation algorithm (only its *properties* — 7 characters, base62,
+  system-generated-only, uniqueness per REQ-003 — are confirmed as requirements per CLR-3/CLR-4;
+  the algorithm itself is a forward pointer to ADR-003 at the plan stage).
+- Concrete authentication mechanism, if authentication is ever brought into scope in a future
+  iteration (CLR-10 confirms none is enforced in this iteration; forward pointer to ADR-010 if
+  revisited).
 - Concrete data schema / storage layout for any Key Entity in Section 2.1.
 - Specific numeric values for every "Proposed validation target" in Section 7, pending human
   approval.
@@ -771,18 +866,23 @@ constitution-consistent:
 
 ### 9.3 Assumptions (require approval)
 
-- **ASM-1**: "No authentication" is the operative assumption for the API Consumer journey (Section
-  5.1) at this assessment scope, mirroring the example the constitution itself gives (Principle V)
-  — not a confirmed decision. If clarified otherwise, REQ-001/REQ-004 acceptance criteria will need
-  an authorization dimension added.
+- **ASM-1**: **[RESOLVED AND PROMOTED — CLR-10, Section 13.1, 2026-09-12]** "No authentication" is
+  no longer merely an operative assumption — it is now a **confirmed decision** for this iteration:
+  no authentication or authorization is enforced for any journey in Section 5. Retained here for
+  history; see CLR-10 for the resolution record and Section 8 for the forward ADR-010 pointer if a
+  future iteration revisits this.
 - **ASM-2**: All eleven "Proposed validation target" figures in Section 7 (REQ-021–REQ-031) are
   placeholder assumptions pending human approval, explicitly not confirmed client requirements.
+  **Unchanged by this clarification pass** — these numeric targets remain deferred to the plan
+  stage per this document's own design (Section 7's framing), except where a specific clarification
+  above (CLR-8 analytics, CLR-11 rate-limiting) touched an individual target's scope.
 - **ASM-3**: The demonstration/test execution environment is assumed to be a single-machine or
   small-CI-scale environment (not a production cluster), which is why scalability/performance
-  targets in Section 7 are scoped as "demonstration-scale."
-- **ASM-4**: "Release-readiness" (REQ-020) is assumed to be a single combined gate covering both
-  the orchestration engine and the URL shortener application, rather than two independent gates,
-  pending clarification (see AMB-9).
+  targets in Section 7 are scoped as "demonstration-scale." **Unchanged by this clarification
+  pass.**
+- **ASM-4**: **[RESOLVED AND PROMOTED — CLR-16, Section 13.1, 2026-09-12]** "Release-readiness"
+  (REQ-020) is now a **confirmed decision**: one single combined gate covers both the orchestration
+  engine and the URL shortener application. Retained here for history; see CLR-16.
 
 ### 9.4 Constraints
 
@@ -803,29 +903,58 @@ constitution-consistent:
 
 ### 9.5 Ambiguities (flagged, not silently resolved — routed to `/speckit.clarify`)
 
+**Clarification status (2026-09-12): all nine ambiguities below were reviewed at Human Gate 3.
+Eight are resolved (each carries its original question text, unedited, plus its resolution); one
+(AMB-7) is explicitly deferred rather than force-resolved. See Section 13 for the full clarification
+record, rationale, and owner for every item.**
+
 - **AMB-1**: What precisely constitutes a "duplicate" creation request for idempotency purposes
   (REQ-007) — identical destination URL, an explicit idempotency key/header, or an identical full
   request payload?
+  **[RESOLVED — CLR-2]** None of the three, in the sense of triggering dedup: identical-destination-
+  URL dedup is explicitly rejected, and idempotency-key/payload-based dedup is not implemented in
+  this iteration (backlog). See REQ-007 and Section 13.1.
 - **AMB-2**: Whether an expired short code (REQ-005) must return a response distinguishable from an
   unknown short code (REQ-004), or whether the two must be intentionally indistinguishable to avoid
   leaking the prior existence of a link.
+  **[RESOLVED — CLR-7]** Distinguishable: expired → `410 Gone`-equivalent; unknown → `404`-equivalent.
+  See REQ-005 and Section 13.1.
 - **AMB-3**: Whether caller-chosen ("custom alias") short codes are in scope, or whether all short
   codes are always system-generated.
+  **[RESOLVED — CLR-4]** All short codes are always system-generated; custom aliases are out of
+  scope for this iteration (backlog). See Section 2.1 and Section 13.1.
 - **AMB-4**: Whether any authentication/authorization is in scope for API consumers, software
   engineers, or reviewers interacting with the system (see ASM-1).
+  **[RESOLVED — CLR-10]** No authentication/authorization is enforced in this iteration; ASM-1 is
+  promoted from assumption to confirmed decision. See Section 13.1.
 - **AMB-5**: Maximum accepted long-URL length and short-code length/character set.
+  **[RESOLVED — CLR-3, CLR-5]** Short code: 7 characters, base62. Long URL: 2048-character maximum.
+  See REQ-002, Section 2.1, and Section 13.1.
 - **AMB-6**: Whether a Link's destination or expiration is mutable after creation, or whether Links
   are immutable once created.
+  **[RESOLVED — CLR-15]** Links are immutable once created; no update/PATCH capability in this
+  iteration. See Section 2.1 and Section 13.1.
 - **AMB-7**: Retention period for analytics data and for audit evidence (constitution Principle VI
   names "audit retention" as a governed policy area but sets no duration).
+  **[DEFERRED — remains OPEN, Section 13.2]** Not resolved by this clarification pass — no
+  concrete-and-defensible default retention period could be assigned without real compliance/legal
+  input specific to an eventual deployment context, and asserting one here would be exactly the kind
+  of silent, unjustified default this process exists to prevent. See Section 13.2 for owner and
+  required decision point.
 - **AMB-8**: Whether rate-limiting/quota behavior (implied by the mass-creation DoS threat in
   REQ-021) is per-caller-identity, per-IP, or global, and what the applicable threshold is.
+  **[RESOLVED — CLR-11]** No rate-limiting is enforced in this iteration. If implemented later, the
+  proposed (not yet approved) scope/threshold is per-IP, 100 requests/minute — recorded as a
+  residual backlog assumption, not a confirmed number. See REQ-021 and Section 13.1/13.2.
 - **AMB-9**: Whether "release-readiness" (REQ-020) is one combined gate for the whole system or two
   independent gates — one for the orchestration engine, one for the URL shortener application (see
   ASM-4).
+  **[RESOLVED — CLR-16]** One combined gate. ASM-4 is promoted from assumption to confirmed
+  decision. See REQ-020 and Section 13.1.
 
-These are carried forward, unresolved, to the clarification stage rather than answered here by
-agent judgment alone, per constitution Principle I.
+Per constitution Principle I, none of the above was silently resolved: each resolution above is
+either an explicit controller decision (Section 13.1, owner: human candidate via controlling
+session) or, for AMB-7, an explicitly recorded open deferral rather than an invented answer.
 
 ### 9.6 Exclusions (explicitly out of scope for this specification)
 
@@ -922,3 +1051,294 @@ ADRs) only once a human reviewer completes Human Gate 2:
 
 Until this checklist is completed and recorded, this document remains a DRAFT and should be
 treated as the best-available current guidance, not as ratified scope.
+
+**Note (2026-09-12)**: Human Gate 3 (`/speckit.clarify`, Section 13) has been completed
+independently of this gate. Gate 3's completion resolves or explicitly defers every ambiguity in
+Section 9.5; it does not itself satisfy any Human Gate 2 checklist item above, which remains a
+separate, still-pending approval of the specification as a whole.
+
+---
+
+## 13. Clarification Resolutions (`/speckit.clarify` — Human Gate 3)
+
+**Completed**: 2026-09-12. **Owner of every decision recorded below**: human candidate (via
+controlling session) — per constitution Principle I and Principle III, no item below was resolved
+by agent judgment alone presented as if it were a human decision; every resolution in Section 13.1
+is an explicit, rationale-bearing decision attributed to that owner, and every item in Section 13.2
+is an explicit deferral, not a silent assumption.
+
+This section is the authoritative clarification record. Sections 2, 6, 7, 8, and 9 above were
+updated in place to cite these records at the point each affected requirement/entity/assumption
+lives, per this project's convention of never deleting the history of what was asked (Section 0).
+
+### 13.1 Resolved Clarifications
+
+Format per item: **Identifier** — Question — Impact — Resolution — Owner — Date. Items marked
+"(newly surfaced)" were not one of the nine numbered ambiguities in the original Section 9.5 but
+were identified as material during the mandated 25-topic-area review (source: task-5 source
+material, Section 8 topic list) and are resolved to the same standard.
+
+---
+
+**CLR-1 — URL validation: scheme allow-list and SSRF guard** *(newly surfaced; sharpens REQ-002,
+REQ-021)*
+- **Question**: REQ-002 requires rejecting "a scheme outside an explicit allow-list" but the
+  original specification never named the allow-list's actual contents, nor whether
+  private-network-resolving hosts must be rejected (SSRF).
+- **Impact**: Without a concrete allow-list and SSRF rule, REQ-002/REQ-021 are not testable as
+  written (REQ-029 requires every requirement be verifiable without further interpretation), and
+  the shortener-as-phishing-relay / open-redirect-chaining abuse classes REQ-021 names cannot be
+  test-designed.
+- **Resolution**: Allow only `http` and `https` schemes; reject `javascript:`, `file:`, `data:`,
+  and every other scheme. Additionally reject, at creation time, any long URL whose host resolves
+  to a loopback, link-local, or private RFC1918 address (SSRF guard).
+- **Owner**: human candidate (via controlling session).
+- **Date**: 2026-09-12.
+
+---
+
+**CLR-2 — Duplicate URL behavior (dedup)** *(resolves AMB-1)*
+- **Question**: What precisely constitutes a "duplicate" creation request for idempotency purposes
+  (REQ-007) — identical destination URL, an explicit idempotency key/header, or an identical full
+  request payload?
+- **Impact**: Determines whether REQ-007 is implemented at all in this iteration, and whether
+  creation is a pure function of destination URL (dedup) or of the request occurrence itself
+  (no dedup). Affects REQ-001, REQ-003, REQ-007, and the creation API's response contract.
+- **Resolution**: Creating a short link for an already-shortened long URL returns a **new**,
+  independent short code — no implicit URL-based deduplication. This is the simplest, most
+  predictable behavior; full request-level dedup/idempotency is out of scope for this iteration and
+  is recorded as backlog. REQ-007's original MUST-level obligation is superseded accordingly (see
+  REQ-007 for the full resolution note and updated acceptance behavior).
+- **Owner**: human candidate (via controlling session).
+- **Date**: 2026-09-12.
+
+---
+
+**CLR-3 — Short-code format** *(resolves part of AMB-5)*
+- **Question**: What is the short-code length and character set (AMB-5)?
+- **Impact**: Affects REQ-003 testability, storage/display assumptions, and collision-probability
+  reasoning for REQ-003/REQ-008.
+- **Resolution**: 7-character, base62 (`[a-zA-Z0-9]`) short codes. The concrete generation
+  *algorithm* (random vs. counter-based vs. hash-based) is **not** decided here — that is a Section
+  8 deferred technology/implementation decision, forward-pointed to ADR-003 at the plan stage. Only
+  the testable properties (length, character set) are confirmed as requirements in this document.
+- **Owner**: human candidate (via controlling session).
+- **Date**: 2026-09-12.
+
+---
+
+**CLR-4 — Custom alias out of scope** *(resolves AMB-3)*
+- **Question**: Are caller-chosen ("custom alias") short codes in scope, or are all short codes
+  always system-generated?
+- **Impact**: Determines whether the creation API accepts a caller-supplied short-code field, and
+  whether short-code-collision handling must account for adversarial caller input.
+- **Resolution**: All short codes are always system-generated (per CLR-3); custom aliases are out of
+  scope for this iteration and recorded as backlog. Any caller-supplied short-code field, if
+  submitted, is ignored or rejected — not silently honored.
+- **Owner**: human candidate (via controlling session).
+- **Date**: 2026-09-12.
+- *Note*: this specific resolution was not one of the ten items given verbatim in the task-5 brief;
+  it was derived here as the direct, low-risk implication of CLR-3 ("generated," 7-char base62,
+  with no caller-choice mechanism described) and the demonstrated simplicity-first pattern used
+  across the other nine brief resolutions. Recorded to the same concrete/falsifiable/rationale-
+  bearing standard; flagged in the task-5 report for visibility.
+
+---
+
+**CLR-5 — Maximum long-URL length** *(resolves remainder of AMB-5)*
+- **Question**: What is the maximum accepted long-URL length (AMB-5)?
+- **Impact**: Affects REQ-002 testability (a length-based rejection boundary must be a concrete
+  number to be testable per REQ-029) and storage/validation design.
+- **Resolution**: 2048 characters. A submitted long URL exceeding this length is rejected the same
+  way as a malformed URL (REQ-002).
+- **Owner**: human candidate (via controlling session).
+- **Date**: 2026-09-12.
+- *Note*: not one of the ten brief-verbatim items; 2048 is a widely used practical URL-length
+  ceiling (common browser/server interoperability bound), chosen here as a concrete, testable,
+  low-controversy default consistent with the brief's own resolutions' style. Flagged in the task-5
+  report for visibility/possible re-ratification.
+
+---
+
+**CLR-6 — Expiration mechanism and default** *(newly surfaced; sharpens REQ-005)*
+- **Question**: How is a Link's expiration set, and what is the default if the caller does not set
+  one?
+- **Impact**: Affects the creation API contract (REQ-001) and REQ-005's testability (a "default"
+  must be stated to write a boundary test).
+- **Resolution**: Expiration is optional and caller-set at creation via an `expires_at` condition;
+  default when omitted is **no expiration** (the Link never self-expires).
+- **Owner**: human candidate (via controlling session).
+- **Date**: 2026-09-12.
+
+---
+
+**CLR-7 — Expired vs. unknown distinguishability** *(resolves AMB-2)*
+- **Question**: Must an expired short code's response be distinguishable from an unknown short
+  code's response, or must the two be intentionally indistinguishable to avoid leaking prior
+  existence?
+- **Impact**: Affects REQ-004 and REQ-005's negative acceptance criteria and the redirect API's
+  response contract; also an information-disclosure/security design choice (REQ-021).
+- **Resolution**: Distinguishable. Expired → `410 Gone`-equivalent outcome. Unknown/never-issued →
+  `404`-equivalent outcome.
+- **Owner**: human candidate (via controlling session).
+- **Date**: 2026-09-12.
+
+---
+
+**CLR-8 — Analytics consistency model** *(newly surfaced; sharpens REQ-006)*
+- **Question**: What analytics data is captured per redirect, and under what consistency model?
+- **Impact**: Affects REQ-006's testability and the concurrency model for analytics writes
+  (REQ-008/REQ-009).
+- **Resolution**: Redirect count (per-Link counter) and last-accessed timestamp, captured under an
+  **eventually consistent** model — an asynchronous, non-blocking increment is acceptable. Recorded
+  as a proposed validation target for the demonstration, not a hard production consistency
+  guarantee.
+- **Owner**: human candidate (via controlling session).
+- **Date**: 2026-09-12.
+
+---
+
+**CLR-9 — Concurrency / transaction handling** *(newly surfaced; sharpens REQ-003, REQ-008,
+REQ-009)*
+- **Question**: What transactional guarantees apply to concurrent writes, and what consistency
+  model applies specifically to analytics increments under contention?
+- **Impact**: Affects whether REQ-003 (uniqueness) and REQ-008 (concurrent correctness) are
+  testable as stated, and bounds how aggressively analytics writes may be batched/deferred.
+- **Resolution**: The persistence layer MUST provide per-write transactional isolation sufficient to
+  guarantee short-code uniqueness (REQ-003) under concurrent creation. For analytics increments
+  specifically, last-writer-wins (eventually consistent) semantics are acceptable at prototype
+  scale. **Scope note**: the controller's rationale for this decision referenced a specific
+  mechanism ("SQLite transaction per write") as illustrative context; per this document's own
+  Section 8 boundary (persistence engine is a deferred technology decision) and this task's
+  explicit instruction not to select a technology stack, only the *behavioral* commitment above is
+  ratified in this specification — the specific persistence engine remains open for the ADR/plan
+  stage.
+- **Owner**: human candidate (via controlling session).
+- **Date**: 2026-09-12.
+
+---
+
+**CLR-10 — Authentication assumption** *(resolves AMB-4 / promotes ASM-1)*
+- **Question**: Is any authentication/authorization in scope for API consumers, software engineers,
+  or reviewers interacting with the system?
+- **Impact**: Affects REQ-001/REQ-004 acceptance criteria (whether an authorization dimension is
+  required) and the overall threat model (REQ-021).
+- **Resolution**: No authentication or authorization is enforced in this iteration. This promotes
+  ASM-1 from assumption to confirmed decision. A forward pointer (ADR-010) is recorded in Section 8
+  in case a future iteration revisits this.
+- **Owner**: human candidate (via controlling session).
+- **Date**: 2026-09-12.
+
+---
+
+**CLR-11 — Rate limiting** *(resolves AMB-8)*
+- **Question**: Is rate-limiting/quota behavior in scope, and if so, is it per-caller-identity,
+  per-IP, or global, and what threshold applies?
+- **Impact**: Affects REQ-021's mass-creation-DoS abuse-class test design and REQ-001's creation API
+  contract.
+- **Resolution**: No rate-limiting is enforced in this iteration. If implemented in a future
+  iteration, the proposed (not yet approved) scope/threshold is per-IP, 100 requests/minute —
+  recorded as a residual backlog assumption requiring its own approval before implementation, not a
+  confirmed requirement now.
+- **Owner**: human candidate (via controlling session).
+- **Date**: 2026-09-12.
+- **Residual item carried to Section 13.2**: the 100 req/min/IP figure itself remains an
+  unapproved backlog assumption (see Section 13.2).
+
+---
+
+**CLR-12 — Retry eligibility rule** *(newly surfaced; sharpens REQ-014, REQ-022)*
+- **Question**: Which failure classes are retryable, and which are permanently non-retryable?
+- **Impact**: Affects REQ-014's testability (a retry/backoff test needs a concrete transient/
+  permanent boundary) and REQ-022 (reliability terminal-outcome classification).
+- **Resolution**: Only transient failures are retryable — e.g., a database lock/write-contention
+  timeout, or a simulated transient stage failure injected for testing. Validation failures and
+  policy failures are always classified permanent and are never retried.
+- **Owner**: human candidate (via controlling session).
+- **Date**: 2026-09-12.
+
+---
+
+**CLR-13 — Safe-stop trigger conditions** *(newly surfaced; sharpens REQ-016)*
+- **Question**: Precisely which conditions trigger safe-stop?
+- **Impact**: Affects REQ-016's testability (a safe-stop trigger test needs a concrete, closed
+  enumeration of trigger conditions) and downstream orchestration-engine design.
+- **Resolution**: Safe-stop is entered when (a) a mandatory policy check resolves `FAIL` without an
+  approved exception, or (b) bounded retries (REQ-014) are exhausted with no applicable fallback
+  path.
+- **Owner**: human candidate (via controlling session).
+- **Date**: 2026-09-12.
+
+---
+
+**CLR-14 — Rollback-impossible case / compensation** *(newly surfaced; sharpens REQ-015)*
+- **Question**: Which effects are impossible to roll back, requiring compensation instead?
+- **Impact**: Affects REQ-015's testability and the orchestration engine's recovery-path design.
+- **Resolution**: Once a redirect has been served to a caller, that delivery is a completed,
+  externally observed effect and can never be rolled back. Recovery in that case MUST use
+  compensation (e.g., an incident/audit note, a corrective follow-up action), never a rollback
+  attempt.
+- **Owner**: human candidate (via controlling session).
+- **Date**: 2026-09-12.
+
+---
+
+**CLR-15 — Link mutability** *(resolves AMB-6)*
+- **Question**: Is a Link's destination or expiration mutable after creation, or are Links immutable
+  once created?
+- **Impact**: Determines whether an update/PATCH API surface, its authorization model, and its
+  audit/change-safety obligations (REQ-030) are in scope.
+- **Resolution**: Links are immutable once created; no update/PATCH capability in this iteration.
+  Mutation support, if ever needed, is backlog.
+- **Owner**: human candidate (via controlling session).
+- **Date**: 2026-09-12.
+- *Note*: not one of the ten brief-verbatim items; resolved here consistent with the simplicity-
+  first, backlog-the-complexity pattern the controller applied to CLR-2 (dedup) and CLR-4 (custom
+  alias). Flagged in the task-5 report for visibility/possible re-ratification, since — unlike
+  CLR-4/CLR-5 — this one has a real (if modest) architectural footprint (it forecloses an update
+  endpoint).
+
+---
+
+**CLR-16 — Release-readiness: one combined gate** *(resolves AMB-9 / promotes ASM-4)*
+- **Question**: Is release-readiness (REQ-020) one combined gate for the whole system, or two
+  independent gates (orchestration engine vs. URL shortener application)?
+- **Resolution**: One combined gate. This promotes ASM-4 from assumption to confirmed decision, and
+  matches the existing Section 3.1 Stage 11 design (a single synchronization node joining Stages
+  8/9/10 for one Workflow Run, not two parallel release-readiness nodes).
+- **Impact**: Affects REQ-020's outcome model and Section 3.1's Stage 11 join semantics.
+- **Owner**: human candidate (via controlling session).
+- **Date**: 2026-09-12.
+
+### 13.2 Deferred Questions / Residual Assumptions
+
+Items below remain genuinely open. Each is recorded with an owner and a required decision point,
+per constitution Principle I — none is force-resolved to appear closed.
+
+| ID | Question | Impact | Current status | Owner | Required decision point |
+|---|---|---|---|---|---|
+| AMB-7 | What is the retention period for analytics data and for audit evidence? | Affects storage design, compliance posture, and whether audit-trail completeness (REQ-019, REQ-026) has an implicit expiry that could break "independently reconstructable" evidence claims. | **OPEN.** No default assigned — a real retention number depends on compliance/legal context this assessment prototype does not have, and asserting one would be an unjustified silent default. | human candidate (via controlling session) | Before any production-scale deployment, or at the plan stage if a demonstration-scale placeholder becomes unavoidable for testing purposes — whichever comes first. |
+| CLR-11 residual | What is the approved rate-limiting threshold, if/when rate-limiting is implemented? | Affects REQ-021's mass-creation-DoS control design once actually built. | **Backlog assumption, not approved.** Proposed figure on record: 100 req/min/IP (see CLR-11). | human candidate (via controlling session) | Before rate-limiting is implemented (not required for this iteration's release-readiness outcome, since CLR-11 confirms it is out of scope now). |
+| ASM-2 (11 NFR targets) | Are the eleven numeric "Proposed validation target" figures in Section 7 (REQ-021–REQ-031) approved as confirmed requirements? | Determines whether Section 7's numbers are binding for this iteration's release-readiness outcome (REQ-020). | **OPEN — unchanged by this clarification pass**, except where CLR-8 (analytics) and CLR-11 (rate-limiting) narrowed an individual target's scope. Out of scope for this clarify pass by this document's own design (Section 7 explicitly defers these to later gates). | human candidate (via controlling session) | At the `/speckit.plan` stage or a later gate, per Section 7's existing framing. |
+
+### 13.3 Mapping to Original Ambiguities/Assumptions
+
+| Resolution | Original spec reference | Relationship |
+|---|---|---|
+| CLR-1 (URL validation / SSRF) | none (REQ-002/REQ-021 underspecification) | Newly surfaced |
+| CLR-2 (duplicate URL / dedup) | AMB-1 | 1:1 |
+| CLR-3 (short-code format) | AMB-5 (short-code portion) | 1:1 (partial) |
+| CLR-4 (custom alias out of scope) | AMB-3 | 1:1 (derived, not brief-verbatim) |
+| CLR-5 (max long-URL length) | AMB-5 (URL-length portion) | 1:1 (partial, not brief-verbatim) |
+| CLR-6 (expiration mechanism/default) | none (REQ-005 underspecification) | Newly surfaced |
+| CLR-7 (expired vs. unknown) | AMB-2 | 1:1 |
+| CLR-8 (analytics consistency) | none (REQ-006 underspecification) | Newly surfaced |
+| CLR-9 (concurrency/transactions) | none (REQ-003/008/009 underspecification) | Newly surfaced |
+| CLR-10 (auth) | AMB-4 / ASM-1 | 1:1 |
+| CLR-11 (rate limiting) | AMB-8 | 1:1 |
+| CLR-12 (retry eligibility) | none (REQ-014 underspecification) | Newly surfaced |
+| CLR-13 (safe-stop triggers) | none (REQ-016 underspecification) | Newly surfaced |
+| CLR-14 (rollback-impossible/compensation) | none (REQ-015 underspecification) | Newly surfaced |
+| CLR-15 (Link mutability) | AMB-6 | 1:1 (derived, not brief-verbatim) |
+| CLR-16 (release-readiness gate) | AMB-9 / ASM-4 | 1:1 |
+| — | AMB-7 (retention) | Deferred, remains open |

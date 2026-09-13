@@ -1,5 +1,6 @@
 package com.schwab.urlshortener.api;
 
+import com.schwab.urlshortener.api.dto.AnalyticsResponse;
 import com.schwab.urlshortener.api.dto.CreateLinkRequest;
 import com.schwab.urlshortener.api.dto.LinkResponse;
 import com.schwab.urlshortener.domain.ShortCodeGenerator;
@@ -59,6 +60,13 @@ public class LinkController {
         }
         recordRedirect(entity, "redirected");
         return ResponseEntity.status(307).location(URI.create(link.longUrl())).build();
+    }
+
+    @GetMapping("/links/{code}/analytics")
+    public AnalyticsResponse analytics(@PathVariable String code) {
+        ShortLinkEntity entity = repository.findByCode(code)
+                .orElseThrow(() -> new ResponseStatusException(org.springframework.http.HttpStatus.NOT_FOUND, "short_code_not_found"));
+        return new AnalyticsResponse(entity.getCode(), entity.getRedirectCount(), entity.getLastAccessedAt());
     }
 
     private void recordRedirect(ShortLinkEntity entity, String outcome) {

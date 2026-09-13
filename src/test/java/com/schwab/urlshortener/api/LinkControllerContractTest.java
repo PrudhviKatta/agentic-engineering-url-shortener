@@ -89,4 +89,15 @@ class LinkControllerContractTest {
         ResponseEntity<Void> resp = noRedirectClient().getForEntity(url("/r/" + code), Void.class);
         assertThat(resp.getStatusCode().value()).isEqualTo(410);
     }
+
+    @Test
+    void analyticsReflectsRedirectCount() {
+        var created = rest.postForEntity(url("/links"), Map.of("longUrl", "https://example.com/a"), Map.class);
+        String code = (String) created.getBody().get("code");
+        rest.getForEntity(url("/r/" + code), String.class);
+        rest.getForEntity(url("/r/" + code), String.class);
+
+        ResponseEntity<Map> analytics = rest.getForEntity(url("/links/" + code + "/analytics"), Map.class);
+        assertThat(((Number) analytics.getBody().get("redirectCount")).intValue()).isEqualTo(2);
+    }
 }

@@ -90,19 +90,25 @@ here; concrete interfaces, data models, and technology are ADR/plan-stage decisi
 
 ### 2.1 Key Entities (conceptual — no schema, storage engine, or field types implied)
 
-- **Link (Short URL Mapping)**: an association between a system-issued short identifier and a
-  destination (long) URL, with a creation time and an optional expiration condition. **[RESOLVED —
-  CLR-15, Section 13.1]** A Link is immutable once created: neither its destination URL nor its
-  expiration condition may be changed after creation in this iteration. There is no update/PATCH
-  capability. (Originally AMB-6; superseded here.)
+- **Link (Short URL Mapping)**: an association between a system-issued or requested short
+  identifier and a destination (long) URL, with a creation time and an optional expiration
+  condition. Whether a Link is mutable after creation is an open ambiguity (Section 9, AMB-6).
+  **[RESOLVED — CLR-15, Section 13.1]** A Link is immutable once created: neither its destination
+  URL nor its expiration condition may be changed after creation in this iteration. There is no
+  update/PATCH capability. **Flag**: this resolution was not one of the brief's ten literal items —
+  see CLR-15's note in Section 13.1 and the task-5 report's Concern 1; it forecloses a real design
+  decision (no update endpoint, no mutation-authorization model) and should be explicitly
+  confirmed or overridden by the human candidate rather than treated as settled by pattern-analogy
+  alone.
 - **Short Code**: the identifier portion of a Link that a caller presents to be resolved. Uniqueness
-  of active Short Codes is a confirmed requirement (REQ-003). **[RESOLVED — CLR-3/CLR-4, Section
-  13.1]** Every Short Code is exactly 7 characters drawn from the base62 character set
-  (`[a-zA-Z0-9]`) and is always system-generated; caller-supplied ("custom alias") short codes are
-  out of scope for this iteration. The concrete generation *algorithm* (e.g., random vs.
-  counter-based) is not decided here — it remains a Section 8 deferred technology/implementation
-  decision pointing to ADR-003 at the plan stage; only the code's testable *properties* (length,
-  character set, system-generated-only) are confirmed as requirements here.
+  of active Short Codes is a confirmed requirement (REQ-003); the generation strategy is not
+  specified here. **[RESOLVED — CLR-3/CLR-4, Section 13.1]** Every Short Code is exactly 7
+  characters drawn from the base62 character set (`[a-zA-Z0-9]`) and is always system-generated;
+  caller-supplied ("custom alias") short codes are out of scope for this iteration. The concrete
+  generation *algorithm* (e.g., random vs. counter-based) is still not decided here — it remains a
+  Section 8 deferred technology/implementation decision pointing to ADR-003 at the plan stage; only
+  the code's testable *properties* (length, character set, system-generated-only) are confirmed as
+  requirements here.
 - **Redirect Event**: a record that a resolution of a given Short Code occurred, used as the basis
   for analytics (REQ-006). Conceptually distinct from the Link itself — a Link may have zero, one,
   or many associated Redirect Events.
@@ -394,13 +400,16 @@ condition.
 - *Positive*: Given a short code past its expiration point, when resolution is requested, then the
   system does not redirect and returns a distinguishable expired outcome.
 - *Negative*: The system does not redirect an expired code to its original destination under any
-  circumstance.
+  circumstance. (Whether "expired" and "not found" must be distinguishable to an external caller,
+  versus intentionally identical for information-disclosure reasons, is an open ambiguity — see
+  AMB-2, Section 9 — and is not silently resolved here.)
 - *Evidence*: expiration-boundary test (immediately before, at, and after expiry).
 - **[RESOLVED — CLR-7, Section 13.1]** "Expired" and "unknown/never-issued" (REQ-004) MUST be
   distinguishable to the caller: an expired short code returns a distinguishable expired outcome
   (`410 Gone`-equivalent), while an unknown code returns a distinguishable not-found outcome
   (`404`-equivalent). Information-disclosure-by-indistinguishability was considered and explicitly
-  rejected as the operative model for this iteration. (Originally AMB-2.)
+  rejected as the operative model for this iteration. (Originally AMB-2; the parenthetical above is
+  preserved for history — this bullet is its resolution, not its replacement.)
 - **[RESOLVED — CLR-6, Section 13.1]** Expiration is optional and caller-set at creation time via an
   `expires_at` condition; the default when omitted is **no expiration** (the Link never expires on
   its own). This was previously unspecified mechanism/default behavior underlying this requirement.
@@ -866,11 +875,14 @@ constitution-consistent:
 
 ### 9.3 Assumptions (require approval)
 
-- **ASM-1**: **[RESOLVED AND PROMOTED — CLR-10, Section 13.1, 2026-09-12]** "No authentication" is
-  no longer merely an operative assumption — it is now a **confirmed decision** for this iteration:
-  no authentication or authorization is enforced for any journey in Section 5. Retained here for
-  history; see CLR-10 for the resolution record and Section 8 for the forward ADR-010 pointer if a
-  future iteration revisits this.
+- **ASM-1**: "No authentication" is the operative assumption for the API Consumer journey (Section
+  5.1) at this assessment scope, mirroring the example the constitution itself gives (Principle V)
+  — not a confirmed decision. If clarified otherwise, REQ-001/REQ-004 acceptance criteria will need
+  an authorization dimension added. **[RESOLVED AND PROMOTED — CLR-10, Section 13.1, 2026-09-12]**
+  "No authentication" is no longer merely an operative assumption — it is now a **confirmed
+  decision** for this iteration: no authentication or authorization is enforced for any journey in
+  Section 5. See CLR-10 for the resolution record and Section 8 for the forward ADR-010 pointer if
+  a future iteration revisits this.
 - **ASM-2**: All eleven "Proposed validation target" figures in Section 7 (REQ-021–REQ-031) are
   placeholder assumptions pending human approval, explicitly not confirmed client requirements.
   **Unchanged by this clarification pass** — these numeric targets remain deferred to the plan
@@ -880,9 +892,11 @@ constitution-consistent:
   small-CI-scale environment (not a production cluster), which is why scalability/performance
   targets in Section 7 are scoped as "demonstration-scale." **Unchanged by this clarification
   pass.**
-- **ASM-4**: **[RESOLVED AND PROMOTED — CLR-16, Section 13.1, 2026-09-12]** "Release-readiness"
-  (REQ-020) is now a **confirmed decision**: one single combined gate covers both the orchestration
-  engine and the URL shortener application. Retained here for history; see CLR-16.
+- **ASM-4**: "Release-readiness" (REQ-020) is assumed to be a single combined gate covering both
+  the orchestration engine and the URL shortener application, rather than two independent gates,
+  pending clarification (see AMB-9). **[RESOLVED AND PROMOTED — CLR-16, Section 13.1, 2026-09-12]**
+  "Release-readiness" is now a **confirmed decision**: one single combined gate covers both the
+  orchestration engine and the URL shortener application. See CLR-16 for the resolution record.
 
 ### 9.4 Constraints
 
@@ -952,9 +966,14 @@ record, rationale, and owner for every item.**
   **[RESOLVED — CLR-16]** One combined gate. ASM-4 is promoted from assumption to confirmed
   decision. See REQ-020 and Section 13.1.
 
-Per constitution Principle I, none of the above was silently resolved: each resolution above is
-either an explicit controller decision (Section 13.1, owner: human candidate via controlling
-session) or, for AMB-7, an explicitly recorded open deferral rather than an invented answer.
+These are carried forward, unresolved, to the clarification stage rather than answered here by
+agent judgment alone, per constitution Principle I.
+
+**Clarification-stage update (2026-09-12)**: the clarification stage referenced in the sentence
+above has now run. Per constitution Principle I, none of the nine ambiguities was silently
+resolved: each resolution recorded next to it above is either an explicit controller decision
+(Section 13.1, owner: human candidate via controlling session) or, for AMB-7, an explicitly
+recorded open deferral rather than an invented answer.
 
 ### 9.6 Exclusions (explicitly out of scope for this specification)
 

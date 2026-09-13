@@ -841,7 +841,7 @@ columns with concrete task IDs once it exists.
 | REQ-014 | SCN-A, SCN-B | Section 6 (reliability) | — | — | `RetryTest`, `TimeoutTest` |
 | REQ-015 | SCN-B | Section 6, research.md D9 | ADR-009 | — | `CompensationRegistryTest` |
 | REQ-016 | SCN-A, SCN-B, SCN-C | Section 3.4, 6 | — | — | `WorkflowEngineSafeStopTest` |
-| REQ-017, REQ-028 | SCN-A, SCN-C | Section 3.4, 6 | — | — | `WorkflowEngineContextLineageTest` |
+| REQ-017, REQ-028 | SCN-A, SCN-C | Section 3.4, 6 | — | — | `WorkflowEngineContextLineageTest`, `WorkflowEngineRestartTest`, `WorkflowRecoveryBootTest` |
 | REQ-018 | SCN-A, SCN-C | Section 3.4 (replan) | ADR-004 | `docs/scenarios/ambiguous.md` | `WorkflowEngineReplanningTest`, `AmbiguousScenarioTest` |
 | REQ-019, REQ-026 | SCN-A, SCN-B, SCN-C | Section 4, 7 | — | `data-model.md` §5 | Audit-trail completeness test |
 | REQ-020 | SCN-A, SCN-B | Section 9 (release-blocking) | — | — | Release-readiness FAIL/pass tests |

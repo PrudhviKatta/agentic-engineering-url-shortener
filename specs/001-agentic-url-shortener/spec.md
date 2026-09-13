@@ -93,13 +93,13 @@ here; concrete interfaces, data models, and technology are ADR/plan-stage decisi
 - **Link (Short URL Mapping)**: an association between a system-issued or requested short
   identifier and a destination (long) URL, with a creation time and an optional expiration
   condition. Whether a Link is mutable after creation is an open ambiguity (Section 9, AMB-6).
-  **[RESOLVED — CLR-15, Section 13.1]** A Link is immutable once created: neither its destination
-  URL nor its expiration condition may be changed after creation in this iteration. There is no
-  update/PATCH capability. **Flag**: this resolution was not one of the brief's ten literal items —
-  see CLR-15's note in Section 13.1 and the task-5 report's Concern 1; it forecloses a real design
-  decision (no update endpoint, no mutation-authorization model) and should be explicitly
-  confirmed or overridden by the human candidate rather than treated as settled by pattern-analogy
-  alone.
+  **[RESOLVED — CLR-15, Section 13.1; CONFIRMED by human candidate 2026-09-13]** A Link is
+  immutable once created: neither its destination URL nor its expiration condition may be changed
+  after creation in this iteration. There is no update/PATCH capability. This was originally an
+  agent-inferred resolution (pattern-analogy, not one of the clarification brief's ten literal
+  items) and was explicitly flagged for human review; the human candidate has now confirmed it as
+  the correct design decision. The brownfield scenario (SCN-B) targets a different, non-mutating
+  enhancement as a result — see Section 6/13.1 note.
 - **Short Code**: the identifier portion of a Link that a caller presents to be resolved. Uniqueness
   of active Short Codes is a confirmed requirement (REQ-003); the generation strategy is not
   specified here. **[RESOLVED — CLR-3/CLR-4, Section 13.1]** Every Short Code is exactly 7
@@ -917,10 +917,13 @@ constitution-consistent:
 
 ### 9.5 Ambiguities (flagged, not silently resolved — routed to `/speckit.clarify`)
 
-**Clarification status (2026-09-12): all nine ambiguities below were reviewed at Human Gate 3.
-Eight are resolved (each carries its original question text, unedited, plus its resolution); one
-(AMB-7) is explicitly deferred rather than force-resolved. See Section 13 for the full clarification
-record, rationale, and owner for every item.**
+**Clarification status: all nine ambiguities below were reviewed at Human Gate 3 (2026-09-12).
+Eight were resolved immediately (each carries its original question text, unedited, plus its
+resolution); one (AMB-7) was explicitly deferred rather than force-resolved at that time. AMB-7 was
+subsequently dispositioned on 2026-09-13 via an explicitly human-approved temporary assumption
+(CLR-17) rather than left open indefinitely — see Section 13 for the full clarification record,
+rationale, and owner for every item, including the distinction between "resolved at Human Gate 3"
+and "later approved as an assumption."**
 
 - **AMB-1**: What precisely constitutes a "duplicate" creation request for idempotency purposes
   (REQ-007) — identical destination URL, an explicit idempotency key/header, or an identical full
@@ -950,11 +953,10 @@ record, rationale, and owner for every item.**
   iteration. See Section 2.1 and Section 13.1.
 - **AMB-7**: Retention period for analytics data and for audit evidence (constitution Principle VI
   names "audit retention" as a governed policy area but sets no duration).
-  **[DEFERRED — remains OPEN, Section 13.2]** Not resolved by this clarification pass — no
-  concrete-and-defensible default retention period could be assigned without real compliance/legal
-  input specific to an eventual deployment context, and asserting one here would be exactly the kind
-  of silent, unjustified default this process exists to prevent. See Section 13.2 for owner and
-  required decision point.
+  **[RESOLVED — CLR-17, approved temporary assumption, 2026-09-13]** No real compliance-derived
+  retention period exists for this assessment prototype; the human candidate has explicitly
+  approved a disclosed 90-day placeholder to unblock planning, revisited before any
+  production-scale deployment. See Section 13.1 (CLR-17) for the full record.
 - **AMB-8**: Whether rate-limiting/quota behavior (implied by the mass-creation DoS threat in
   REQ-021) is per-caller-identity, per-IP, or global, and what the applicable threshold is.
   **[RESOLVED — CLR-11]** No rate-limiting is enforced in this iteration. If implemented later, the
@@ -1316,6 +1318,37 @@ REQ-009)*
   alias). Flagged in the task-5 report for visibility/possible re-ratification, since — unlike
   CLR-4/CLR-5 — this one has a real (if modest) architectural footprint (it forecloses an update
   endpoint).
+- **Human confirmation (2026-09-13)**: the human candidate reviewed this flag directly and
+  confirmed the immutable-Links resolution as correct — not merely accepted by default. This
+  closes the re-ratification concern raised above; CLR-15 now stands on the same footing as any
+  other resolution in this section.
+
+---
+
+**CLR-17 — Analytics/audit retention period (approved temporary assumption)** *(resolves AMB-7)*
+- **Question**: What is the retention period for analytics data and for audit evidence (constitution
+  Principle VI names "audit retention" as a governed policy area but sets no duration)?
+- **Impact**: Affects storage design, compliance posture, and whether audit-trail completeness
+  (REQ-019, REQ-026) has an implicit expiry that could break "independently reconstructable"
+  evidence claims.
+- **Resolution**: **Approved temporary assumption, not a confirmed production requirement**: for
+  this demonstration prototype, analytics and audit-event data are retained for **90 days** from
+  creation, after which they may be purged without violating any requirement in this
+  specification. This is explicitly a placeholder to unblock planning, not a compliance-derived
+  figure — no real retention/legal requirement exists for an interview-assessment prototype. It
+  must be revisited with real compliance input before any production-scale deployment, and any
+  later change to this figure is a material requirement change subject to the constitution's
+  change-control principle (VI), not a routine edit.
+- **Owner**: human candidate (via controlling session).
+- **Date**: 2026-09-13.
+- *Note*: AMB-7 was originally left genuinely open at Human Gate 3 (2026-09-12) rather than
+  force-resolved, per constitution Principle I. This CLR-17 entry is a distinct, later event: the
+  human candidate explicitly approving a disclosed placeholder assumption so that Task 6 (technical
+  plan) is not blocked by an unresolved NFR, per constitution Principle VI's requirement that a
+  policy exception/assumption be explicitly approved rather than silently asserted. AMB-7 is not
+  "resolved" in the sense of a real answer being known — it is "dispositioned" in the sense the
+  guide's own Human Gate 3 rules require (resolved, or represented by an explicitly approved
+  assumption).
 
 ---
 
@@ -1336,7 +1369,7 @@ per constitution Principle I — none is force-resolved to appear closed.
 
 | ID | Question | Impact | Current status | Owner | Required decision point |
 |---|---|---|---|---|---|
-| AMB-7 | What is the retention period for analytics data and for audit evidence? | Affects storage design, compliance posture, and whether audit-trail completeness (REQ-019, REQ-026) has an implicit expiry that could break "independently reconstructable" evidence claims. | **OPEN.** No default assigned — a real retention number depends on compliance/legal context this assessment prototype does not have, and asserting one would be an unjustified silent default. | human candidate (via controlling session) | Before any production-scale deployment, or at the plan stage if a demonstration-scale placeholder becomes unavoidable for testing purposes — whichever comes first. |
+| AMB-7 | What is the retention period for analytics data and for audit evidence? | Affects storage design, compliance posture, and whether audit-trail completeness (REQ-019, REQ-026) has an implicit expiry that could break "independently reconstructable" evidence claims. | **RESOLVED via CLR-17 (2026-09-13) — approved temporary assumption, not a confirmed production requirement.** 90-day placeholder retention approved by the human candidate to unblock planning. See Section 13.1. | human candidate (via controlling session) | Before any production-scale deployment, this placeholder must be replaced with a real compliance-derived figure. |
 | CLR-11 residual | What is the approved rate-limiting threshold, if/when rate-limiting is implemented? | Affects REQ-021's mass-creation-DoS control design once actually built. | **Backlog assumption, not approved.** Proposed figure on record: 100 req/min/IP (see CLR-11). | human candidate (via controlling session) | Before rate-limiting is implemented (not required for this iteration's release-readiness outcome, since CLR-11 confirms it is out of scope now). |
 | ASM-2 (11 NFR targets) | Are the eleven numeric "Proposed validation target" figures in Section 7 (REQ-021–REQ-031) approved as confirmed requirements? | Determines whether Section 7's numbers are binding for this iteration's release-readiness outcome (REQ-020). | **OPEN — unchanged by this clarification pass**, except where CLR-8 (analytics) and CLR-11 (rate-limiting) narrowed an individual target's scope. Out of scope for this clarify pass by this document's own design (Section 7 explicitly defers these to later gates). | human candidate (via controlling session) | At the `/speckit.plan` stage or a later gate, per Section 7's existing framing. |
 
@@ -1360,4 +1393,4 @@ per constitution Principle I — none is force-resolved to appear closed.
 | CLR-14 (rollback-impossible/compensation) | none (REQ-015 underspecification) | Newly surfaced |
 | CLR-15 (Link mutability) | AMB-6 | 1:1 (derived, not brief-verbatim) |
 | CLR-16 (release-readiness gate) | AMB-9 / ASM-4 | 1:1 |
-| — | AMB-7 (retention) | Deferred, remains open |
+| CLR-17 (retention — approved temporary assumption) | AMB-7 | 1:1 (resolved 2026-09-13, after initial Human Gate 3 deferral) |

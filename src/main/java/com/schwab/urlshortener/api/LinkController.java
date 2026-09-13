@@ -7,6 +7,7 @@ import com.schwab.urlshortener.domain.UrlValidator;
 import com.schwab.urlshortener.persistence.ShortLinkEntity;
 import com.schwab.urlshortener.persistence.ShortLinkJpaRepository;
 import org.springframework.http.HttpStatus;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
@@ -20,6 +21,7 @@ public class LinkController {
 
     @PostMapping("/links")
     @ResponseStatus(HttpStatus.CREATED)
+    @Transactional
     public LinkResponse createLink(@RequestBody CreateLinkRequest request) {
         String normalized = UrlValidator.validate(request.longUrl());
 

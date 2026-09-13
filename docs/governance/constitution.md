@@ -1,15 +1,12 @@
 # Agentic Software Engineering System: URL Shortener — Engineering Constitution
 
-> **STATUS: DRAFT — PENDING HUMAN APPROVAL (Human Gate 1).**
-> This document was authored by an AI agent acting under the project's SpecKit lifecycle. It is a
-> proposal, not a ratified governance artifact. No claim in this document should be read as
-> "approved," "ratified," or "in effect" until a human reviewer has performed Human Gate 1 and
-> recorded approval in the version history (Section 6). Until that approval is recorded, every
-> downstream document (spec, clarifications, plan, ADRs, checklists, tasks) that cites this
-> constitution is citing a draft, and any conflict discovered during human review must be resolved
-> here, by amendment, before implementation work proceeds.
+> **STATUS: RATIFIED (Human Gate 1 cleared 2026-09-13).**
+> This document was authored by an AI agent acting under the project's SpecKit lifecycle and
+> ratified by the human candidate per Section 6. It is now in effect for the purposes of Principle
+> I. Amendments after ratification consume a new version number per Section 4.4 and must themselves
+> be approved before taking effect.
 
-**Version:** 1.0.0 (draft) &nbsp;|&nbsp; **Status:** Proposed, not yet ratified &nbsp;|&nbsp; **Drafted:** 2026-09-12
+**Version:** 1.0.0 (ratified) &nbsp;|&nbsp; **Status:** Ratified — Human Gate 1 cleared &nbsp;|&nbsp; **Drafted:** 2026-09-12 &nbsp;|&nbsp; **Ratified:** 2026-09-13
 
 ---
 
@@ -499,17 +496,17 @@ still hold indefinitely.
 
 ### 4.7 Initial Version
 
-The initial version of this constitution is **1.0.0**, drafted 2026-09-12. It is a draft: version
-1.0.0 becomes ratified — not merely drafted — only once Human Gate 1 (Section 6) is completed and
-recorded. If human review during Human Gate 1 requires substantive changes before acceptance, the
-corrected draft is still recorded as 1.0.0 (pre-ratification revisions do not consume a version
-number); the version history begins incrementing from the first change made *after* ratification.
+The initial version of this constitution is **1.0.0**, drafted 2026-09-12 and ratified 2026-09-13
+per Human Gate 1 (Section 6). The version history begins incrementing from the first change made
+*after* ratification; the fallback-behavior addition made prior to ratification did not consume a
+version number, per the pre-ratification-revisions rule this section originally established.
 
 ## 5. Version History
 
 | Version | Date | Change | Author | Human Approver |
 |---|---|---|---|---|
 | 1.0.0 (draft) | 2026-09-12 | Initial constitution drafted from the Section 6 governance prompt: Principles I–XI, governance rules (4.1–4.7), version history established. Pending Human Gate 1. | Agent (SpecKit `/speckit.constitution` stage) | *(pending — not yet approved)* |
+| 1.0.0 (ratified) | 2026-09-13 | Human Gate 1 completed: all eleven principles and the governance section (4.1–4.7) confirmed as written, no amendments required as a condition of approval. | — | Prudhvidhar Reddy Katta (human candidate) |
 
 Future amendments are appended as new rows, never by editing a prior row's "Change" content —
 the version history is itself subject to Principle X (repository integrity): it is a record, not
@@ -521,12 +518,12 @@ This constitution takes effect for the purposes of Principle I ("no implementati
 approved specification" and, by the same logic, no downstream SDLC artifact without an approved
 constitution) only once a human reviewer completes Human Gate 1:
 
-- [ ] Confirms the eleven principles faithfully capture the intended non-negotiables for this
+- [x] Confirms the eleven principles faithfully capture the intended non-negotiables for this
   project (and requests amendment here, before proceeding, if not).
-- [ ] Confirms the governance section (Section 4) is workable as written.
-- [ ] Records approval — name, date, and any amendments required as a condition of approval — as
+- [x] Confirms the governance section (Section 4) is workable as written.
+- [x] Records approval — name, date, and any amendments required as a condition of approval — as
   a new row in Section 5's version history.
 
-Until that checklist is completed and recorded, this document remains a draft, and any agent
-operating under it should treat it as the best-available current guidance while flagging to the
-human reviewer that formal ratification is still outstanding.
+**Ratified 2026-09-13 by Prudhvidhar Reddy Katta (human candidate). No amendments required as a
+condition of approval.** This constitution is in effect for the purposes of Principle I as of this
+date; see Section 5 for the recorded approval row.

@@ -2,13 +2,13 @@
 
 ## Status
 
-**Proposed** — drafted 2026-09-13 at Task 7, formalizing the position `plan.md` Section 12 and
-`research.md` D10 already recorded as "Proposed for ADR at Task 7." Not yet reviewed by the human
-candidate. Per the project's guardrail (guide Section 29), this ADR may not be self-accepted by the
-controlling agent. **This ADR documents a residual security risk, not a closed, "fine as-is"
-matter** — see Risks and Mitigations and Consequences below; the human candidate's review of this
-ADR specifically is a security-sensitive decision under constitution Principle III, not a routine
-technology choice.
+**Accepted** — drafted 2026-09-13 at Task 7, formalizing the position `plan.md` Section 12 and
+`research.md` D10 already recorded as "Proposed for ADR at Task 7." **This ADR documents a residual
+security risk, not a closed, "fine as-is" matter** — see Risks and Mitigations and Consequences
+below. The human candidate (Prudhvidhar Reddy Katta) reviewed this specific risk — not a routine
+technology choice under constitution Principle III — and explicitly accepted it on 2026-09-13: no
+authentication is enforced anywhere in this prototype, including the human-approval endpoint this
+ADR governs alongside ADR-006.
 
 ## Context
 

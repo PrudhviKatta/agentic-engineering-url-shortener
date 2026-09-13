@@ -2,11 +2,11 @@
 
 ## Status
 
-**Proposed** — drafted 2026-09-13 at Task 7 (the ADR Generation Gate), formalizing the position
-`plan.md` Section 12 and `research.md` D3 already recorded as "Proposed for ADR at Task 7." Not yet
-reviewed by the human candidate. Per the project's guardrail (guide Section 29, "Do Not Allow
-Claude to Approve Its Own Decisions"), this ADR may not be self-accepted by the controlling agent —
-only the human candidate may move this to Accepted or Rejected.
+**Accepted** — drafted 2026-09-13 at Task 7 (the ADR Generation Gate), formalizing the position
+`plan.md` Section 12 and `research.md` D3 already recorded as "Proposed for ADR at Task 7." Reviewed
+and accepted by the human candidate (Prudhvidhar Reddy Katta) on 2026-09-13, per the project's
+guardrail (guide Section 29, "Do Not Allow Claude to Approve Its Own Decisions") that only the human
+candidate may move this to Accepted or Rejected.
 
 ## Context
 

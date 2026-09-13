@@ -2,28 +2,29 @@
 
 **Feature:** `001-agentic-url-shortener` &nbsp;|&nbsp; **Stage:** `/speckit.plan` (Task 6 of 48)
 
-**Status: DRAFT — pending whatever human review this plan itself calls for.** This document is
-authored by an agent acting under the project's SpecKit lifecycle. It is not approved merely by
-existing, and this plan document itself may not be cited as ratified until a human reviewer
-records approval, in the same spirit as `spec.md`'s own Human Gate 2 framing — this plan-approval
-gate remains open as of this writing and is not affected by the correction below. **Historical
+**Status: APPROVED — plan-approval gate closed 2026-09-13.** This document was authored by an
+agent acting under the project's SpecKit lifecycle, then reviewed and approved by the human
+candidate (Prudhvidhar Reddy Katta), in the same spirit as `spec.md`'s own Human Gate 2. **Historical
 note, corrected by the Task 10 corrective batch** (`codex-recommend.md` Finding #12): at the time
 this plan was authored (Task 6), every technology/architecture choice beyond ADR-001/002 was
 phrased as "proposed for ADR at Task 7," since Task 7 had not yet run. Task 7 has since run: the
 human candidate reviewed and accepted ADR-003 through ADR-010, without amendment, on 2026-09-13
 (`docs/governance/human-gates-log.md`, "Human Gate 4" rows) — see Section 12's technology table
-below for their current status. Accepting those eight ADRs is a separate, already-closed gate from
-this plan document's own still-open plan-approval gate referenced above.
+below for their current status.
 
-**Delegated technical-review decision (2026-09-13): REQUEST AMENDMENTS.** Codex reviewed the status
-block and all fourteen numbered sections as a delegated technical reviewer, not as a human
-approver. This plan remains unapproved and implementation remains blocked. Required corrections
-include: align the planned executable graph with the specification's twelve-stage graph; preserve
-SCN-B's seven parallel impact-analysis branches and join rather than reducing them to one stage;
-use the constitution's definition of fallback instead of labeling retry, compensation, or
-safe-stop as fallback; version workflow-step and approval instances across replans; close the
-workflow creation/inspection/audit contract gaps; and remove known, intentionally untested metric
-defects from the delivery plan.
+**Approval history.** Reaching approval took five rounds of delegated technical review (Codex; not
+a human approver — `docs/governance/human-gates-log.md`'s Delegated Technical Reviews table has the
+full record) plus this plan's own corrections in response: the planned executable graph was aligned
+with the specification's twelve-stage graph; SCN-B's seven parallel impact-analysis branches were
+preserved and joined rather than reduced to one stage; the constitution's actual fallback mechanism
+replaced the earlier retry/safe-stop mislabeling; workflow-step and approval instances were
+versioned across replans (`plan_version`); the workflow creation/inspection/audit contract gaps were
+closed; the known, previously-untested metric defect was fixed; restart-safety (`StageCatalog`,
+crash recovery for abandoned `RUNNING` steps, boot-time `resumeAll()` wiring) was corrected after an
+earlier design did not survive a process restart; and every non-functional target in `spec.md`
+Section 7 was closed as a binding demonstration acceptance target (ASM-2). The human candidate's own
+approval, recorded in `docs/governance/human-gates-log.md`'s Gate Log, is what closes this gate —
+Codex's round-5 "approve" verdict was evidence for that decision, not a substitute for it.
 
 **Authority.** This plan sits directly beneath `docs/governance/constitution.md` (v1.0.0, Ratified)
 and `specs/001-agentic-url-shortener/spec.md` (approved with clarifications CLR-1..17) and directly
@@ -797,9 +798,9 @@ candidate has accepted all eight of ADR-003 through ADR-010, without amendment, 
 `docs/governance/human-gates-log.md`, "Human Gate 4" rows). The table below previously listed them
 as "Proposed for ADR at Task 7," which was accurate when this plan was authored at Task 6 but is
 now stale; it is corrected here to their current Accepted status. This correction is about
-ADR-003..010's own acceptance status, a gate that has already closed — it does not change or
-close this plan document's own separate, still-pending plan-approval status (see this document's
-own top-of-file Status line, left as-is).
+ADR-003..010's own acceptance status, a gate that closed independently of — and earlier than —
+this plan document's own separate plan-approval gate (see this document's own top-of-file Status
+line: both are now closed, but they closed on different dates via different review passes).
 
 | # | Decision question | Selected/proposed option | Status | Rationale (short) |
 |---|---|---|---|---|

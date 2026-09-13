@@ -4,12 +4,12 @@
 
 **Created**: 2026-09-12
 
-**Status**: **DRAFT — PENDING HUMAN APPROVAL (Human Gate 2).** This document was authored by an
-agent acting under the project's SpecKit lifecycle. No requirement, scenario, assumption, or
-proposed validation target in this document is "approved," "confirmed as a client requirement,"
-or "in effect" until a human reviewer completes Human Gate 2 (Section 12) and records approval.
-Until then, downstream artifacts (clarification records, plan, ADRs, tasks) that cite this
-specification are citing a draft.
+**Status**: **APPROVED — Human Gate 2 completed 2026-09-13.** This document was authored by an
+agent acting under the project's SpecKit lifecycle, then reviewed and approved by the human
+candidate (Prudhvidhar Reddy Katta) at Human Gate 2 (Section 12), following five rounds of
+delegated technical review (`docs/governance/human-gates-log.md`). Every requirement, scenario,
+assumption, and demonstration acceptance target in this document is now in effect for downstream
+artifacts (clarification records, plan, ADRs, tasks).
 
 **Clarification status**: `/speckit.clarify` (Human Gate 3) was completed on 2026-09-12 — see
 Section 13. Every material ambiguity flagged in the original Section 9.5 has been either resolved
@@ -951,8 +951,8 @@ constitution-consistent:
 - No numeric non-functional target in Section 7 may be treated as confirmed until explicitly
   approved at Human Gate 2 or a later gate — this specification's own drafting must not, and does
   not, silently promote an assumption to a requirement.
-- This document itself remains a DRAFT (Section 12) until Human Gate 2 is recorded; no downstream
-  artifact may cite it as approved before that.
+- This document was a DRAFT until Human Gate 2 was recorded (Section 12, 2026-09-13); it is now
+  ratified, and downstream artifacts may cite it as approved.
 
 ### 9.5 Ambiguities (flagged, not silently resolved — routed to `/speckit.clarify`)
 
@@ -1094,35 +1094,34 @@ task/ADR can be linked back without renumbering.
 | REQ-030 | SCN-B | Release Owner | VI |
 | REQ-031 | SCN-A, SCN-B, SCN-C | Human Reviewer/Approver | II, III |
 
-## 12. Human Gate 2 (Pending — Not Yet Completed)
+## 12. Human Gate 2 (Approved 2026-09-13)
 
-This specification takes effect for downstream SpecKit stages (`/speckit.clarify`, `/speckit.plan`,
-ADRs) only once a human reviewer completes Human Gate 2:
+This specification took effect for downstream SpecKit stages (`/speckit.clarify`, `/speckit.plan`,
+ADRs) once the human reviewer completed Human Gate 2:
 
-- [ ] Confirms no technology was chosen prematurely (Section 8 lists only deferred pointers).
-- [ ] Confirms no ambiguity was silently resolved (Section 9.5 lists every open ambiguity found).
-- [ ] Confirms every requirement carries both a positive and a negative acceptance criterion
+- [x] Confirms no technology was chosen prematurely (Section 8 lists only deferred pointers).
+- [x] Confirms no ambiguity was silently resolved (Section 9.5 lists every open ambiguity found).
+- [x] Confirms every requirement carries both a positive and a negative acceptance criterion
       (Sections 6–7).
-- [ ] Confirms all three required scenarios are present and non-linear (Section 4).
-- [ ] Confirms human approval gates exist and are not silently skippable or timeout-approved
+- [x] Confirms all three required scenarios are present and non-linear (Section 4).
+- [x] Confirms human approval gates exist and are not silently skippable or timeout-approved
       (REQ-013, Section 3.1).
-- [ ] Confirms recovery and safe-stop are present (REQ-015, REQ-016, REQ-017, REQ-018).
-- [ ] Confirms every requirement is testable (Section 6–7 acceptance criteria; REQ-029).
-- [ ] Confirms traceability is possible from any requirement to scenario, user type, and
+- [x] Confirms recovery and safe-stop are present (REQ-015, REQ-016, REQ-017, REQ-018).
+- [x] Confirms every requirement is testable (Section 6–7 acceptance criteria; REQ-029).
+- [x] Confirms traceability is possible from any requirement to scenario, user type, and
       constitution principle (Section 11).
-- [ ] Records approval, or requested amendments, before `/speckit.clarify` proceeds against this
+- [x] Records approval, or requested amendments, before `/speckit.clarify` proceeds against this
       document.
 
-**Delegated technical-review decision (2026-09-13): REQUEST AMENDMENTS.** Codex reviewed this
-checklist as a delegated technical reviewer, not as a human approver. Human Gate 2 remains open and
-all boxes intentionally remain unchecked. Before approval, reconcile the conflicting safe-stop
-semantics between REQ-016, CLR-13, SCN-C, and the plan's separate `PENDING_APPROVAL` state; restate
-REQ-007's current (post-CLR-2) behavior with explicit positive and negative criteria or move it out
-of the active numbered requirement set; and state explicitly which proposed non-functional targets
-Human Gate 2 approves versus leaves deferred.
+**Human decision (2026-09-13): APPROVED.** Recorded by the human candidate (Prudhvidhar Reddy
+Katta) in `docs/governance/human-gates-log.md`'s Gate Log, following five rounds of delegated
+technical review (Codex; not a human approver — see the same log's separate Delegated Technical
+Reviews table) that reconciled the safe-stop/`PENDING_APPROVAL` semantics conflict, restated
+REQ-007's post-CLR-2 behavior, closed ASM-2's eleven demonstration acceptance targets as binding
+(not production SLAs), and corrected the restart-safety, task-ordering, and fallback-completeness
+defects those review rounds found. Every checklist item above is satisfied.
 
-Until this checklist is completed and recorded, this document remains a DRAFT and should be
-treated as the best-available current guidance, not as ratified scope.
+This document is ratified scope, not a draft.
 
 **Note (2026-09-12)**: Human Gate 3 (`/speckit.clarify`, Section 13) has been completed
 independently of this gate. Gate 3's completion resolves or explicitly defers every ambiguity in

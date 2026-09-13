@@ -5,7 +5,7 @@ human review Task 6 itself requires. It is not independently approved.
 
 **Authority and provenance.** These table definitions are not invented here. They are transcribed
 from the authoritative JPA `@Entity` class definitions already fixed in the controller's execution
-runbook (`docs/superpowers/plans/2026-09-12-agentic-url-shortener-sdlc.md`, Tasks 12, 21, 23, 28,
+runbook (`docs/engineering-runbook.md`, Tasks 12, 21, 23, 28,
 29 — a Java implementation-detail document that is subordinate to this plan per its own "Authority"
 note, but whose already-worked-out column/type/constraint decisions are the correct ground truth to
 promote into the architecture-level artifact rather than re-derive from scratch). This document

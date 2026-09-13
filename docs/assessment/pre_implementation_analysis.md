@@ -11,7 +11,7 @@ document/section named, but not edited here.
 `specs/001-agentic-url-shortener/{spec,plan,research,data-model}.md`; `contracts/openapi.yaml`;
 `docs/adr/ADR-001..010*.md` (all 10, all Accepted); `specs/001-agentic-url-shortener/checklists/*.md`
 (19 files); `specs/001-agentic-url-shortener/tasks.md` (T011–T048); `docs/governance/human-gates-log.md`;
-and, for ground-truth tracing, `docs/superpowers/plans/2026-09-12-agentic-url-shortener-sdlc.md`
+and, for ground-truth tracing, `docs/engineering-runbook.md`
 (the controller's execution runbook, outside this repo).
 
 ---

@@ -18,7 +18,7 @@ must not contradict either upstream artifact; every requirement/clarification it
 by ID so a reviewer can check that claim directly rather than take it on faith.
 
 **Provenance note (disclosed, not concealed).** A separate, far more granular document — the
-controller's own execution runbook, `docs/superpowers/plans/2026-09-12-agentic-url-shortener-sdlc.md`
+controller's own execution runbook, `docs/engineering-runbook.md`
 — already exists and has already worked out concrete Java class shapes, JPA entity definitions, and
 a Task-by-Task TDD sequence for building this system. That document is explicitly subordinate to
 this plan (see its own "Authority" note, added 2026-09-13). This plan does not re-derive its

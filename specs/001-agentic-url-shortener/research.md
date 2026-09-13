@@ -10,7 +10,7 @@ this document does not pre-empt that.
 
 **Provenance.** These are not this plan's own first-principles derivation. They are transcribed
 and re-justified, at plan altitude, from the pre-decision table already worked out in the
-controller's execution runbook (`docs/superpowers/plans/2026-09-12-agentic-url-shortener-sdlc.md`,
+controller's execution runbook (`docs/engineering-runbook.md`,
 "Architecture Decisions" section) — a Java implementation-detail document that is explicitly
 subordinate to this plan and to the ADRs Task 7 will produce from it. Where the runbook's own
 language already frames a decision as provisional ("finalized here; formalized as ADRs in Task

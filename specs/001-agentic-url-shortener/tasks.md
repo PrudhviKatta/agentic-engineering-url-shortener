@@ -3,14 +3,14 @@
 **Feature branch**: `001-agentic-url-shortener`
 **Stage**: `/speckit.tasks` (Task 9 of the controller's 48-task runbook)
 **Source**: this document transcribes Phases 2–12 (runbook Task 11 through Task 48) of
-`docs/superpowers/plans/2026-09-12-agentic-url-shortener-sdlc.md` into SpecKit's task format.
+`docs/engineering-runbook.md` into SpecKit's task format.
 Every `T0NN` ID below equals the runbook's own "Task N" plus a `T0` prefix (e.g. runbook Task 20 =
 `T020`), so a reviewer can cross-reference either document without a lookup table.
 
 ## Authority
 
 Per `plan.md`'s own Authority note, this document — once written — is the authoritative SpecKit
-task list. The runbook (`docs/superpowers/plans/2026-09-12-agentic-url-shortener-sdlc.md`) is this
+task list. The runbook (`docs/engineering-runbook.md`) is this
 document's **source draft**, not a competing shadow process: where the two ever appear to disagree
 after this point, `tasks.md` governs, and the disagreement should be resolved by editing this file
 (with a note), not by reverting to the runbook.

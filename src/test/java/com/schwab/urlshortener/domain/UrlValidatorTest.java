@@ -25,4 +25,9 @@ class UrlValidatorTest {
     void rejectsMalformedUrl() {
         assertThatThrownBy(() -> UrlValidator.validate("not a url")).isInstanceOf(InvalidUrlException.class);
     }
+
+    @Test
+    void acceptsPublicIpv6Addresses() {
+        assertThat(UrlValidator.validate("http://[2001:4860:4860::8888]/")).isEqualTo("http://[2001:4860:4860::8888]/");
+    }
 }

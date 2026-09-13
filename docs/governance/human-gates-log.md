@@ -29,6 +29,13 @@ than it happened, and never inferred from silence, per constitution Principle II
 | Human Gate 4 — ADR-009 (rollback vs. compensation) | `docs/adr/ADR-009-rollback-vs-compensation.md` | Approved, clean | **Accepted.** | Prudhvidhar Reddy Katta (human candidate) | 2026-09-13 |
 | Human Gate 4 — ADR-010 (no-authentication assumption) | `docs/adr/ADR-010-authentication-assumption.md` | Approved, clean — reviewer specifically flagged this as a real residual security risk needing genuine review, not a rubber stamp | **Accepted the risk.** Explicitly reviewed, not defaulted into — no authentication is enforced anywhere in this prototype, including the human-approval endpoint (ADR-006). | Prudhvidhar Reddy Katta (human candidate) | 2026-09-13 |
 
+## Delegated Technical Reviews (Not Human-Gate Clearance)
+
+| Review | Artifact | Decision | Reviewer | Date |
+|---|---|---|---|---|
+| Human Gate 2 readiness review | `specs/001-agentic-url-shortener/spec.md`, Section 12 | **REQUEST AMENDMENTS.** Safe-stop semantics, REQ-007's current acceptance criteria, and the disposition of proposed non-functional targets must be reconciled before human approval. Human Gate 2 remains open. | Codex (delegated technical reviewer; not a human approver) | 2026-09-13 |
+| Technical-plan approval readiness review | `specs/001-agentic-url-shortener/plan.md`, Sections 1–14 | **REQUEST AMENDMENTS.** Graph/scenario fidelity, fallback semantics, replan versioning, API/audit contracts, and planned known metric defects must be corrected before human approval. The plan-approval gate remains open. | Codex (delegated technical reviewer; not a human approver) | 2026-09-13 |
+
 ## What this log does *not* replace
 
 - The full task-by-task review trail (implementer report + reviewer verdict + fix-loop history for every one of the 48 plan tasks) still lives in `.superpowers/sdd/2026-09-12-agentic-url-shortener-sdlc/progress.md` during active development. That ledger is process scratch by design (per the `superpowers:subagent-driven-development` skill) and is deleted once the final whole-branch review is clean.

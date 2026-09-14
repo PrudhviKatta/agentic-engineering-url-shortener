@@ -354,4 +354,66 @@ class WorkflowEngineApprovalTest {
             assertThat(executed).isEmpty(); // entry gate: handler never ran
         }
     }
+
+    // --- Codex REQUEST AMENDMENTS item 7: workflow-instance-level locking ---
+
+    @Test
+    void concurrentDecisionsOnDifferentSiblingGatesCannotResurrectARejectedWorkflow() throws Exception {
+        // The previously-disclosed cross-sibling race: two DIFFERENT exit-gated siblings decided
+        // truly simultaneously (reject one, approve the other) must never let the approved
+        // sibling's resume carry a rejected workflow through to COMPLETED, regardless of which
+        // decision's transaction happens to commit first.
+        List<String> executed = new CopyOnWriteArrayList<>();
+        StageHandler security = ctx -> { executed.add("security"); return Map.of(); };
+        StageHandler documentation = ctx -> { executed.add("documentation"); return Map.of(); };
+        StageHandler after = ctx -> { executed.add("after"); return Map.of(); };
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("security", List.of(), security, false, true, 0, 30, "verify", null, null),
+                new StageDefinition("documentation", List.of(), documentation, false, true, 0, 30, "verify", null, null),
+                StageDefinition.of("after", List.of("security", "documentation"), after));
+
+        WorkflowEngine engine = engine();
+        String workflowId = engine.submit("demo", stages, "run-7a");
+        WorkflowInstanceEntity beforeRace = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(beforeRace.getStatus()).isEqualTo(WorkflowStatus.PENDING_APPROVAL);
+
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        CountDownLatch bothReady = new CountDownLatch(2);
+        CountDownLatch go = new CountDownLatch(1);
+        Callable<String> rejectSecurity = () -> {
+            bothReady.countDown();
+            go.await(5, TimeUnit.SECONDS);
+            try {
+                engine.approve(workflowId, "security", "rejected", "human-a", "found a vulnerability");
+                return "rejected-security";
+            } catch (NoPendingApprovalException e) {
+                return "reject-lost";
+            }
+        };
+        Callable<String> approveDocumentation = () -> {
+            bothReady.countDown();
+            go.await(5, TimeUnit.SECONDS);
+            try {
+                engine.approve(workflowId, "documentation", "approved", "human-b", "looks good");
+                return "approved-documentation";
+            } catch (NoPendingApprovalException e) {
+                return "approve-lost";
+            }
+        };
+
+        Future<String> f1 = pool.submit(rejectSecurity);
+        Future<String> f2 = pool.submit(approveDocumentation);
+        assertThat(bothReady.await(5, TimeUnit.SECONDS)).isTrue();
+        go.countDown();
+        f1.get(10, TimeUnit.SECONDS);
+        f2.get(10, TimeUnit.SECONDS);
+        pool.shutdown();
+
+        // Regardless of which decision's transaction committed first, the workflow must end up
+        // FAILED (the rejection always wins), and "after" — which depends on BOTH siblings — must
+        // never have run, since one of its dependencies was rejected.
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.FAILED);
+        assertThat(executed).doesNotContain("after");
+    }
 }

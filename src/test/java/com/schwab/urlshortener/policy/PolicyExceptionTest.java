@@ -35,7 +35,14 @@ class PolicyExceptionTest {
 
     @Test
     void approvedUnexpiredExceptionAllowsProgressionPastMandatoryFail() {
-        StageHandler impl = ctx -> { ctx.addArtifact("urlSchemeAllowlistEnforced", false); return Map.of(); };
+        // Codex REQUEST AMENDMENTS item 3: missing evidence now blocks a mandatory policy (was
+        // NOT_APPLICABLE before, harmless) — satisfy every OTHER mandatory policy on this stage
+        // explicitly so only SEC-001 (the one under test) is the reason for the safe-stop.
+        StageHandler impl = ctx -> {
+            ctx.addArtifact("urlSchemeAllowlistEnforced", false);
+            ctx.addArtifact("ssrfGuardEnforced", true);
+            return Map.of();
+        };
         List<StageDefinition> stages = List.of(StageDefinition.of("implementation", List.of(), impl));
         PolicyEngine policyEngine = new PolicyEngine("policies/v1.yaml");
         WorkflowEngine engine = new WorkflowEngine(
@@ -61,7 +68,14 @@ class PolicyExceptionTest {
 
     @Test
     void expiredExceptionDoesNotExcuseTheMandatoryFail() {
-        StageHandler impl = ctx -> { ctx.addArtifact("urlSchemeAllowlistEnforced", false); return Map.of(); };
+        // Codex REQUEST AMENDMENTS item 3: missing evidence now blocks a mandatory policy (was
+        // NOT_APPLICABLE before, harmless) — satisfy every OTHER mandatory policy on this stage
+        // explicitly so only SEC-001 (the one under test) is the reason for the safe-stop.
+        StageHandler impl = ctx -> {
+            ctx.addArtifact("urlSchemeAllowlistEnforced", false);
+            ctx.addArtifact("ssrfGuardEnforced", true);
+            return Map.of();
+        };
         List<StageDefinition> stages = List.of(StageDefinition.of("implementation", List.of(), impl));
         PolicyEngine policyEngine = new PolicyEngine("policies/v1.yaml");
         WorkflowEngine engine = new WorkflowEngine(
@@ -80,7 +94,14 @@ class PolicyExceptionTest {
 
     @Test
     void grantingAnExceptionForADifferentPolicyDoesNotExcuseThisOne() {
-        StageHandler impl = ctx -> { ctx.addArtifact("urlSchemeAllowlistEnforced", false); return Map.of(); };
+        // Codex REQUEST AMENDMENTS item 3: missing evidence now blocks a mandatory policy (was
+        // NOT_APPLICABLE before, harmless) — satisfy every OTHER mandatory policy on this stage
+        // explicitly so only SEC-001 (the one under test) is the reason for the safe-stop.
+        StageHandler impl = ctx -> {
+            ctx.addArtifact("urlSchemeAllowlistEnforced", false);
+            ctx.addArtifact("ssrfGuardEnforced", true);
+            return Map.of();
+        };
         List<StageDefinition> stages = List.of(StageDefinition.of("implementation", List.of(), impl));
         PolicyEngine policyEngine = new PolicyEngine("policies/v1.yaml");
         WorkflowEngine engine = new WorkflowEngine(

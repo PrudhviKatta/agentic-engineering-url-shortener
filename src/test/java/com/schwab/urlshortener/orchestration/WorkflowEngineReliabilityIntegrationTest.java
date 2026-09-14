@@ -5,6 +5,8 @@ import com.schwab.urlshortener.policy.PolicyEngine;
 import com.schwab.urlshortener.reliability.CompensationRegistry;
 import com.schwab.urlshortener.reliability.PermanentStageException;
 import com.schwab.urlshortener.reliability.TransientStageException;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -39,6 +41,12 @@ class WorkflowEngineReliabilityIntegrationTest {
     private WorkflowEngine engineWithCompensation(CompensationRegistry registry) {
         return new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository,
                 transactionManager, policyEvaluationRepository, null, policyExceptionRepository, registry);
+    }
+
+    private WorkflowEngine engineWithPolicy(PolicyEngine policyEngine) {
+        return new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository,
+                transactionManager, policyEvaluationRepository, policyEngine, policyExceptionRepository,
+                new CompensationRegistry());
     }
 
     @Test
@@ -185,6 +193,142 @@ class WorkflowEngineReliabilityIntegrationTest {
         engine.approve(workflowId, "flaky", "approved", "human", "reviewed the compensation");
 
         instance = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.COMPLETED);
+
+        // Codex REQUEST AMENDMENTS item 8 (metrics-facing regression): the step's own persisted
+        // status must still read COMPENSATED after approval, not silently overwritten to
+        // SUCCEEDED — any reporting/metrics path reading workflow_steps.status needs to be able to
+        // tell "recovered via compensation" apart from "succeeded outright," even after a human
+        // has signed off on it.
+        WorkflowStepEntity approvedStep = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "flaky").orElseThrow();
+        assertThat(approvedStep.getStatus()).isEqualTo(StepStatus.COMPENSATED);
+        assertThat(approvedStep.getPreGateStatus()).isNull(); // cleared once consumed
+    }
+
+    @Test
+    void rejectingACompensatedExitGateAlsoPreservesCompensatedStatus() {
+        // Symmetry check: rejection must preserve COMPENSATED too, matching the pre-existing rule
+        // that "the handler's own completion/outcome stands; only downstream is blocked."
+        StageHandler alwaysFails = ctx -> { throw new TransientStageException("simulated"); };
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("flaky", List.of(), alwaysFails, false, true, 1, 5, null, null, null));
+
+        CompensationRegistry registry = new CompensationRegistry();
+        registry.register("flaky", result -> { });
+
+        WorkflowEngine engine = engineWithCompensation(registry);
+        String workflowId = engine.submit("demo", stages, "run-33j");
+
+        engine.approve(workflowId, "flaky", "rejected", "human", "compensation wasn't good enough");
+
+        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "flaky").orElseThrow();
+        assertThat(step.getStatus()).isEqualTo(StepStatus.COMPENSATED); // not FAILED, not SUCCEEDED
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.FAILED); // the workflow itself still fails
+    }
+
+    // --- Codex REQUEST AMENDMENTS item 2: compensation failure handling ---
+
+    @Test
+    void aFailingCompensationSafeStopsTheWorkflowInsteadOfLeavingItRunning() {
+        StageHandler alwaysFails = ctx -> { throw new TransientStageException("simulated"); };
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("flaky", List.of(), alwaysFails, false, false, 1, 5, null, null, null));
+
+        CompensationRegistry registry = new CompensationRegistry();
+        registry.register("flaky", result -> { throw new IllegalStateException("compensation itself failed"); });
+
+        WorkflowEngine engine = engineWithCompensation(registry);
+        String workflowId = engine.submit("demo", stages, "run-33g");
+
+        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "flaky").orElseThrow();
+        assertThat(step.getStatus()).isEqualTo(StepStatus.SAFE_STOPPED);
+        assertThat(step.getSafeStopReason()).isEqualTo(SafeStopReason.COMPENSATION_FAILED);
+        assertThat(step.getEndedAt()).isNotNull();
+        assertThat(step.getResult()).isNotNull();
+
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.SAFE_STOPPED);
+        assertThat(instance.getStatus()).isNotEqualTo(WorkflowStatus.RUNNING); // no RUNNING state remains
+
+        List<WorkflowEventEntity> events = eventRepository.findByWorkflowIdOrderById(workflowId);
+        assertThat(events.stream().anyMatch(e -> e.getAction().equals("compensation_failed:flaky"))).isTrue();
+        assertThat(events.stream()
+                .filter(e -> e.getAction().equals("compensation_failed:flaky")).findFirst().orElseThrow().getReason())
+                .isEqualTo("compensation itself failed");
+    }
+
+    // --- Codex REQUEST AMENDMENTS item 6: distinguish policy-blocked vs retry-exhaustion resume ---
+
+    @Test
+    void policyBlockedResumeReevaluatesWithoutRerunningTheHandler() {
+        AtomicInteger handlerInvocations = new AtomicInteger(0);
+        StageHandler impl = ctx -> {
+            handlerInvocations.incrementAndGet();
+            ctx.addArtifact("urlSchemeAllowlistEnforced", false); // SEC-001 will FAIL
+            ctx.addArtifact("ssrfGuardEnforced", true);
+            return Map.of("sideEffectId", "only-happens-once");
+        };
+        List<StageDefinition> stages = List.of(StageDefinition.of("implementation", List.of(), impl));
+        PolicyEngine policyEngine = new PolicyEngine("policies/v1.yaml");
+        WorkflowEngine engine = engineWithPolicy(policyEngine);
+
+        String workflowId = engine.submit("demo", stages, "run-33h");
+        assertThat(handlerInvocations.get()).isEqualTo(1);
+
+        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "implementation").orElseThrow();
+        assertThat(step.getStatus()).isEqualTo(StepStatus.SAFE_STOPPED);
+        assertThat(step.getSafeStopReason()).isEqualTo(SafeStopReason.POLICY_BLOCKED);
+
+        // Retrying WITHOUT granting an exception first: the boundary is re-checked, still blocked,
+        // handler is NOT invoked again, and the workflow stays SAFE_STOPPED (not resurrected to
+        // RUNNING for no reason).
+        engine.retrySafeStopped(workflowId);
+        assertThat(handlerInvocations.get()).isEqualTo(1); // still 1 — no re-run
+        WorkflowInstanceEntity stillBlocked = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(stillBlocked.getStatus()).isEqualTo(WorkflowStatus.SAFE_STOPPED);
+
+        // Grant the exception, retry again: the boundary clears WITHOUT re-running the handler —
+        // the same result ("only-happens-once") the first and only invocation produced stands.
+        engine.grantPolicyException(workflowId, "SEC-001", "prototype demo only", "implementation stage",
+                "human-candidate", "manual review before merge", Instant.now().plus(Duration.ofDays(1)));
+        engine.retrySafeStopped(workflowId);
+
+        assertThat(handlerInvocations.get()).isEqualTo(1); // STILL 1 — the handler never re-ran
+
+        WorkflowStepEntity clearedStep = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "implementation").orElseThrow();
+        assertThat(clearedStep.getStatus()).isEqualTo(StepStatus.SUCCEEDED);
+        assertThat(clearedStep.getSafeStopReason()).isNull();
+        assertThat(clearedStep.getResult()).isEqualTo(Map.of("sideEffectId", "only-happens-once"));
+
+        WorkflowInstanceEntity completed = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(completed.getStatus()).isEqualTo(WorkflowStatus.COMPLETED);
+    }
+
+    @Test
+    void retryExhaustedResumeActuallyReRunsTheHandler() {
+        // Contrast case: RETRY_EXHAUSTED (unlike POLICY_BLOCKED) means the handler never actually
+        // completed, so retrySafeStopped must genuinely re-invoke it.
+        AtomicInteger handlerInvocations = new AtomicInteger(0);
+        StageHandler flakyThenWorks = ctx -> {
+            if (handlerInvocations.incrementAndGet() == 1) throw new TransientStageException("simulated");
+            return Map.of("ok", true);
+        };
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("flaky", List.of(), flakyThenWorks, false, false, 0, 5, null, null, null));
+
+        WorkflowEngine engine = engineWithCompensation(new CompensationRegistry()); // no compensation registered
+        String workflowId = engine.submit("demo", stages, "run-33i");
+        assertThat(handlerInvocations.get()).isEqualTo(1);
+
+        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "flaky").orElseThrow();
+        assertThat(step.getStatus()).isEqualTo(StepStatus.SAFE_STOPPED);
+        assertThat(step.getSafeStopReason()).isEqualTo(SafeStopReason.RETRY_EXHAUSTED);
+
+        engine.retrySafeStopped(workflowId);
+
+        assertThat(handlerInvocations.get()).isEqualTo(2); // genuinely re-ran
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
         assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.COMPLETED);
     }
 }

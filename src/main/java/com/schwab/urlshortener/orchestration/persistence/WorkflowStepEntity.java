@@ -2,6 +2,7 @@ package com.schwab.urlshortener.orchestration.persistence;
 
 import com.schwab.urlshortener.orchestration.JsonListAttributeConverter;
 import com.schwab.urlshortener.orchestration.JsonMapAttributeConverter;
+import com.schwab.urlshortener.orchestration.SafeStopReason;
 import com.schwab.urlshortener.orchestration.StepStatus;
 import jakarta.persistence.*;
 import java.time.Instant;
@@ -65,6 +66,23 @@ public class WorkflowStepEntity {
     @Column(name = "inputs_snapshot", columnDefinition = "CLOB")
     private Map<String, Object> inputsSnapshot;
 
+    // Codex REQUEST AMENDMENTS item 6: WHY this step is SAFE_STOPPED (null otherwise) — lets
+    // retrySafeStopped distinguish "the handler already succeeded once, only the policy boundary
+    // needs re-checking" (POLICY_BLOCKED) from "the handler genuinely never completed and must
+    // actually run again" (RETRY_EXHAUSTED, COMPENSATION_FAILED).
+    @Enumerated(EnumType.STRING)
+    @Column(name = "safe_stop_reason")
+    private SafeStopReason safeStopReason;
+
+    // Codex REQUEST AMENDMENTS item 8: this step's status immediately before an exit-approval gate
+    // overwrote it with WAITING_APPROVAL. approve() restores this (rather than hardcoding
+    // SUCCEEDED) so a COMPENSATED step that passes through an exit gate is still COMPENSATED
+    // afterward, not silently reported as a clean success. Null for steps that never passed
+    // through an exit gate.
+    @Enumerated(EnumType.STRING)
+    @Column(name = "pre_gate_status")
+    private StepStatus preGateStatus;
+
     public Long getId() { return id; }
     public String getWorkflowId() { return workflowId; }
     public void setWorkflowId(String workflowId) { this.workflowId = workflowId; }
@@ -92,4 +110,8 @@ public class WorkflowStepEntity {
     public void setFallbackHandlerKey(String fallbackHandlerKey) { this.fallbackHandlerKey = fallbackHandlerKey; }
     public Map<String, Object> getInputsSnapshot() { return inputsSnapshot; }
     public void setInputsSnapshot(Map<String, Object> inputsSnapshot) { this.inputsSnapshot = inputsSnapshot; }
+    public SafeStopReason getSafeStopReason() { return safeStopReason; }
+    public void setSafeStopReason(SafeStopReason safeStopReason) { this.safeStopReason = safeStopReason; }
+    public StepStatus getPreGateStatus() { return preGateStatus; }
+    public void setPreGateStatus(StepStatus preGateStatus) { this.preGateStatus = preGateStatus; }
 }

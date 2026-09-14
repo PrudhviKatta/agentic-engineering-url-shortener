@@ -106,4 +106,13 @@ public class WorkflowController {
     public ResponseEntity<ErrorResponse> handleNoPendingApproval(NoPendingApprovalException ex) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ErrorResponse.of(ex.getMessage()));
     }
+
+    // Round-6b correction (independent-review finding): getWorkflow/getAudit's unknown-workflow
+    // 404 was a bare ResponseStatusException, which Spring renders as its own default
+    // {timestamp,status,error,path} body — not openapi.yaml's ErrorResponse{error:{reason}} shape.
+    // This handler normalizes every ResponseStatusException thrown by this controller to that shape.
+    @ExceptionHandler(ResponseStatusException.class)
+    public ResponseEntity<ErrorResponse> handleResponseStatus(ResponseStatusException ex) {
+        return ResponseEntity.status(ex.getStatusCode()).body(ErrorResponse.of(ex.getReason()));
+    }
 }

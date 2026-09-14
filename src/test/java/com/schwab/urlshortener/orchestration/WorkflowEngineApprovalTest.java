@@ -195,4 +195,47 @@ class WorkflowEngineApprovalTest {
         assertThat(executed.get(2)).isEqualTo("after");
         assertThat(executed.subList(0, 2)).containsExactlyInAnyOrder("security", "documentation");
     }
+
+    // --- Round-6b regression test (independent-review finding: rejection was not terminal) ---
+
+    @Test
+    void rejectingOneExitGatedSiblingFailsWorkflowAndBlocksApprovingTheOther() {
+        List<String> executed = new CopyOnWriteArrayList<>();
+        StageHandler security = ctx -> { executed.add("security"); return Map.of(); };
+        StageHandler documentation = ctx -> { executed.add("documentation"); return Map.of(); };
+        StageHandler after = ctx -> { executed.add("after"); return Map.of(); };
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("security", List.of(), security, false, true, 0, 30, "verify", null, null),
+                new StageDefinition("documentation", List.of(), documentation, false, true, 0, 30, "verify", null, null),
+                StageDefinition.of("after", List.of("security", "documentation"), after));
+
+        WorkflowEngine engine = engine();
+        String workflowId = engine.submit("demo", stages, "run-6f");
+
+        engine.approve(workflowId, "security", "rejected", "human", "found a vulnerability");
+
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.FAILED);
+
+        // Approving the OTHER sibling must not resurrect the failed workflow, must not re-open
+        // "security"'s already-decided gate, and must not let "after" run.
+        assertThatThrownBy(() -> engine.approve(workflowId, "documentation", "approved", "human", "ok"))
+                .isInstanceOf(NoPendingApprovalException.class);
+
+        instance = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.FAILED); // still terminal, not resurrected
+        assertThat(stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "security").orElseThrow().getStatus())
+                .isEqualTo(StepStatus.SUCCEEDED); // NOT re-opened back to WAITING_APPROVAL
+        assertThat(executed).doesNotContain("after");
+
+        // A second decision on the already-rejected step itself must also still be refused.
+        assertThatThrownBy(() -> engine.approve(workflowId, "security", "approved", "human", "changed my mind"))
+                .isInstanceOf(NoPendingApprovalException.class);
+    }
+
+    @Test
+    void approvingAnUnknownWorkflowIsRejected() {
+        assertThatThrownBy(() -> engine().approve("does-not-exist", "risky", "approved", "human", "n/a"))
+                .isInstanceOf(NoPendingApprovalException.class);
+    }
 }

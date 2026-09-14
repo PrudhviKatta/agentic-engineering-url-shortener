@@ -114,7 +114,14 @@ public class WorkflowEngine {
                 WorkflowStepEntity step = requireStep(workflowId, planVersion, stage.name());
                 StepStatus status = step.getStatus();
                 boolean readyForGate = status == StepStatus.SUCCEEDED || status == StepStatus.WAITING_APPROVAL;
-                if (readyForGate && !isApproved(step)) {
+                // Round-6b correction (independent-review finding): gate on "has ANY decision yet"
+                // (approved OR rejected), not "has an approved decision" alone. A rejected exit
+                // gate leaves its step SUCCEEDED (same status a normal completion leaves it in) —
+                // checking isApproved() here would treat that as "still needs gating" and hand it a
+                // fresh WAITING_APPROVAL on the next resume, letting a second decision overturn the
+                // original rejection. hasAnyDecision() makes an already-decided step immune to
+                // re-gating regardless of which way it was decided.
+                if (readyForGate && !hasAnyDecision(step)) {
                     if (status != StepStatus.WAITING_APPROVAL) {
                         enterPendingApproval(step);
                     }
@@ -164,6 +171,17 @@ public class WorkflowEngine {
 
         WorkflowInstanceEntity instance = instanceRepository.findById(workflowId)
                 .orElseThrow(() -> new NoPendingApprovalException("unknown workflow: " + workflowId));
+
+        // Round-6b correction (independent-review finding): a terminal workflow accepts no further
+        // decisions. Without this, approving a DIFFERENT sibling in the same exit-gated batch after
+        // one sibling was already rejected (which sets the workflow FAILED) would call runFrom()
+        // again, which resurrects the instance from FAILED back to RUNNING and re-derives the exit
+        // gate from step status alone — silently re-opening and letting a second decision overturn
+        // the original rejection.
+        if (instance.getStatus() == WorkflowStatus.FAILED || instance.getStatus() == WorkflowStatus.COMPLETED) {
+            throw new NoPendingApprovalException(
+                    "workflow " + workflowId + " is already terminal (" + instance.getStatus() + ")");
+        }
         int planVersion = instance.getPlanVersion();
 
         StageRegistration registration = registry.get(workflowId);
@@ -222,6 +240,10 @@ public class WorkflowEngine {
     // authoritative key for "has THIS step instance been approved".
     private boolean isApproved(WorkflowStepEntity step) {
         return !approvalRepository.findByStepInstanceIdAndDecision(step.getId(), "approved").isEmpty();
+    }
+
+    private boolean hasAnyDecision(WorkflowStepEntity step) {
+        return approvalRepository.existsByStepInstanceId(step.getId());
     }
 
     private void enterPendingApproval(WorkflowStepEntity step) {

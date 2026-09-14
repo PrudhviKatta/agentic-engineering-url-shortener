@@ -64,9 +64,33 @@ class WorkflowControllerContractTest {
     void unknownWorkflowIdReturns404OnStateAndAuditEndpoints() {
         ResponseEntity<Map> stateResp = rest.getForEntity(url("/workflows/does-not-exist"), Map.class);
         assertThat(stateResp.getStatusCode().value()).isEqualTo(404);
+        // Round-6b correction (independent-review finding): this used to be a bare
+        // ResponseStatusException, rendered as Spring's default {timestamp,status,error,path}
+        // body rather than openapi.yaml's ErrorResponse{error:{reason}} shape.
+        assertThat(stateResp.getBody()).containsKey("error");
+        assertThat((Map<String, Object>) stateResp.getBody().get("error")).containsKey("reason");
 
         ResponseEntity<Map> auditResp = rest.getForEntity(url("/workflows/does-not-exist/audit"), Map.class);
         assertThat(auditResp.getStatusCode().value()).isEqualTo(404);
+        assertThat(auditResp.getBody()).containsKey("error");
+    }
+
+    @Test
+    void decisionLineageReflectsActualRecordedDecisions() {
+        List<StageDefinition> stages = List.of(
+                StageDefinition.of("propose", List.of(), ctx -> {
+                    ctx.recordDecision("agent", "propose", "initial design looks sound");
+                    return Map.of();
+                }));
+        String workflowId = engine.submit("demo", stages, "contract-test-5");
+
+        ResponseEntity<Map> stateResp = rest.getForEntity(url("/workflows/" + workflowId), Map.class);
+        List<Map<String, Object>> lineage = (List<Map<String, Object>>) stateResp.getBody().get("decisionLineage");
+        assertThat(lineage).hasSize(1);
+        assertThat(lineage.get(0).get("actor")).isEqualTo("agent");
+        assertThat(lineage.get(0).get("decision")).isEqualTo("propose");
+        assertThat(lineage.get(0).get("rationale")).isEqualTo("initial design looks sound");
+        assertThat(lineage.get(0).get("recordedAt")).isNotNull();
     }
 
     @Test

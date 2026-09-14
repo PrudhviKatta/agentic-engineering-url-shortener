@@ -3,6 +3,7 @@ package com.schwab.urlshortener.orchestration.persistence;
 import com.schwab.urlshortener.orchestration.WorkflowStatus;
 import jakarta.persistence.*;
 import java.time.Instant;
+import java.util.Map;
 
 @Entity
 @Table(name = "workflow_instances")
@@ -28,6 +29,10 @@ public class WorkflowInstanceEntity {
     @Column(name = "updated_at")
     private Instant updatedAt = Instant.now();
 
+    @Convert(converter = com.schwab.urlshortener.orchestration.JsonMapAttributeConverter.class)
+    @Column(name = "context_json", columnDefinition = "CLOB")
+    private Map<String, Object> contextJson = new java.util.HashMap<>();
+
     public String getId() { return id; }
     public void setId(String id) { this.id = id; }
     public String getFeature() { return feature; }
@@ -41,4 +46,6 @@ public class WorkflowInstanceEntity {
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(Instant updatedAt) { this.updatedAt = updatedAt; }
+    public Map<String, Object> getContextJson() { return contextJson; }
+    public void setContextJson(Map<String, Object> contextJson) { this.contextJson = contextJson; }
 }

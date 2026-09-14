@@ -62,11 +62,17 @@ public class WorkflowEngine {
     }
 
     private void runFrom(String workflowId) {
-        // NOTE: still deliberately a fresh WorkflowContext each call — Task 24 fixes this.
         StageRegistration registration = registry.get(workflowId);
         WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
         int planVersion = instance.getPlanVersion();
-        WorkflowContext ctx = new WorkflowContext(instance.getCorrelationId());
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> priorDecisions =
+                (List<Map<String, Object>>) instance.getContextJson().getOrDefault("decisions", new ArrayList<Map<String,Object>>());
+        @SuppressWarnings("unchecked")
+        Map<String, Object> priorArtifacts =
+                (Map<String, Object>) instance.getContextJson().getOrDefault("artifacts", new HashMap<String,Object>());
+        WorkflowContext ctx = new WorkflowContext(instance.getCorrelationId(), priorDecisions, priorArtifacts);
 
         for (List<StageDefinition> batch : registration.graph().topologicalBatches()) {
             List<StageDefinition> pending = batch.stream()
@@ -85,6 +91,11 @@ public class WorkflowEngine {
             }
 
             runBatch(workflowId, planVersion, pending, ctx);
+
+            // Persist lineage BEFORE the exit-gate check, so a decision recorded by an
+            // exit-gated stage's own handler survives even though this batch then halts.
+            instance.setContextJson(Map.of("decisions", ctx.decisions(), "artifacts", ctx.artifacts()));
+            instanceRepository.save(instance);
 
             // Exit gate: block AFTER running, before any dependent batch proceeds.
             for (StageDefinition stage : pending) {

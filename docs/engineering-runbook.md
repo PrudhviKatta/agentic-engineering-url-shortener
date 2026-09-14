@@ -2786,11 +2786,108 @@ public class ScenarioRunner implements CommandLineRunner {
 **Files:**
 - Create: `src/main/java/com/schwab/urlshortener/observability/WorkflowController.java`
 - Create: `src/main/java/com/schwab/urlshortener/observability/dto/WorkflowStateResponse.java`, `AuditEventResponse.java`, `ApprovalRequest.java`
+- Modify: `src/main/java/com/schwab/urlshortener/orchestration/WorkflowEngine.java` (add `@Component` — see corrected note below)
+- Modify: `src/main/java/com/schwab/urlshortener/scenarios/ScenarioRunner.java` (Task 25 — inject the shared engine bean instead of constructing its own; see corrected note below)
 - Test: `src/test/java/com/schwab/urlshortener/api/WorkflowControllerContractTest.java`
 
 **Interfaces:**
 - Produces: `GET /workflows/{id}` → `{id, status, steps: [{name,status,startedAt,endedAt,retryCount}]}`; `GET /workflows/{id}/audit` → `[{actorType,action,timestamp,result,reason}]`; `POST /workflows/{id}/approvals/{step}` → body `{decision, actor, reason}`, calls `WorkflowEngine.approve`
+- Repository lookups here use `findByWorkflowIdAndPlanVersionOrderBySequence` (Task 21's plan-version-safe form), not a bare `findByWorkflowIdOrderBySequence`.
 
+**Corrected 2026-09-13 — real architectural gap found before this task, not just a stale
+signature.** `WorkflowEngine`'s non-static `registry` field (Task 22's correction) is scoped to
+*one engine object*, not to the process. `ScenarioRunner` (Task 25) currently does
+`new WorkflowEngine(...)` itself, and this task's own draft below did the same inside
+`WorkflowController`. Two independently-constructed engine objects means two independent, empty
+registries: a workflow submitted via `ScenarioRunner`'s CLI harness would be invisible to
+`WorkflowController`'s `approve()` — `registry.get(workflowId)` would return `null` and
+`approve()` would `NullPointerException` for any real scenario. This is not a restart-safety
+problem (that's `StageCatalog`/Task 50, out of scope here) — it is a same-process,
+multiple-engine-instances problem, fixable now: make `WorkflowEngine` itself a Spring
+`@Component` (its four constructor dependencies are all already `@Repository` beans, so Spring
+autowires it with no further change), then have both `WorkflowController` and `ScenarioRunner`
+take the shared `WorkflowEngine` bean as a constructor parameter instead of constructing their own.
+`ScenarioRunner` no longer needs `stepRepository`/`approvalRepository` as its own fields once it
+delegates to the injected engine for `submit()` — only `instanceRepository`/`eventRepository`
+stay, since `runScenario` also uses those directly for its own JSON-lines printing.
+
+- [ ] **Step 0: Make `WorkflowEngine` a shared Spring bean and update its two existing callers**
+```java
+// WorkflowEngine.java — one-line change to the existing class declaration
+import org.springframework.stereotype.Component;
+// ...
+@Component
+public class WorkflowEngine {
+    // body unchanged
+```
+```java
+// ScenarioRunner.java (Task 25) — inject the shared engine instead of constructing one
+package com.schwab.urlshortener.scenarios;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.schwab.urlshortener.orchestration.*;
+import com.schwab.urlshortener.orchestration.persistence.*;
+import java.io.PrintStream;
+import java.util.List;
+import java.util.Map;
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.stereotype.Component;
+
+@Component
+public class ScenarioRunner implements CommandLineRunner {
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    private final WorkflowInstanceJpaRepository instanceRepository;
+    private final WorkflowEventJpaRepository eventRepository;
+    private final WorkflowEngine engine;
+
+    public ScenarioRunner(WorkflowInstanceJpaRepository instanceRepository,
+                           WorkflowEventJpaRepository eventRepository,
+                           WorkflowEngine engine) {
+        this.instanceRepository = instanceRepository;
+        this.eventRepository = eventRepository;
+        this.engine = engine;
+    }
+
+    @Override
+    public void run(String... args) throws Exception {
+        String scenario = extractScenarioArg(args);
+        if (scenario == null) return; // normal server boot; not invoked in scenario mode
+        runScenario(scenario, System.out);
+    }
+
+    static String extractScenarioArg(String[] args) {
+        for (String arg : args) {
+            if (arg.startsWith("--scenario=")) return arg.substring("--scenario=".length());
+        }
+        return null;
+    }
+
+    void runScenario(String scenario, PrintStream out) throws Exception {
+        List<StageDefinition> stages = List.of(
+                StageDefinition.of("requirement", List.of(), ctx -> Map.of()),
+                StageDefinition.of("decomposition", List.of("requirement"), ctx -> Map.of())
+        );
+        String workflowId = engine.submit(scenario, stages, "cli-" + scenario);
+
+        for (WorkflowEventEntity event : eventRepository.findByWorkflowIdOrderById(workflowId)) {
+            Map<String, Object> line = Map.of(
+                    "actorType", event.getActorType(), "action", event.getAction(),
+                    "timestamp", event.getTimestamp().toString(), "result", event.getResult());
+            out.println(MAPPER.writeValueAsString(line));
+        }
+
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        out.println(MAPPER.writeValueAsString(Map.of("workflowId", workflowId, "status", instance.getStatus().name())));
+    }
+}
+```
+  `ScenarioRunnerSmokeTest` (Task 25) does not need any change — `@Import(ScenarioRunner.class)`
+  in a `@DataJpaTest` slice, combined with `@Component` on `WorkflowEngine`, means Spring now
+  autowires the shared engine bean into the test's `ScenarioRunner` the same way it will in the
+  full application context; the test's own assertions are unaffected. Re-run it as part of this
+  task's regression pass.
 - [ ] **Step 1: Write failing test**
 ```java
 // src/test/java/com/schwab/urlshortener/api/WorkflowControllerContractTest.java
@@ -2816,9 +2913,12 @@ class WorkflowControllerContractTest {
     private final TestRestTemplate rest = new TestRestTemplate();
 
     @Autowired private WorkflowInstanceJpaRepository instanceRepository;
-    @Autowired private WorkflowStepJpaRepository stepRepository;
     @Autowired private WorkflowEventJpaRepository eventRepository;
-    @Autowired private ApprovalJpaRepository approvalRepository;
+    // Corrected 2026-09-13: autowire the shared @Component WorkflowEngine bean — the SAME
+    // instance WorkflowController holds — rather than constructing a private one. Using a
+    // separate `new WorkflowEngine(...)` here would prove nothing about the actual bug this
+    // task fixes (WorkflowController seeing workflows submitted elsewhere in the same process).
+    @Autowired private WorkflowEngine engine;
 
     private String url(String path) { return "http://localhost:" + port + path; }
 
@@ -2826,9 +2926,8 @@ class WorkflowControllerContractTest {
     void workflowStateAndAuditEndpointsExposeRealPersistedState() {
         // No generic "create workflow" HTTP endpoint exists (workflows are always
         // created from a scenario's specific stage set — Phase 9); trigger one
-        // directly through the engine the same way ScenarioRunner does, then
+        // directly through the shared engine the same way ScenarioRunner does, then
         // exercise the read-only HTTP surface against it.
-        WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository);
         List<StageDefinition> stages = List.of(StageDefinition.of("only", List.of(), ctx -> Map.of("ok", true)));
         String workflowId = engine.submit("demo", stages, "contract-test");
 
@@ -2841,6 +2940,29 @@ class WorkflowControllerContractTest {
         ResponseEntity<List> auditResp = rest.getForEntity(url("/workflows/" + workflowId + "/audit"), List.class);
         assertThat(auditResp.getStatusCode().value()).isEqualTo(200);
         assertThat(auditResp.getBody()).isNotEmpty();
+    }
+
+    @Test
+    void approvalEndpointResumesAWorkflowSubmittedThroughTheSameSharedEngineBean() {
+        // Proves the cross-component engine-sharing fix: the workflow is submitted here
+        // (simulating ScenarioRunner submitting it), but resumed entirely through the HTTP
+        // approval endpoint (simulating a separate WorkflowController-driven caller) — this
+        // only works if both go through the SAME WorkflowEngine bean and its registry.
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("risky", List.of(), ctx -> Map.of(), true, false, 0, 30, null, null, null));
+        String workflowId = engine.submit("demo", stages, "contract-test-2");
+
+        ResponseEntity<Map> beforeResp = rest.getForEntity(url("/workflows/" + workflowId), Map.class);
+        assertThat(beforeResp.getBody().get("status")).isEqualTo("PENDING_APPROVAL");
+
+        ResponseEntity<Void> approveResp = rest.postForEntity(
+                url("/workflows/" + workflowId + "/approvals/risky"),
+                Map.of("decision", "approved", "actor", "human", "reason", "looks safe"),
+                Void.class);
+        assertThat(approveResp.getStatusCode().value()).isEqualTo(200);
+
+        ResponseEntity<Map> afterResp = rest.getForEntity(url("/workflows/" + workflowId), Map.class);
+        assertThat(afterResp.getBody().get("status")).isEqualTo("COMPLETED");
     }
 }
 ```
@@ -2894,21 +3016,28 @@ public class WorkflowController {
     private final WorkflowEventJpaRepository eventRepository;
     private final WorkflowEngine engine;
 
+    // Corrected 2026-09-13: inject the shared @Component WorkflowEngine bean instead of
+    // constructing a private one — a second, independently-constructed engine would have its
+    // own empty registry, unable to see workflows submitted through ScenarioRunner's engine.
     public WorkflowController(WorkflowInstanceJpaRepository instanceRepository,
                                WorkflowStepJpaRepository stepRepository,
                                WorkflowEventJpaRepository eventRepository,
-                               ApprovalJpaRepository approvalRepository) {
+                               WorkflowEngine engine) {
         this.instanceRepository = instanceRepository;
         this.stepRepository = stepRepository;
         this.eventRepository = eventRepository;
-        this.engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository);
+        this.engine = engine;
     }
 
     @GetMapping("/{id}")
     public WorkflowStateResponse getWorkflow(@PathVariable("id") String id) {
         WorkflowInstanceEntity instance = instanceRepository.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "workflow_not_found"));
-        List<WorkflowStateResponse.StepView> steps = stepRepository.findByWorkflowIdOrderBySequence(id).stream()
+        // Corrected 2026-09-13: repository method is plan-version-scoped since Task 21
+        // (findByWorkflowIdAndPlanVersionOrderBySequence), not the bare findByWorkflowIdOrderBySequence
+        // this brief originally showed.
+        List<WorkflowStateResponse.StepView> steps = stepRepository
+                .findByWorkflowIdAndPlanVersionOrderBySequence(id, instance.getPlanVersion()).stream()
                 .map(s -> new WorkflowStateResponse.StepView(
                         s.getName(), s.getStatus(), s.getStartedAt(), s.getEndedAt(), s.getRetryCount()))
                 .toList();

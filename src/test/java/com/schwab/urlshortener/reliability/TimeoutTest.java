@@ -27,4 +27,16 @@ class TimeoutTest {
 
         assertThat(wrapped.run(null)).isEqualTo(Map.of("ok", true));
     }
+
+    @Test
+    void handlerExceptionWithinTimeoutPropagatesUnwrapped() {
+        // Review finding: Task 33 is expected to compose this with RetryExecutor.withBoundedRetry
+        // — TransientStageException/PermanentStageException thrown by the handler must reach the
+        // retry wrapper as themselves, not get mis-shaped by this class's ExecutionException
+        // unwrap logic (or, worse, get misclassified as a StageTimeoutException).
+        StageHandler broken = ctx -> { throw new TransientStageException("simulated failure"); };
+        StageHandler wrapped = TimeoutExecutor.withTimeout(broken, 1000);
+
+        assertThatThrownBy(() -> wrapped.run(null)).isInstanceOf(TransientStageException.class);
+    }
 }

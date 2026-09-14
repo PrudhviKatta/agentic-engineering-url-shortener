@@ -385,4 +385,45 @@ class WorkflowEngineReliabilityIntegrationTest {
         WorkflowInstanceEntity completed = instanceRepository.findById(workflowId).orElseThrow();
         assertThat(completed.getStatus()).isEqualTo(WorkflowStatus.COMPLETED);
     }
+
+    // --- 5th independent-review pass finding: runBatch must join EVERY claimed sibling before
+    // returning/throwing, even once one has already failed, or a still-running sibling is
+    // orphaned with no thread left to observe its eventual completion ---
+
+    @Test
+    void aSiblingStageStillRunningWhenAnotherFailsIsFullyJoinedBeforeTheBatchReports() {
+        // "fast" fails immediately (first in the batch's dispatch order); "slow" is still
+        // executing when it does. The old runBatch propagated "fast"'s failure the instant its
+        // future.get() call returned, without ever joining "slow"'s future — "slow" kept running
+        // on the pool's thread regardless (pool.shutdown() doesn't interrupt in-flight tasks),
+        // but nothing downstream was watching for it to finish.
+        StageHandler fast = ctx -> { throw new PermanentStageException("boom"); };
+        AtomicBoolean slowFinished = new AtomicBoolean(false);
+        StageHandler slow = ctx -> {
+            try {
+                Thread.sleep(300);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            slowFinished.set(true);
+            return Map.of();
+        };
+        List<StageDefinition> stages = List.of(
+                StageDefinition.of("fast", List.of(), fast),
+                StageDefinition.of("slow", List.of(), slow));
+
+        WorkflowEngine engine = engineWithCompensation(new CompensationRegistry());
+        String workflowId = engine.submit("demo", stages, "run-33l");
+
+        // submit() runs synchronously through runFrom/runBatch — by the time it returns, "slow"
+        // must have been fully joined, not merely dispatched, even though "fast" failed first.
+        assertThat(slowFinished.get()).isTrue();
+        assertThat(stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "slow")
+                .orElseThrow().getStatus()).isEqualTo(StepStatus.SUCCEEDED);
+        assertThat(stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "fast")
+                .orElseThrow().getStatus()).isEqualTo(StepStatus.SAFE_STOPPED);
+
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.SAFE_STOPPED);
+    }
 }

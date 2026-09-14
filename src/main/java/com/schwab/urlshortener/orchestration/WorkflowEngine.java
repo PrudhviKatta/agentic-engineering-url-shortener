@@ -376,28 +376,61 @@ public class WorkflowEngine {
             return; // every stage in this batch was already claimed by a concurrent runFrom() call
         }
         ExecutorService pool = Executors.newFixedThreadPool(Math.max(1, claimed.size()));
+        List<Future<?>> futures = new ArrayList<>();
         try {
-            List<Future<?>> futures = new ArrayList<>();
             for (StageDefinition stage : claimed) {
                 futures.add(pool.submit(() -> runStage(workflowId, planVersion, stage, ctx, inputsSnapshot)));
             }
-            for (Future<?> future : futures) {
-                future.get();
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new RuntimeException(e);
-        } catch (ExecutionException e) {
-            // Task 28: a SafeStopException from a mandatory policy failure must propagate as
-            // itself — not wrapped in a generic RuntimeException — so runFrom's catch above can
-            // distinguish "safe-stop the workflow" from "an unexpected handler error."
-            Throwable cause = e.getCause();
-            if (cause instanceof SafeStopException safeStop) {
-                throw safeStop;
-            }
-            throw new RuntimeException(cause);
         } finally {
             pool.shutdown();
+        }
+
+        // Independent-review finding (5th pass, post-cd797f0 follow-up): await EVERY claimed
+        // stage's future before this method returns or throws — even once one has already
+        // failed. The previous form propagated the FIRST failure immediately (via future.get()
+        // inside the loop, which throws on the first exception it meets), abandoning the
+        // remaining futures unjoined. Their handlers kept running on the pool's threads
+        // regardless — pool.shutdown() does not interrupt in-flight tasks — but nothing was
+        // left to notice when they finished: every "is anything still RUNNING" check in
+        // runFrom only ever runs inside a thread that returned from THIS method, and this
+        // method had already returned. A batch with an orphaned sibling still executing could
+        // then get "resolved" (e.g. by a retrySafeStopped call landing mid-orphan) with no
+        // thread left to observe the orphan's eventual completion, permanently stranding the
+        // instance RUNNING. Joining every future here — regardless of order or which one
+        // fails first — guarantees that by the time this method returns, every stage IT
+        // dispatched has actually finished, restoring the invariant runFrom's per-batch check
+        // depends on.
+        Throwable firstSafeStop = null;
+        Throwable firstOther = null;
+        boolean interrupted = false;
+        for (Future<?> future : futures) {
+            try {
+                future.get();
+            } catch (InterruptedException e) {
+                interrupted = true;
+            } catch (ExecutionException e) {
+                // Task 28: a SafeStopException from a mandatory policy failure must propagate as
+                // itself — not wrapped in a generic RuntimeException — so runFrom's catch above
+                // can distinguish "safe-stop the workflow" from "an unexpected handler error."
+                Throwable cause = e.getCause();
+                if (cause instanceof SafeStopException && firstSafeStop == null) {
+                    firstSafeStop = cause;
+                } else if (firstOther == null) {
+                    firstOther = cause;
+                }
+            }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+        }
+        if (firstSafeStop != null) {
+            throw (SafeStopException) firstSafeStop;
+        }
+        if (interrupted) {
+            throw new RuntimeException(new InterruptedException("interrupted while awaiting batch stages"));
+        }
+        if (firstOther != null) {
+            throw new RuntimeException(firstOther);
         }
     }
 

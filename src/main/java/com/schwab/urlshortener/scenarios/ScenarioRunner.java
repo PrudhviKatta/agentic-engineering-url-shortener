@@ -41,10 +41,11 @@ public class ScenarioRunner implements CommandLineRunner {
     }
 
     void runScenario(String scenario, PrintStream out) throws Exception {
-        List<StageDefinition> stages = List.of(
-                StageDefinition.of("requirement", List.of(), ctx -> Map.of()),
-                StageDefinition.of("decomposition", List.of("requirement"), ctx -> Map.of())
-        );
+        // Codex REQUEST AMENDMENTS item 1 (T026a): the same shared baseline 12-stage graph
+        // POST /workflows now instantiates — per T026a's own risk/guardrail, both creation paths
+        // must build from the identical factory or they silently drift. Replaces this runner's
+        // prior trivial 2-stage smoke-test placeholder graph.
+        List<StageDefinition> stages = BaselineWorkflowGraph.stages();
         String workflowId = engine.submit(scenario, stages, "cli-" + scenario);
 
         for (WorkflowEventEntity event : eventRepository.findByWorkflowIdOrderById(workflowId)) {

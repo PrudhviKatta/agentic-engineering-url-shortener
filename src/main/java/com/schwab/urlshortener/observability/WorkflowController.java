@@ -2,14 +2,17 @@ package com.schwab.urlshortener.observability;
 
 import com.schwab.urlshortener.api.dto.ErrorResponse;
 import com.schwab.urlshortener.observability.dto.*;
+import com.schwab.urlshortener.orchestration.BaselineWorkflowGraph;
 import com.schwab.urlshortener.orchestration.InvalidApprovalDecisionException;
 import com.schwab.urlshortener.orchestration.NoPendingApprovalException;
+import com.schwab.urlshortener.orchestration.UnreadableRequirementException;
 import com.schwab.urlshortener.orchestration.WorkflowEngine;
 import com.schwab.urlshortener.orchestration.persistence.*;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -35,6 +38,26 @@ public class WorkflowController {
         this.stepRepository = stepRepository;
         this.eventRepository = eventRepository;
         this.engine = engine;
+    }
+
+    // Codex REQUEST AMENDMENTS item 1 (T026a): generic Workflow Run creation over HTTP.
+    // openapi.yaml's own contract for this operation is explicit — "mandatory, full
+    // implementation, no stub path... no 501/not-implemented escape hatch." Instantiates the SAME
+    // baseline 12-stage graph ScenarioRunner's CLI harness uses (BaselineWorkflowGraph), so the two
+    // creation paths cannot silently drift, per T026a's own risk/guardrail.
+    @PostMapping
+    @ResponseStatus(HttpStatus.CREATED)
+    public WorkflowCreatedResponse createWorkflow(@RequestBody CreateWorkflowRequest request) {
+        if (request == null || request.requirementText() == null || request.requirementText().isBlank()) {
+            throw new UnreadableRequirementException("requirementText must be present and non-blank");
+        }
+        if (request.feature() == null || request.feature().isBlank()) {
+            throw new UnreadableRequirementException("feature must be present and non-blank");
+        }
+        String workflowId = engine.submit(request.feature(), BaselineWorkflowGraph.stages(), UUID.randomUUID().toString());
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        return new WorkflowCreatedResponse(instance.getId(), instance.getStatus(),
+                instance.getCorrelationId(), instance.getPlanVersion());
     }
 
     @GetMapping("/{id}")
@@ -97,6 +120,11 @@ public class WorkflowController {
     public void approve(@PathVariable("id") String id, @PathVariable("step") String step,
                          @RequestBody ApprovalRequest request) {
         engine.approve(id, step, request.decision(), request.actor(), request.reason());
+    }
+
+    @ExceptionHandler(UnreadableRequirementException.class)
+    public ResponseEntity<ErrorResponse> handleUnreadableRequirement(UnreadableRequirementException ex) {
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).body(ErrorResponse.of(ex.getMessage()));
     }
 
     @ExceptionHandler(InvalidApprovalDecisionException.class)

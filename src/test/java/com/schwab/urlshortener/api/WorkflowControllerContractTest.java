@@ -223,4 +223,56 @@ class WorkflowControllerContractTest {
         ResponseEntity<Map> afterResp = rest.getForEntity(url("/workflows/" + workflowId), Map.class);
         assertThat(afterResp.getBody().get("status")).isEqualTo("COMPLETED");
     }
+
+    // --- Codex REQUEST AMENDMENTS item 1 (T026a): POST /workflows ---
+
+    @Test
+    void postWorkflowsCreatesTheBaseline12NodeGraph() {
+        ResponseEntity<Map> createResp = rest.postForEntity(
+                url("/workflows"),
+                Map.of("feature", "add-expiration-endpoint",
+                        "requirementText", "Add an optional expiresAt field to link creation."),
+                Map.class);
+        assertThat(createResp.getStatusCode().value()).isEqualTo(201);
+        Map<String, Object> body = createResp.getBody();
+        assertThat(body).containsKeys("id", "status", "correlationId", "planVersion");
+        assertThat(body.get("planVersion")).isEqualTo(1);
+        String workflowId = (String) body.get("id");
+
+        // Risk/guardrail (tasks.md T026a): verifiable immediately via GET /workflows/{id} — the
+        // persisted graph's SHAPE, not merely that 201 was returned.
+        ResponseEntity<Map> stateResp = rest.getForEntity(url("/workflows/" + workflowId), Map.class);
+        assertThat(stateResp.getStatusCode().value()).isEqualTo(200);
+        List<Map<String, Object>> steps = (List<Map<String, Object>>) stateResp.getBody().get("steps");
+        assertThat(steps).hasSize(12);
+        List<String> names = steps.stream().map(s -> (String) s.get("name")).toList();
+        assertThat(names).containsExactlyInAnyOrder(
+                "requirement_ingestion", "requirement_normalization", "ambiguity_detection", "human_clarification",
+                "decomposition", "design", "implementation", "testing", "documentation", "security",
+                "release_readiness", "final_engineering_summary");
+    }
+
+    @Test
+    void postWorkflowsWithMissingRequirementTextReturns422() {
+        ResponseEntity<Map> resp = rest.postForEntity(
+                url("/workflows"), Map.of("feature", "add-expiration-endpoint"), Map.class);
+        assertThat(resp.getStatusCode().value()).isEqualTo(422);
+        assertThat(resp.getBody()).containsKey("error");
+    }
+
+    @Test
+    void postWorkflowsWithBlankRequirementTextReturns422() {
+        ResponseEntity<Map> resp = rest.postForEntity(
+                url("/workflows"),
+                Map.of("feature", "add-expiration-endpoint", "requirementText", "   "),
+                Map.class);
+        assertThat(resp.getStatusCode().value()).isEqualTo(422);
+    }
+
+    @Test
+    void postWorkflowsWithMissingFeatureReturns422() {
+        ResponseEntity<Map> resp = rest.postForEntity(
+                url("/workflows"), Map.of("requirementText", "Add an optional field."), Map.class);
+        assertThat(resp.getStatusCode().value()).isEqualTo(422);
+    }
 }

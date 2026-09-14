@@ -80,6 +80,15 @@ class WorkflowEnginePolicyEnforcementTest {
 
         WorkflowStepEntity step = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "implementation").orElseThrow();
         assertThat(step.getStatus()).isEqualTo(StepStatus.SUCCEEDED);
+
+        // Confirms the evaluate-and-persist loop actually ran on the success path too, not just
+        // the failure path — a PASS row for SEC-001 must exist even though nothing blocked.
+        List<PolicyEvaluationEntity> evaluations = policyEvaluationRepository.findAll().stream()
+                .filter(e -> workflowId.equals(e.getWorkflowId()))
+                .toList();
+        PolicyEvaluationEntity security = evaluations.stream()
+                .filter(e -> e.getPolicyId().equals("SEC-001")).findFirst().orElseThrow();
+        assertThat(security.getOutcome()).isEqualTo(PolicyOutcome.PASS);
     }
 
     @Test

@@ -2259,6 +2259,35 @@ class WorkflowEngineApprovalTest {
         assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.FAILED);
         assertThat(executed).isEmpty();
     }
+
+    @Test
+    void rejectedExitGateApprovalLeavesStepSucceededButBlocksDownstream() {
+        // Added 2026-09-13: the original two tests above only ever exercise entryApproval — a
+        // real defect (exit-gate reject incorrectly landing on FAILED instead of restoring
+        // SUCCEEDED) shipped silently because no test exercised the exit-gate reject path at
+        // all. This test is what would have caught it.
+        List<String> executed = new CopyOnWriteArrayList<>();
+        StageHandler design = ctx -> { executed.add("design"); return Map.of(); };
+        StageHandler after = ctx -> { executed.add("after"); return Map.of(); };
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("design", List.of(), design, false, true, 0, 30, null),
+                StageDefinition.of("after", List.of("design"), after));
+
+        WorkflowEngine engine = engine();
+        String workflowId = engine.submit("demo", stages, "run-4b");
+
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.PENDING_APPROVAL);
+        assertThat(executed).containsExactly("design"); // exit gate: handler DID run before halting
+
+        engine.approve(workflowId, "design", "rejected", "human", "wrong approach");
+
+        instance = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.FAILED);
+        WorkflowStepEntity designStep = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "design").orElseThrow();
+        assertThat(designStep.getStatus()).isEqualTo(StepStatus.SUCCEEDED); // handler's own completion stands
+        assertThat(executed).containsExactly("design"); // "after" must never run
+    }
 }
 ```
 - [ ] **Step 2: Run to confirm failure** — compile error, `WorkflowEngine` has no `approve` method and no 4-arg constructor.
@@ -2449,11 +2478,22 @@ public class WorkflowEngine {
         recordEvent(workflowId, "human", "approval_" + decision + ":" + stepName, "OK", reason);
 
         if ("rejected".equals(decision)) {
-            if (step.getStatus() != StepStatus.SUCCEEDED) {
+            // Corrected 2026-09-13 (fourth-round-equivalent review of this task): branch on
+            // stage.entryApproval(), not on the step's current status. enterPendingApproval()
+            // (below) unconditionally overwrites SUCCEEDED with WAITING_APPROVAL for an
+            // exit-gated stage too, so "status != SUCCEEDED" is always true by the time this
+            // runs and previously mis-classified every exit-gate reject as an entry-gate
+            // reject — silently landing the step on FAILED instead of restoring SUCCEEDED.
+            // Verified by direct execution: an exitApproval=true stage rejected end-to-end
+            // produced FAILED, not the SUCCEEDED the interface contract above requires.
+            if (stage.entryApproval()) {
                 step.setStatus(StepStatus.FAILED); // entry-gate reject: handler never ran
+            } else {
+                // exit-gate reject: restore SUCCEEDED — the handler did complete;
+                // enterPendingApproval() moved it to WAITING_APPROVAL, and only downstream
+                // stages are permanently withheld (they simply never run).
+                step.setStatus(StepStatus.SUCCEEDED);
             }
-            // exit-gate reject: leave SUCCEEDED — the handler did complete; only
-            // downstream stages are permanently withheld (they simply never run).
             stepRepository.save(step);
             instance.setStatus(WorkflowStatus.FAILED);
             instanceRepository.save(instance);
@@ -6362,10 +6402,23 @@ public class WorkflowEngine {
         recordEvent(workflowId, "human", "approval_" + decision + ":" + stepName, "OK", reason);
 
         if ("rejected".equals(decision)) {
-            if (step.getStatus() != StepStatus.SUCCEEDED && step.getStatus() != StepStatus.SUCCEEDED_WITH_FALLBACK) {
-                step.setStatus(StepStatus.FAILED);
-                stepRepository.save(step);
+            // Corrected 2026-09-13: branch on the same wasEntryGated signal the approved path
+            // below already uses (step.isEntryApproval() && startedAt == null), not on the
+            // step's current status. enterPendingApproval() unconditionally overwrites a
+            // completed exit-gated step's terminal status with WAITING_APPROVAL, so
+            // "status != SUCCEEDED" is always true by the time this runs regardless of gate
+            // type — silently landing every exit-gate reject on FAILED instead of restoring
+            // the handler's actual completion. (The SUCCEEDED_WITH_FALLBACK-vs-SUCCEEDED
+            // distinction is not reconstructable once WAITING_APPROVAL has overwritten it;
+            // plain SUCCEEDED is the correct restoration — the fallback disclosure itself
+            // already lives in ctx.artifacts()["fallbacksUsed"], not in this column.)
+            boolean wasEntryGated = step.isEntryApproval() && step.getStartedAt() == null;
+            if (wasEntryGated) {
+                step.setStatus(StepStatus.FAILED); // entry-gate reject: handler never ran
+            } else {
+                step.setStatus(StepStatus.SUCCEEDED); // exit-gate reject: handler already completed
             }
+            stepRepository.save(step);
             instance.setStatus(WorkflowStatus.FAILED);
             instanceRepository.save(instance);
             return;

@@ -1,9 +1,13 @@
 package com.schwab.urlshortener.orchestration;
 
 import com.schwab.urlshortener.orchestration.persistence.*;
+import com.schwab.urlshortener.policy.PolicyCheckResult;
+import com.schwab.urlshortener.policy.PolicyEngine;
+import com.schwab.urlshortener.policy.PolicyOutcome;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.stereotype.Component;
@@ -20,17 +24,37 @@ public class WorkflowEngine {
     private final WorkflowEventJpaRepository eventRepository;
     private final ApprovalJpaRepository approvalRepository;
     private final TransactionTemplate transactionTemplate;
+    // Task 28: both nullable — policy enforcement is opt-in via the 7-arg constructor below. The
+    // shared @Component bean (used by ScenarioRunner/WorkflowController today) still resolves via
+    // the 5-arg constructor with both null, since no PolicyEngine is registered as a Spring bean
+    // yet — wiring a real policy-aware production instance is a later task's job, not this one's.
+    private final PolicyEvaluationJpaRepository policyEvaluationRepository;
+    private final PolicyEngine policyEngine;
 
+    @Autowired
     public WorkflowEngine(WorkflowInstanceJpaRepository instanceRepository,
                            WorkflowStepJpaRepository stepRepository,
                            WorkflowEventJpaRepository eventRepository,
                            ApprovalJpaRepository approvalRepository,
                            PlatformTransactionManager transactionManager) {
+        this(instanceRepository, stepRepository, eventRepository, approvalRepository,
+                transactionManager, null, null);
+    }
+
+    public WorkflowEngine(WorkflowInstanceJpaRepository instanceRepository,
+                           WorkflowStepJpaRepository stepRepository,
+                           WorkflowEventJpaRepository eventRepository,
+                           ApprovalJpaRepository approvalRepository,
+                           PlatformTransactionManager transactionManager,
+                           PolicyEvaluationJpaRepository policyEvaluationRepository,
+                           PolicyEngine policyEngine) {
         this.instanceRepository = instanceRepository;
         this.stepRepository = stepRepository;
         this.eventRepository = eventRepository;
         this.approvalRepository = approvalRepository;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
+        this.policyEvaluationRepository = policyEvaluationRepository;
+        this.policyEngine = policyEngine;
     }
 
     public String submit(String feature, List<StageDefinition> stages, String correlationId) {
@@ -105,7 +129,21 @@ public class WorkflowEngine {
                 // capturing once, up front, is what makes "inputs available when the stage began"
                 // well-defined instead of a race against siblings.
                 Map<String, Object> batchStartArtifacts = Map.copyOf(ctx.artifacts());
-                runBatch(workflowId, planVersion, pending, ctx, batchStartArtifacts);
+                try {
+                    runBatch(workflowId, planVersion, pending, ctx, batchStartArtifacts);
+                } catch (SafeStopException e) {
+                    // Task 28: a mandatory policy check failed with no approved exception covering
+                    // it. The failing step's own SAFE_STOPPED status and result were already
+                    // persisted inside runStage before this propagated; the instance-level context
+                    // (decisions/artifacts) is deliberately NOT persisted here — a safe-stopped
+                    // batch's cross-stage context is not treated as a safe new baseline to resume
+                    // from, unlike a normal completed batch's.
+                    instance.setStatus(WorkflowStatus.SAFE_STOPPED);
+                    instanceRepository.save(instance);
+                    recordEvent(workflowId, "orchestrator", "workflow-engine", "safe_stop_triggered",
+                            null, "SAFE_STOPPED", e.getMessage());
+                    return;
+                }
 
                 instance.setContextJson(Map.of("decisions", ctx.decisions(), "artifacts", ctx.artifacts()));
                 instanceRepository.save(instance);
@@ -172,7 +210,14 @@ public class WorkflowEngine {
             Thread.currentThread().interrupt();
             throw new RuntimeException(e);
         } catch (ExecutionException e) {
-            throw new RuntimeException(e.getCause());
+            // Task 28: a SafeStopException from a mandatory policy failure must propagate as
+            // itself — not wrapped in a generic RuntimeException — so runFrom's catch above can
+            // distinguish "safe-stop the workflow" from "an unexpected handler error."
+            Throwable cause = e.getCause();
+            if (cause instanceof SafeStopException safeStop) {
+                throw safeStop;
+            }
+            throw new RuntimeException(cause);
         } finally {
             pool.shutdown();
         }
@@ -328,11 +373,49 @@ public class WorkflowEngine {
 
         Map<String, Object> result = stage.handler().run(ctx);
 
+        // Task 28: policy enforcement runs right after the handler returns, before the step is
+        // marked SUCCEEDED — a mandatory FAIL must be able to preempt success, not follow it.
+        // Skipped entirely when no PolicyEngine is configured (the shared production bean today).
+        if (policyEngine != null) {
+            List<PolicyCheckResult> policyResults = policyEngine.evaluate(stage.name(), ctx.artifacts());
+            boolean mandatoryFail = false;
+            for (PolicyCheckResult pr : policyResults) {
+                PolicyEvaluationEntity evaluation = new PolicyEvaluationEntity();
+                evaluation.setWorkflowId(workflowId);
+                evaluation.setStageName(stage.name());
+                evaluation.setPolicyId(pr.policyId());
+                evaluation.setPolicyVersion(policyEngine.version());
+                evaluation.setOutcome(pr.outcome());
+                evaluation.setReason(pr.reason());
+                policyEvaluationRepository.save(evaluation);
+                // A mandatory FAIL only blocks if no approved, unexpired exception covers this
+                // policy. Task 29 introduces the exceptions table and workflow; until then this
+                // check is a no-op (always blocks) — see hasApprovedUnexpiredException below.
+                if (pr.mandatory() && pr.outcome() == PolicyOutcome.FAIL
+                        && !hasApprovedUnexpiredException(workflowId, pr.policyId())) {
+                    mandatoryFail = true;
+                }
+            }
+            if (mandatoryFail) {
+                step.setStatus(StepStatus.SAFE_STOPPED);
+                step.setEndedAt(Instant.now());
+                step.setResult(result != null ? result : Map.of());
+                stepRepository.save(step);
+                throw new SafeStopException("mandatory policy failure at stage " + stage.name());
+            }
+        }
+
         step.setStatus(StepStatus.SUCCEEDED);
         step.setEndedAt(Instant.now());
         step.setResult(result != null ? result : Map.of());
         stepRepository.save(step);
         recordEvent(workflowId, "agent", stage.name(), "stage_succeeded:" + stage.name(), stage.name(), "OK", null);
+    }
+
+    // Task 28 placeholder: no policy-exception repository exists yet, so every mandatory FAIL
+    // blocks unconditionally. Task 29 replaces this body once policy_exceptions is wired in.
+    private boolean hasApprovedUnexpiredException(String workflowId, String policyId) {
+        return false;
     }
 
     private void recordEvent(String workflowId, String actorType, String actorId, String action,

@@ -4,6 +4,11 @@ import com.schwab.urlshortener.orchestration.persistence.*;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
@@ -45,21 +50,50 @@ class WorkflowEngineExecutionTest {
     }
 
     @Test
-    void submitRunsParallelGroupConcurrently() {
-        List<String> order = new CopyOnWriteArrayList<>();
-        StageHandler slow = ctx -> {
-            try { Thread.sleep(50); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
-            order.add("slow");
+    void submitRunsParallelGroupConcurrently() throws Exception {
+        // Round-6 correction (Codex REQUEST AMENDMENTS item 5): a Thread.sleep-based ordering
+        // assertion is inherently non-deterministic (a slow CI runner can let the "slow" handler
+        // finish first). This proves genuine concurrency instead: both handlers must independently
+        // reach bothStarted.countDown() before either is allowed past releaseGate — impossible
+        // unless the engine actually runs them on separate threads at the same time, since each
+        // handler blocks on releaseGate (not yet released) before returning.
+        CountDownLatch bothStarted = new CountDownLatch(2);
+        CountDownLatch releaseGate = new CountDownLatch(1);
+        StageHandler a = ctx -> {
+            bothStarted.countDown();
+            await(releaseGate);
             return Map.of();
         };
-        StageHandler fast = ctx -> { order.add("fast"); return Map.of(); };
+        StageHandler b = ctx -> {
+            bothStarted.countDown();
+            await(releaseGate);
+            return Map.of();
+        };
         List<StageDefinition> stages = List.of(
-                new StageDefinition("slow", List.of(), slow, false, false, 0, 30, "g", null, null),
-                new StageDefinition("fast", List.of(), fast, false, false, 0, 30, "g", null, null)
+                new StageDefinition("a", List.of(), a, false, false, 0, 30, "g", null, null),
+                new StageDefinition("b", List.of(), b, false, false, 0, 30, "g", null, null)
         );
 
-        engine().submit("demo", stages, "run-2");
+        ExecutorService submitExecutor = Executors.newSingleThreadExecutor();
+        try {
+            Future<String> future = submitExecutor.submit(() -> engine().submit("demo", stages, "run-2"));
 
-        assertThat(order.get(0)).isEqualTo("fast"); // fast finishes first despite being submitted alongside slow
+            assertThat(bothStarted.await(5, TimeUnit.SECONDS)).isTrue();
+            releaseGate.countDown();
+            String workflowId = future.get(5, TimeUnit.SECONDS);
+
+            assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
+                    .isEqualTo(WorkflowStatus.COMPLETED);
+        } finally {
+            submitExecutor.shutdown();
+        }
+    }
+
+    private static void await(CountDownLatch latch) {
+        try {
+            latch.await(5, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 }

@@ -41,12 +41,57 @@ class WorkflowControllerContractTest {
         ResponseEntity<Map> stateResp = rest.getForEntity(url("/workflows/" + workflowId), Map.class);
         assertThat(stateResp.getStatusCode().value()).isEqualTo(200);
         assertThat(stateResp.getBody().get("status")).isEqualTo("COMPLETED");
+        // Round-6 correction (Codex REQUEST AMENDMENTS item 3): openapi.yaml's
+        // WorkflowStateResponse requires correlationId, planVersion, and decisionLineage.
+        assertThat(stateResp.getBody().get("correlationId")).isEqualTo("contract-test");
+        assertThat(stateResp.getBody().get("planVersion")).isEqualTo(1);
+        assertThat(stateResp.getBody()).containsKey("decisionLineage");
         List<?> steps = (List<?>) stateResp.getBody().get("steps");
         assertThat(steps).hasSize(1);
+        Map<String, Object> onlyStep = (Map<String, Object>) steps.get(0);
+        assertThat(onlyStep).containsKeys("inputs", "outputs");
+        assertThat((Map<String, Object>) onlyStep.get("outputs")).containsEntry("ok", true);
 
         ResponseEntity<List> auditResp = rest.getForEntity(url("/workflows/" + workflowId + "/audit"), List.class);
         assertThat(auditResp.getStatusCode().value()).isEqualTo(200);
         assertThat(auditResp.getBody()).isNotEmpty();
+        Map<String, Object> firstEvent = (Map<String, Object>) auditResp.getBody().get(0);
+        assertThat(firstEvent.get("workflowId")).isEqualTo(workflowId);
+        assertThat(firstEvent).containsKeys("actorType", "actorId", "action", "timestamp", "result");
+    }
+
+    @Test
+    void unknownWorkflowIdReturns404OnStateAndAuditEndpoints() {
+        ResponseEntity<Map> stateResp = rest.getForEntity(url("/workflows/does-not-exist"), Map.class);
+        assertThat(stateResp.getStatusCode().value()).isEqualTo(404);
+
+        ResponseEntity<Map> auditResp = rest.getForEntity(url("/workflows/does-not-exist/audit"), Map.class);
+        assertThat(auditResp.getStatusCode().value()).isEqualTo(404);
+    }
+
+    @Test
+    void invalidApprovalDecisionReturns400() {
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("risky", List.of(), ctx -> Map.of(), true, false, 0, 30, null, null, null));
+        String workflowId = engine.submit("demo", stages, "contract-test-3");
+
+        ResponseEntity<Map> resp = rest.postForEntity(
+                url("/workflows/" + workflowId + "/approvals/risky"),
+                Map.of("decision", "maybe", "actor", "human", "reason", "unsure"),
+                Map.class);
+        assertThat(resp.getStatusCode().value()).isEqualTo(400);
+    }
+
+    @Test
+    void approvalOnAStepWithNoPendingGateReturns404() {
+        List<StageDefinition> stages = List.of(StageDefinition.of("plain", List.of(), ctx -> Map.of()));
+        String workflowId = engine.submit("demo", stages, "contract-test-4");
+
+        ResponseEntity<Map> resp = rest.postForEntity(
+                url("/workflows/" + workflowId + "/approvals/plain"),
+                Map.of("decision", "approved", "actor", "human", "reason", "n/a"),
+                Map.class);
+        assertThat(resp.getStatusCode().value()).isEqualTo(404);
     }
 
     @Test
@@ -66,7 +111,9 @@ class WorkflowControllerContractTest {
                 url("/workflows/" + workflowId + "/approvals/risky"),
                 Map.of("decision", "approved", "actor", "human", "reason", "looks safe"),
                 Void.class);
-        assertThat(approveResp.getStatusCode().value()).isEqualTo(200);
+        // Round-6 correction (Codex REQUEST AMENDMENTS item 3): openapi.yaml specifies 204 for a
+        // valid approval, not the framework's implicit 200.
+        assertThat(approveResp.getStatusCode().value()).isEqualTo(204);
 
         ResponseEntity<Map> afterResp = rest.getForEntity(url("/workflows/" + workflowId), Map.class);
         assertThat(afterResp.getBody().get("status")).isEqualTo("COMPLETED");

@@ -1,10 +1,17 @@
 package com.schwab.urlshortener.observability;
 
+import com.schwab.urlshortener.api.dto.ErrorResponse;
 import com.schwab.urlshortener.observability.dto.*;
+import com.schwab.urlshortener.orchestration.InvalidApprovalDecisionException;
+import com.schwab.urlshortener.orchestration.NoPendingApprovalException;
 import com.schwab.urlshortener.orchestration.WorkflowEngine;
 import com.schwab.urlshortener.orchestration.persistence.*;
+import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -34,27 +41,69 @@ public class WorkflowController {
     public WorkflowStateResponse getWorkflow(@PathVariable("id") String id) {
         WorkflowInstanceEntity instance = instanceRepository.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "workflow_not_found"));
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> contextArtifacts =
+                (Map<String, Object>) instance.getContextJson().getOrDefault("artifacts", Map.of());
+
         // Corrected 2026-09-13: repository method is plan-version-scoped since Task 21
         // (findByWorkflowIdAndPlanVersionOrderBySequence), not the bare findByWorkflowIdOrderBySequence
         // this brief originally showed.
         List<WorkflowStateResponse.StepView> steps = stepRepository
                 .findByWorkflowIdAndPlanVersionOrderBySequence(id, instance.getPlanVersion()).stream()
-                .map(s -> new WorkflowStateResponse.StepView(
-                        s.getName(), s.getStatus(), s.getStartedAt(), s.getEndedAt(), s.getRetryCount()))
+                .map(s -> {
+                    Map<String, Object> inputs = new LinkedHashMap<>();
+                    inputs.put("dependsOn", s.getDependsOn());
+                    inputs.put("contextArtifactsAtReadTime", contextArtifacts);
+                    return new WorkflowStateResponse.StepView(
+                            s.getName(), s.getStatus(), s.getStartedAt(), s.getEndedAt(), s.getRetryCount(),
+                            inputs, s.getResult());
+                })
                 .toList();
-        return new WorkflowStateResponse(instance.getId(), instance.getStatus(), steps);
+
+        List<WorkflowStateResponse.DecisionLineageEntry> decisionLineage = decisionLineage(instance);
+
+        return new WorkflowStateResponse(instance.getId(), instance.getStatus(), instance.getCorrelationId(),
+                instance.getPlanVersion(), decisionLineage, steps);
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<WorkflowStateResponse.DecisionLineageEntry> decisionLineage(WorkflowInstanceEntity instance) {
+        List<Map<String, Object>> decisions =
+                (List<Map<String, Object>>) instance.getContextJson().getOrDefault("decisions", List.of());
+        return decisions.stream()
+                .map(d -> new WorkflowStateResponse.DecisionLineageEntry(
+                        (String) d.get("actor"),
+                        (String) d.get("decision"),
+                        (String) d.get("rationale"),
+                        d.get("timestamp") != null ? Instant.parse((String) d.get("timestamp")) : null))
+                .toList();
     }
 
     @GetMapping("/{id}/audit")
     public List<AuditEventResponse> getAudit(@PathVariable("id") String id) {
+        instanceRepository.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "workflow_not_found"));
         return eventRepository.findByWorkflowIdOrderById(id).stream()
-                .map(e -> new AuditEventResponse(e.getActorType(), e.getAction(), e.getTimestamp(), e.getResult(), e.getReason()))
+                .map(e -> new AuditEventResponse(e.getWorkflowId(), e.getActorType(), e.getActorId(), e.getAction(),
+                        e.getTimestamp(), e.getAffectedArtifact(), e.getPayload(), e.getResult(), e.getReason()))
                 .toList();
     }
 
     @PostMapping("/{id}/approvals/{step}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
     public void approve(@PathVariable("id") String id, @PathVariable("step") String step,
                          @RequestBody ApprovalRequest request) {
         engine.approve(id, step, request.decision(), request.actor(), request.reason());
+    }
+
+    @ExceptionHandler(InvalidApprovalDecisionException.class)
+    public ResponseEntity<ErrorResponse> handleInvalidDecision(InvalidApprovalDecisionException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ErrorResponse.of(ex.getMessage()));
+    }
+
+    @ExceptionHandler(NoPendingApprovalException.class)
+    public ResponseEntity<ErrorResponse> handleNoPendingApproval(NoPendingApprovalException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ErrorResponse.of(ex.getMessage()));
     }
 }

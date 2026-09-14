@@ -37,7 +37,7 @@ class WorkflowEngineApprovalTest {
         List<String> executed = new CopyOnWriteArrayList<>();
         StageHandler risky = ctx -> { executed.add("risky"); return Map.of(); };
         List<StageDefinition> stages = List.of(
-                new StageDefinition("risky", List.of(), risky, true, false, 0, 30, null));
+                new StageDefinition("risky", List.of(), risky, true, false, 0, 30, null, null, null));
 
         WorkflowEngine engine = engine();
         String workflowId = engine.submit("demo", stages, "run-3");
@@ -58,7 +58,7 @@ class WorkflowEngineApprovalTest {
         List<String> executed = new CopyOnWriteArrayList<>();
         StageHandler risky = ctx -> { executed.add("risky"); return Map.of(); };
         List<StageDefinition> stages = List.of(
-                new StageDefinition("risky", List.of(), risky, true, false, 0, 30, null));
+                new StageDefinition("risky", List.of(), risky, true, false, 0, 30, null, null, null));
 
         WorkflowEngine engine = engine();
         String workflowId = engine.submit("demo", stages, "run-4");
@@ -75,7 +75,7 @@ class WorkflowEngineApprovalTest {
         StageHandler design = ctx -> { executed.add("design"); return Map.of(); };
         StageHandler after = ctx -> { executed.add("after"); return Map.of(); };
         List<StageDefinition> stages = List.of(
-                new StageDefinition("design", List.of(), design, false, true, 0, 30, null),
+                new StageDefinition("design", List.of(), design, false, true, 0, 30, null, null, null),
                 StageDefinition.of("after", List.of("design"), after));
 
         WorkflowEngine engine = engine();

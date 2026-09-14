@@ -18,8 +18,8 @@ class DependencyGraphTest {
         List<StageDefinition> stages = List.of(
                 StageDefinition.of("requirement", List.of(), DependencyGraphTest::noop),
                 StageDefinition.of("design", List.of("requirement"), DependencyGraphTest::noop),
-                new StageDefinition("security_scan", List.of("design"), DependencyGraphTest::noop, false, false, 0, 30, "review"),
-                new StageDefinition("doc_draft", List.of("design"), DependencyGraphTest::noop, false, false, 0, 30, "review"),
+                new StageDefinition("security_scan", List.of("design"), DependencyGraphTest::noop, false, false, 0, 30, "review", null, null),
+                new StageDefinition("doc_draft", List.of("design"), DependencyGraphTest::noop, false, false, 0, 30, "review", null, null),
                 StageDefinition.of("release_readiness", List.of("security_scan", "doc_draft"), DependencyGraphTest::noop)
         );
         DependencyGraph graph = new DependencyGraph(stages);

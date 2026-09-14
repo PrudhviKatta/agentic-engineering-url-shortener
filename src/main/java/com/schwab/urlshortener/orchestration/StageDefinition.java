@@ -10,9 +10,11 @@ public record StageDefinition(
         boolean exitApproval,
         int maxRetries,
         int timeoutSeconds,
-        String parallelGroup
+        String parallelGroup,
+        String activationConditionKey,
+        String fallbackHandlerKey
 ) {
     public static StageDefinition of(String name, List<String> dependsOn, StageHandler handler) {
-        return new StageDefinition(name, dependsOn, handler, false, false, 0, 30, null);
+        return new StageDefinition(name, dependsOn, handler, false, false, 0, 30, null, null, null);
     }
 }

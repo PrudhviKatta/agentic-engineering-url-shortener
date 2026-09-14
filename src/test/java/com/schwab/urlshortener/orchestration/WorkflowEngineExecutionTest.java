@@ -54,8 +54,8 @@ class WorkflowEngineExecutionTest {
         };
         StageHandler fast = ctx -> { order.add("fast"); return Map.of(); };
         List<StageDefinition> stages = List.of(
-                new StageDefinition("slow", List.of(), slow, false, false, 0, 30, "g"),
-                new StageDefinition("fast", List.of(), fast, false, false, 0, 30, "g")
+                new StageDefinition("slow", List.of(), slow, false, false, 0, 30, "g", null, null),
+                new StageDefinition("fast", List.of(), fast, false, false, 0, 30, "g", null, null)
         );
 
         engine().submit("demo", stages, "run-2");

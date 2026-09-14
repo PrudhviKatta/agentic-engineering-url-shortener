@@ -49,6 +49,14 @@ public class WorkflowStepEntity {
     @Column(name = "plan_version")
     private int planVersion = 1;
 
+    // Task 49: stable string keys into StageCatalog for restart-safe lookup of the activation
+    // condition and fallback handler configured for this step (nullable — most steps use neither).
+    @Column(name = "activation_condition_key")
+    private String activationConditionKey;
+
+    @Column(name = "fallback_handler_key")
+    private String fallbackHandlerKey;
+
     public Long getId() { return id; }
     public String getWorkflowId() { return workflowId; }
     public void setWorkflowId(String workflowId) { this.workflowId = workflowId; }
@@ -70,4 +78,8 @@ public class WorkflowStepEntity {
     public void setResult(Map<String, Object> result) { this.result = result; }
     public int getPlanVersion() { return planVersion; }
     public void setPlanVersion(int planVersion) { this.planVersion = planVersion; }
+    public String getActivationConditionKey() { return activationConditionKey; }
+    public void setActivationConditionKey(String activationConditionKey) { this.activationConditionKey = activationConditionKey; }
+    public String getFallbackHandlerKey() { return fallbackHandlerKey; }
+    public void setFallbackHandlerKey(String fallbackHandlerKey) { this.fallbackHandlerKey = fallbackHandlerKey; }
 }

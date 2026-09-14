@@ -6,6 +6,7 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class CompensationRegistryTest {
 
@@ -25,5 +26,19 @@ class CompensationRegistryTest {
     void unregisteredStageReturnsFalseWithoutError() {
         CompensationRegistry registry = new CompensationRegistry();
         assertThat(registry.run("unregistered_stage", Map.of())).isFalse();
+    }
+
+    @Test
+    void aFailingCompensationPropagatesRatherThanBeingSwallowed() {
+        // ADR-009: a failed compensation must fall through to the same safe-stop path an
+        // exhausted retry uses -- no third, divergent failure path. This locks in that run()
+        // never catches an exception thrown by the registered function, so a future edit can't
+        // silently add a swallow-and-continue without breaking this test.
+        CompensationRegistry registry = new CompensationRegistry();
+        registry.register("notify_customer", result -> { throw new IllegalStateException("compensation itself failed"); });
+
+        assertThatThrownBy(() -> registry.run("notify_customer", Map.of()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("compensation itself failed");
     }
 }

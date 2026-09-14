@@ -137,7 +137,10 @@ public class WorkflowEngine {
 
         instance.setStatus(WorkflowStatus.COMPLETED);
         instanceRepository.save(instance);
-        recordEvent(workflowId, "engine", "workflow-engine", "workflow_completed", null, "OK", null);
+        // actorType "orchestrator" (not "engine"): openapi.yaml's AuditEventResponse.actorType
+        // enum is {agent, human, orchestrator} — the engine completing a workflow on its own
+        // initiative is exactly the "orchestrator" case.
+        recordEvent(workflowId, "orchestrator", "workflow-engine", "workflow_completed", null, "OK", null);
     }
 
     private void runBatch(String workflowId, int planVersion, List<StageDefinition> pending, WorkflowContext ctx) {

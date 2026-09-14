@@ -1,6 +1,7 @@
 package com.schwab.urlshortener.orchestration;
 
 import com.schwab.urlshortener.orchestration.persistence.*;
+import com.schwab.urlshortener.policy.PolicyEngine;
 import com.schwab.urlshortener.reliability.CompensationRegistry;
 import com.schwab.urlshortener.reliability.PermanentStageException;
 import com.schwab.urlshortener.reliability.TransientStageException;
@@ -123,6 +124,67 @@ class WorkflowEngineReliabilityIntegrationTest {
         assertThat(step.getResult()).isEqualTo(Map.of("ok", true));
 
         WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.COMPLETED);
+    }
+
+    @Test
+    void policyEnforcementRunsIdenticallyAfterASuccessfulRetry() {
+        // Review finding: untested interaction — a stage that succeeds on a RETRY attempt (not
+        // the first) must still go through policy enforcement exactly as a first-attempt success
+        // would, not skip it or treat the recovered attempt specially.
+        AtomicInteger attempts = new AtomicInteger(0);
+        StageHandler eventuallyPasses = ctx -> {
+            if (attempts.incrementAndGet() < 2) throw new TransientStageException("simulated");
+            ctx.addArtifact("urlSchemeAllowlistEnforced", true);
+            ctx.addArtifact("ssrfGuardEnforced", true);
+            return Map.of();
+        };
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("implementation", List.of(), eventuallyPasses, false, false, 2, 5, null, null, null));
+        PolicyEngine policyEngine = new PolicyEngine("policies/v1.yaml");
+        WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository,
+                transactionManager, policyEvaluationRepository, policyEngine, policyExceptionRepository, new CompensationRegistry());
+
+        String workflowId = engine.submit("demo", stages, "run-33e");
+
+        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "implementation").orElseThrow();
+        assertThat(step.getStatus()).isEqualTo(StepStatus.SUCCEEDED);
+        assertThat(step.getRetryCount()).isEqualTo(1);
+
+        List<PolicyEvaluationEntity> evaluations = policyEvaluationRepository.findAll().stream()
+                .filter(e -> workflowId.equals(e.getWorkflowId()))
+                .toList();
+        assertThat(evaluations).isNotEmpty(); // the policy block genuinely ran, not bypassed
+
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.COMPLETED);
+    }
+
+    @Test
+    void exitGatedStageThatGetsCompensatedStillRequiresApproval() {
+        // Review finding: COMPENSATED didn't exist as a step status before this task, and the
+        // exit-gate scan's readyForGate check didn't originally account for it — an exit-gated
+        // stage that exhausted retries and got compensated silently bypassed its own approval
+        // gate. This proves the fix: the workflow halts for approval exactly as it would for a
+        // clean SUCCEEDED exit-gated stage.
+        StageHandler alwaysFails = ctx -> { throw new TransientStageException("simulated"); };
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("flaky", List.of(), alwaysFails, false, true, 1, 5, null, null, null));
+
+        CompensationRegistry registry = new CompensationRegistry();
+        registry.register("flaky", result -> { });
+
+        WorkflowEngine engine = engineWithCompensation(registry);
+        String workflowId = engine.submit("demo", stages, "run-33f");
+
+        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "flaky").orElseThrow();
+        assertThat(step.getStatus()).isEqualTo(StepStatus.WAITING_APPROVAL); // gated, not silently skipped
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.PENDING_APPROVAL);
+
+        engine.approve(workflowId, "flaky", "approved", "human", "reviewed the compensation");
+
+        instance = instanceRepository.findById(workflowId).orElseThrow();
         assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.COMPLETED);
     }
 }

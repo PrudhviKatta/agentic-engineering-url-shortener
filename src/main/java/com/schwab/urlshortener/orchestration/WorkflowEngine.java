@@ -213,7 +213,15 @@ public class WorkflowEngine {
                 if (!stage.exitApproval()) continue;
                 WorkflowStepEntity step = requireStep(workflowId, planVersion, stage.name());
                 StepStatus status = step.getStatus();
-                boolean readyForGate = status == StepStatus.SUCCEEDED || status == StepStatus.WAITING_APPROVAL;
+                // Task 33 correction (independent-review finding): COMPENSATED is a real terminal
+                // outcome a stage can now reach (retries exhausted, a registered compensation ran)
+                // that didn't exist before this task. It satisfied neither SUCCEEDED nor
+                // WAITING_APPROVAL, so an exit-gated stage that ended COMPENSATED silently bypassed
+                // its own human-approval gate entirely — dependents proceeded without the review the
+                // stage's config demands. Arguably a compensated failure needs that review MORE than
+                // a clean success does (the original outcome never happened; only a fallback ran).
+                boolean readyForGate = status == StepStatus.SUCCEEDED || status == StepStatus.COMPENSATED
+                        || status == StepStatus.WAITING_APPROVAL;
                 // Round-6b correction (independent-review finding): gate on "has ANY decision yet"
                 // (approved OR rejected), not "has an approved decision" alone. A rejected exit
                 // gate leaves its step SUCCEEDED (same status a normal completion leaves it in) —
@@ -381,6 +389,14 @@ public class WorkflowEngine {
             }
             recordEvent(workflowId, "human", actor, "approval_" + decision + ":" + stepName, stepName, "OK", reason);
 
+            // Disclosed, not fixed (Task 33 follow-on): an exit-gated step approved here always
+            // lands on SUCCEEDED, even if it actually reached this gate via COMPENSATED (Task 33)
+            // rather than a clean handler success — the approval event and the
+            // "compensation_ran:" audit event both still exist, but the step's own terminal
+            // `status` column no longer distinguishes "succeeded outright" from "recovered via
+            // compensation, then approved." Preserving that distinction through approval would
+            // need a new terminal status (e.g. an "APPROVED_AFTER_COMPENSATION" marker) — out of
+            // scope for the gate-bypass fix this task made; noted for whoever revisits this.
             boolean rejected = "rejected".equals(decision);
             if (rejected) {
                 step.setStatus(stage.entryApproval() ? StepStatus.FAILED : StepStatus.SUCCEEDED);

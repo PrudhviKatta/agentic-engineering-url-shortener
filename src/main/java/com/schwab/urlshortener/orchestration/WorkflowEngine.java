@@ -24,12 +24,14 @@ public class WorkflowEngine {
     private final WorkflowEventJpaRepository eventRepository;
     private final ApprovalJpaRepository approvalRepository;
     private final TransactionTemplate transactionTemplate;
-    // Task 28: both nullable — policy enforcement is opt-in via the 7-arg constructor below. The
-    // shared @Component bean (used by ScenarioRunner/WorkflowController today) still resolves via
-    // the 5-arg constructor with both null, since no PolicyEngine is registered as a Spring bean
-    // yet — wiring a real policy-aware production instance is a later task's job, not this one's.
+    // Task 28/29: all three nullable — policy enforcement (and exceptions to it) are opt-in via
+    // the overloaded constructors below. The shared @Component bean (used by
+    // ScenarioRunner/WorkflowController today) still resolves via the 5-arg constructor with all
+    // three null, since no PolicyEngine is registered as a Spring bean yet — wiring a real
+    // policy-aware production instance remains a later task's job, not this one's.
     private final PolicyEvaluationJpaRepository policyEvaluationRepository;
     private final PolicyEngine policyEngine;
+    private final PolicyExceptionJpaRepository policyExceptionRepository;
 
     @Autowired
     public WorkflowEngine(WorkflowInstanceJpaRepository instanceRepository,
@@ -38,7 +40,22 @@ public class WorkflowEngine {
                            ApprovalJpaRepository approvalRepository,
                            PlatformTransactionManager transactionManager) {
         this(instanceRepository, stepRepository, eventRepository, approvalRepository,
-                transactionManager, null, null);
+                transactionManager, null, null, null);
+    }
+
+    // Task 28's constructor shape, preserved unchanged so WorkflowEnginePolicyEnforcementTest
+    // keeps compiling and passing exactly as written — policyExceptionRepository defaults to null
+    // (matches hasApprovedUnexpiredException's Task-28-era always-false behavior for any caller
+    // that doesn't also opt into Task 29's exception repository).
+    public WorkflowEngine(WorkflowInstanceJpaRepository instanceRepository,
+                           WorkflowStepJpaRepository stepRepository,
+                           WorkflowEventJpaRepository eventRepository,
+                           ApprovalJpaRepository approvalRepository,
+                           PlatformTransactionManager transactionManager,
+                           PolicyEvaluationJpaRepository policyEvaluationRepository,
+                           PolicyEngine policyEngine) {
+        this(instanceRepository, stepRepository, eventRepository, approvalRepository,
+                transactionManager, policyEvaluationRepository, policyEngine, null);
     }
 
     public WorkflowEngine(WorkflowInstanceJpaRepository instanceRepository,
@@ -47,7 +64,8 @@ public class WorkflowEngine {
                            ApprovalJpaRepository approvalRepository,
                            PlatformTransactionManager transactionManager,
                            PolicyEvaluationJpaRepository policyEvaluationRepository,
-                           PolicyEngine policyEngine) {
+                           PolicyEngine policyEngine,
+                           PolicyExceptionJpaRepository policyExceptionRepository) {
         this.instanceRepository = instanceRepository;
         this.stepRepository = stepRepository;
         this.eventRepository = eventRepository;
@@ -55,6 +73,7 @@ public class WorkflowEngine {
         this.transactionTemplate = new TransactionTemplate(transactionManager);
         this.policyEvaluationRepository = policyEvaluationRepository;
         this.policyEngine = policyEngine;
+        this.policyExceptionRepository = policyExceptionRepository;
     }
 
     public String submit(String feature, List<StageDefinition> stages, String correlationId) {
@@ -389,8 +408,7 @@ public class WorkflowEngine {
                 evaluation.setReason(pr.reason());
                 policyEvaluationRepository.save(evaluation);
                 // A mandatory FAIL only blocks if no approved, unexpired exception covers this
-                // policy. Task 29 introduces the exceptions table and workflow; until then this
-                // check is a no-op (always blocks) — see hasApprovedUnexpiredException below.
+                // policy — see hasApprovedUnexpiredException below.
                 if (pr.mandatory() && pr.outcome() == PolicyOutcome.FAIL
                         && !hasApprovedUnexpiredException(workflowId, pr.policyId())) {
                     mandatoryFail = true;
@@ -412,10 +430,59 @@ public class WorkflowEngine {
         recordEvent(workflowId, "agent", stage.name(), "stage_succeeded:" + stage.name(), stage.name(), "OK", null);
     }
 
-    // Task 28 placeholder: no policy-exception repository exists yet, so every mandatory FAIL
-    // blocks unconditionally. Task 29 replaces this body once policy_exceptions is wired in.
+    // Task 29: a mandatory FAIL is excused only by an exception that is BOTH recorded for this
+    // exact (workflowId, policyId) pair AND not yet expired — a granted-but-expired exception
+    // never silently resurrects (REQ-013-adjacent: approval is never inferred from something that
+    // has lapsed). When no PolicyExceptionJpaRepository is configured (any caller still using the
+    // Task 28-era 5/7-arg constructors), this stays the original always-false placeholder.
     private boolean hasApprovedUnexpiredException(String workflowId, String policyId) {
-        return false;
+        if (policyExceptionRepository == null) return false;
+        return policyExceptionRepository.findByWorkflowIdAndPolicyId(workflowId, policyId).stream()
+                .anyMatch(exc -> exc.getExpiry().isAfter(Instant.now()));
+    }
+
+    // Task 29: records a human-approved, time-bounded deviation from a mandatory policy. Does NOT
+    // itself resume a safe-stopped workflow — callers combine this with retrySafeStopped(...) (or
+    // grant it ahead of time, before the stage that would otherwise fail ever runs).
+    public void grantPolicyException(String workflowId, String policyId, String reason, String scope,
+                                      String approvingAuthority, String compensatingControl, Instant expiry) {
+        PolicyExceptionEntity exception = new PolicyExceptionEntity();
+        exception.setWorkflowId(workflowId);
+        exception.setPolicyId(policyId);
+        exception.setReason(reason);
+        exception.setScope(scope);
+        exception.setApprovingAuthority(approvingAuthority);
+        exception.setCompensatingControl(compensatingControl);
+        exception.setApprovedAt(Instant.now());
+        exception.setExpiry(expiry);
+        policyExceptionRepository.save(exception);
+        recordEvent(workflowId, "human", approvingAuthority, "policy_exception_granted:" + policyId,
+                policyId, "OK", reason);
+    }
+
+    // Task 29: resets every SAFE_STOPPED step in the workflow's CURRENT plan version back to
+    // PENDING and resumes runFrom() — no policy-recomputation logic is duplicated here. The
+    // stage's handler already ran once (during the safe-stopped attempt) and will simply run
+    // again; hasApprovedUnexpiredException now sees the just-granted exception, so the same
+    // mandatory FAIL no longer blocks. If a DIFFERENT mandatory policy still fails with no
+    // exception, the stage safe-stops again — same as any first attempt. Deliberately permissive
+    // (no "workflow must actually be SAFE_STOPPED" guard): if no step is SAFE_STOPPED, the loop is
+    // a no-op and runFrom's own tail is idempotent (re-derives COMPLETED from persisted status if
+    // everything already succeeded), so calling this on a non-safe-stopped workflow is harmless
+    // rather than needing its own error path.
+    public void retrySafeStopped(String workflowId) {
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        int planVersion = instance.getPlanVersion();
+        List<WorkflowStepEntity> steps = stepRepository.findByWorkflowIdAndPlanVersionOrderBySequence(workflowId, planVersion);
+        for (WorkflowStepEntity step : steps) {
+            if (step.getStatus() == StepStatus.SAFE_STOPPED) {
+                step.setStatus(StepStatus.PENDING);
+                stepRepository.save(step);
+            }
+        }
+        instance.setStatus(WorkflowStatus.RUNNING);
+        instanceRepository.save(instance);
+        runFrom(workflowId);
     }
 
     private void recordEvent(String workflowId, String actorType, String actorId, String action,

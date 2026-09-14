@@ -1,0 +1,26 @@
+version: "1.0.0"
+policies:
+  - id: SEC-001
+    domain: security
+    stage: implementation
+    mandatory: true
+    description: "URL scheme allow-list must be enforced before redirect resolution ships"
+    check_key: urlSchemeAllowlistEnforced
+  - id: SEC-002
+    domain: security
+    stage: implementation
+    mandatory: true
+    description: "SSRF guard (private/loopback/link-local target blocking) must be enforced"
+    check_key: ssrfGuardEnforced
+  - id: COMP-001
+    domain: compliance
+    stage: release_readiness
+    mandatory: true
+    description: "Audit trail must exist for the full workflow before release"
+    check_key: auditTrailPresent
+  - id: LIC-001
+    domain: licensing
+    stage: implementation
+    mandatory: false
+    description: "All third-party dependencies use OSI-approved licenses"
+    check_key: dependencyLicensesReviewed

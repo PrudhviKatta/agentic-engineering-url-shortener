@@ -4,7 +4,10 @@ import com.schwab.urlshortener.orchestration.persistence.*;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 @Component
 public class WorkflowEngine {
@@ -15,15 +18,18 @@ public class WorkflowEngine {
     private final WorkflowStepJpaRepository stepRepository;
     private final WorkflowEventJpaRepository eventRepository;
     private final ApprovalJpaRepository approvalRepository;
+    private final TransactionTemplate transactionTemplate;
 
     public WorkflowEngine(WorkflowInstanceJpaRepository instanceRepository,
                            WorkflowStepJpaRepository stepRepository,
                            WorkflowEventJpaRepository eventRepository,
-                           ApprovalJpaRepository approvalRepository) {
+                           ApprovalJpaRepository approvalRepository,
+                           PlatformTransactionManager transactionManager) {
         this.instanceRepository = instanceRepository;
         this.stepRepository = stepRepository;
         this.eventRepository = eventRepository;
         this.approvalRepository = approvalRepository;
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
     public String submit(String feature, List<StageDefinition> stages, String correlationId) {
@@ -91,7 +97,14 @@ public class WorkflowEngine {
             }
 
             if (!pending.isEmpty()) {
-                runBatch(workflowId, planVersion, pending, ctx);
+                // Round-6c correction: freeze the artifacts map as it stood at the START of this
+                // batch (before any handler in it runs) and persist THIS snapshot on every step in
+                // the batch — not the workflow's current/final artifact map re-read later. Handlers
+                // in the same batch run concurrently and may mutate ctx.artifacts() as they go, so
+                // capturing once, up front, is what makes "inputs available when the stage began"
+                // well-defined instead of a race against siblings.
+                Map<String, Object> batchStartArtifacts = Map.copyOf(ctx.artifacts());
+                runBatch(workflowId, planVersion, pending, ctx, batchStartArtifacts);
 
                 instance.setContextJson(Map.of("decisions", ctx.decisions(), "artifacts", ctx.artifacts()));
                 instanceRepository.save(instance);
@@ -143,12 +156,13 @@ public class WorkflowEngine {
         recordEvent(workflowId, "orchestrator", "workflow-engine", "workflow_completed", null, "OK", null);
     }
 
-    private void runBatch(String workflowId, int planVersion, List<StageDefinition> pending, WorkflowContext ctx) {
+    private void runBatch(String workflowId, int planVersion, List<StageDefinition> pending, WorkflowContext ctx,
+                           Map<String, Object> inputsSnapshot) {
         ExecutorService pool = Executors.newFixedThreadPool(Math.max(1, pending.size()));
         try {
             List<Future<?>> futures = new ArrayList<>();
             for (StageDefinition stage : pending) {
-                futures.add(pool.submit(() -> runStage(workflowId, planVersion, stage, ctx)));
+                futures.add(pool.submit(() -> runStage(workflowId, planVersion, stage, ctx, inputsSnapshot)));
             }
             for (Future<?> future : futures) {
                 future.get();
@@ -171,73 +185,100 @@ public class WorkflowEngine {
             throw new InvalidApprovalDecisionException(
                     "decision must be 'approved' or 'rejected', got: " + decision);
         }
-
-        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId)
-                .orElseThrow(() -> new NoPendingApprovalException("unknown workflow: " + workflowId));
-
-        // Round-6b correction (independent-review finding): a terminal workflow accepts no further
-        // decisions. Without this, approving a DIFFERENT sibling in the same exit-gated batch after
-        // one sibling was already rejected (which sets the workflow FAILED) would call runFrom()
-        // again, which resurrects the instance from FAILED back to RUNNING and re-derives the exit
-        // gate from step status alone — silently re-opening and letting a second decision overturn
-        // the original rejection.
-        if (instance.getStatus() == WorkflowStatus.FAILED || instance.getStatus() == WorkflowStatus.COMPLETED) {
-            throw new NoPendingApprovalException(
-                    "workflow " + workflowId + " is already terminal (" + instance.getStatus() + ")");
+        // Round-6c correction: actor/reason are REQ-013's "recorded with rationale" and
+        // data-model.md's decided_by fields — required for any row this engine actually inserts
+        // (see ApprovalEntity's Round-6c note: nullable at the schema level only to allow a future
+        // pending-row-before-decision pattern this engine doesn't use).
+        if (actor == null || actor.isBlank()) {
+            throw new InvalidApprovalDecisionException("actor must be present and non-blank");
         }
-        int planVersion = instance.getPlanVersion();
-
-        StageRegistration registration = registry.get(workflowId);
-        StageDefinition stage = registration == null ? null : registration.stages().stream()
-                .filter(s -> s.name().equals(stepName)).findFirst().orElse(null);
-        if (stage == null) {
-            throw new NoPendingApprovalException("unknown step: " + stepName);
-        }
-        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, planVersion, stepName)
-                .orElseThrow(() -> new NoPendingApprovalException("unknown step: " + stepName));
-
-        // Reject premature (step never reached its gate), duplicate (step already decided), and
-        // non-gate (stage has neither entryApproval nor exitApproval) approval attempts alike: a
-        // step only ever carries WAITING_APPROVAL while a gate genuinely awaits a decision on it.
-        if (step.getStatus() != StepStatus.WAITING_APPROVAL) {
-            throw new NoPendingApprovalException(
-                    "no approval currently pending on step " + stepName + " (status: " + step.getStatus() + ")");
+        if (reason == null || reason.isBlank()) {
+            throw new InvalidApprovalDecisionException("reason must be present and non-blank");
         }
 
-        ApprovalEntity approval = new ApprovalEntity();
-        approval.setWorkflowId(workflowId);
-        approval.setPlanVersion(planVersion);
-        approval.setStepInstanceId(step.getId());
-        approval.setStepName(stepName);
-        approval.setDecidedAt(Instant.now());
-        approval.setDecision(decision);
-        approval.setDecidedBy(actor);
-        approval.setReason(reason);
-        approvalRepository.save(approval);
-        recordEvent(workflowId, "human", actor, "approval_" + decision + ":" + stepName, stepName, "OK", reason);
+        // Round-6c correction (item 1, atomic/one-shot decision recording): the read-check-write
+        // sequence that decides whether THIS call wins the gate runs inside one transaction, with
+        // the target step's row pessimistically locked, so two concurrent approve() calls on the
+        // SAME step instance are fully serialized — the loser re-reads the step under lock only
+        // after the winner has committed, sees the already-decided status, and is rejected exactly
+        // like any other "no pending gate" case. The step_instance_id unique constraint on
+        // ApprovalEntity is a second, independent backstop against a duplicate insert.
+        DecisionOutcome outcome = recordDecisionAtomically(workflowId, stepName, decision, actor, reason);
+        if (!outcome.rejected()) {
+            runFrom(workflowId);
+        }
+    }
 
-        if ("rejected".equals(decision)) {
-            if (stage.entryApproval()) {
-                step.setStatus(StepStatus.FAILED);
+    private DecisionOutcome recordDecisionAtomically(String workflowId, String stepName, String decision,
+                                                       String actor, String reason) {
+        return transactionTemplate.execute(status -> {
+            WorkflowInstanceEntity instance = instanceRepository.findById(workflowId)
+                    .orElseThrow(() -> new NoPendingApprovalException("unknown workflow: " + workflowId));
+
+            // Round-6b correction (independent-review finding): a terminal workflow accepts no
+            // further decisions — see the original note preserved from that round below.
+            if (instance.getStatus() == WorkflowStatus.FAILED || instance.getStatus() == WorkflowStatus.COMPLETED) {
+                throw new NoPendingApprovalException(
+                        "workflow " + workflowId + " is already terminal (" + instance.getStatus() + ")");
+            }
+            int planVersion = instance.getPlanVersion();
+
+            StageRegistration registration = registry.get(workflowId);
+            StageDefinition stage = registration == null ? null : registration.stages().stream()
+                    .filter(s -> s.name().equals(stepName)).findFirst().orElse(null);
+            if (stage == null) {
+                throw new NoPendingApprovalException("unknown step: " + stepName);
+            }
+
+            // Pessimistic row lock (SELECT ... FOR UPDATE): a concurrent approve() call targeting
+            // this same step blocks here until this transaction commits or rolls back, then re-reads
+            // the now-committed status — never a stale, pre-decision read.
+            WorkflowStepEntity step = stepRepository
+                    .findWithLockByWorkflowIdAndPlanVersionAndName(workflowId, planVersion, stepName)
+                    .orElseThrow(() -> new NoPendingApprovalException("unknown step: " + stepName));
+
+            // Reject premature (step never reached its gate), duplicate (step already decided), and
+            // non-gate (stage has neither entryApproval nor exitApproval) approval attempts alike: a
+            // step only ever carries WAITING_APPROVAL while a gate genuinely awaits a decision on it.
+            if (step.getStatus() != StepStatus.WAITING_APPROVAL) {
+                throw new NoPendingApprovalException(
+                        "no approval currently pending on step " + stepName + " (status: " + step.getStatus() + ")");
+            }
+
+            ApprovalEntity approval = new ApprovalEntity();
+            approval.setWorkflowId(workflowId);
+            approval.setPlanVersion(planVersion);
+            approval.setStepInstanceId(step.getId());
+            approval.setStepName(stepName);
+            approval.setDecidedAt(Instant.now());
+            approval.setDecision(decision);
+            approval.setDecidedBy(actor);
+            approval.setReason(reason);
+            try {
+                approvalRepository.saveAndFlush(approval);
+            } catch (DataIntegrityViolationException e) {
+                // Backstop for the DB unique constraint on step_instance_id: the pessimistic lock
+                // above should already make this unreachable, but if it's ever hit, a second
+                // decision on an already-decided step is rejected the same way a duplicate is.
+                throw new NoPendingApprovalException(
+                        "no approval currently pending on step " + stepName + " (already decided)");
+            }
+            recordEvent(workflowId, "human", actor, "approval_" + decision + ":" + stepName, stepName, "OK", reason);
+
+            boolean rejected = "rejected".equals(decision);
+            if (rejected) {
+                step.setStatus(stage.entryApproval() ? StepStatus.FAILED : StepStatus.SUCCEEDED);
             } else {
-                step.setStatus(StepStatus.SUCCEEDED);
+                step.setStatus(stage.entryApproval() ? StepStatus.PENDING : StepStatus.SUCCEEDED);
             }
             stepRepository.save(step);
-            instance.setStatus(WorkflowStatus.FAILED);
+            instance.setStatus(rejected ? WorkflowStatus.FAILED : WorkflowStatus.RUNNING);
             instanceRepository.save(instance);
-            return;
-        }
-
-        if (stage.entryApproval()) {
-            step.setStatus(StepStatus.PENDING);
-        } else {
-            step.setStatus(StepStatus.SUCCEEDED);
-        }
-        stepRepository.save(step);
-        instance.setStatus(WorkflowStatus.RUNNING);
-        instanceRepository.save(instance);
-        runFrom(workflowId);
+            return new DecisionOutcome(rejected);
+        });
     }
+
+    private record DecisionOutcome(boolean rejected) { }
 
     // Round-6 correction (Codex REQUEST AMENDMENTS item 1): stepInstanceId — not stepName — is the
     // authoritative key for "has THIS step instance been approved".
@@ -254,10 +295,12 @@ public class WorkflowEngine {
         stepRepository.save(step);
     }
 
-    private void runStage(String workflowId, int planVersion, StageDefinition stage, WorkflowContext ctx) {
+    private void runStage(String workflowId, int planVersion, StageDefinition stage, WorkflowContext ctx,
+                           Map<String, Object> inputsSnapshot) {
         WorkflowStepEntity step = requireStep(workflowId, planVersion, stage.name());
         step.setStatus(StepStatus.RUNNING);
         step.setStartedAt(Instant.now());
+        step.setInputsSnapshot(inputsSnapshot);
         stepRepository.save(step);
 
         Map<String, Object> result = stage.handler().run(ctx);

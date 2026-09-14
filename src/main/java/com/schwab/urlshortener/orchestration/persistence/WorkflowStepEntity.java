@@ -57,6 +57,14 @@ public class WorkflowStepEntity {
     @Column(name = "fallback_handler_key")
     private String fallbackHandlerKey;
 
+    // Round-6c correction: the artifacts actually available in the workflow's shared context at
+    // the moment this stage's BATCH began — captured once per batch (before any handler in that
+    // batch runs) and persisted per step, not the workflow's current/final artifact map re-read at
+    // response time. Null until the stage's batch has actually started (PENDING/WAITING_APPROVAL).
+    @Convert(converter = JsonMapAttributeConverter.class)
+    @Column(name = "inputs_snapshot", columnDefinition = "CLOB")
+    private Map<String, Object> inputsSnapshot;
+
     public Long getId() { return id; }
     public String getWorkflowId() { return workflowId; }
     public void setWorkflowId(String workflowId) { this.workflowId = workflowId; }
@@ -82,4 +90,6 @@ public class WorkflowStepEntity {
     public void setActivationConditionKey(String activationConditionKey) { this.activationConditionKey = activationConditionKey; }
     public String getFallbackHandlerKey() { return fallbackHandlerKey; }
     public void setFallbackHandlerKey(String fallbackHandlerKey) { this.fallbackHandlerKey = fallbackHandlerKey; }
+    public Map<String, Object> getInputsSnapshot() { return inputsSnapshot; }
+    public void setInputsSnapshot(Map<String, Object> inputsSnapshot) { this.inputsSnapshot = inputsSnapshot; }
 }

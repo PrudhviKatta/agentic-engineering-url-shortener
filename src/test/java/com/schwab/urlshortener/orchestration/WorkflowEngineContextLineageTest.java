@@ -6,6 +6,7 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -27,9 +28,10 @@ class WorkflowEngineContextLineageTest {
     @Autowired private WorkflowStepJpaRepository stepRepository;
     @Autowired private WorkflowEventJpaRepository eventRepository;
     @Autowired private ApprovalJpaRepository approvalRepository;
+    @Autowired private PlatformTransactionManager transactionManager;
 
     private WorkflowEngine engine() {
-        return new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository);
+        return new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository, transactionManager);
     }
 
     @Test

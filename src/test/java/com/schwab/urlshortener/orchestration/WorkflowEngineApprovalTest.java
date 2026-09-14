@@ -3,10 +3,17 @@ package com.schwab.urlshortener.orchestration;
 import com.schwab.urlshortener.orchestration.persistence.*;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -28,9 +35,10 @@ class WorkflowEngineApprovalTest {
     @Autowired private WorkflowStepJpaRepository stepRepository;
     @Autowired private WorkflowEventJpaRepository eventRepository;
     @Autowired private ApprovalJpaRepository approvalRepository;
+    @Autowired private PlatformTransactionManager transactionManager;
 
     private WorkflowEngine engine() {
-        return new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository);
+        return new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository, transactionManager);
     }
 
     @Test
@@ -237,5 +245,112 @@ class WorkflowEngineApprovalTest {
     void approvingAnUnknownWorkflowIsRejected() {
         assertThatThrownBy(() -> engine().approve("does-not-exist", "risky", "approved", "human", "n/a"))
                 .isInstanceOf(NoPendingApprovalException.class);
+    }
+
+    // --- Round-6c regression tests (item 2: ApprovalRequest validation) ---
+
+    @Test
+    void blankOrMissingActorIsRejected() {
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("risky", List.of(), ctx -> Map.of(), true, false, 0, 30, null, null, null));
+        WorkflowEngine engine = engine();
+        String workflowId = engine.submit("demo", stages, "run-6h");
+
+        assertThatThrownBy(() -> engine.approve(workflowId, "risky", "approved", null, "ok"))
+                .isInstanceOf(InvalidApprovalDecisionException.class);
+        assertThatThrownBy(() -> engine.approve(workflowId, "risky", "approved", "   ", "ok"))
+                .isInstanceOf(InvalidApprovalDecisionException.class);
+
+        // Untouched by either rejected call — the gate is still exactly as it was. (approvalRepository
+        // is a shared, file-backed H2 datastore across the whole suite, so scope the "no row written"
+        // check to THIS step instance rather than asserting the whole table is empty.)
+        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "risky").orElseThrow();
+        assertThat(step.getStatus()).isEqualTo(StepStatus.WAITING_APPROVAL);
+        assertThat(approvalRepository.existsByStepInstanceId(step.getId())).isFalse();
+    }
+
+    @Test
+    void blankOrMissingReasonIsRejected() {
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("risky", List.of(), ctx -> Map.of(), true, false, 0, 30, null, null, null));
+        WorkflowEngine engine = engine();
+        String workflowId = engine.submit("demo", stages, "run-6i");
+
+        assertThatThrownBy(() -> engine.approve(workflowId, "risky", "approved", "human", null))
+                .isInstanceOf(InvalidApprovalDecisionException.class);
+        assertThatThrownBy(() -> engine.approve(workflowId, "risky", "approved", "human", ""))
+                .isInstanceOf(InvalidApprovalDecisionException.class);
+
+        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "risky").orElseThrow();
+        assertThat(step.getStatus()).isEqualTo(StepStatus.WAITING_APPROVAL);
+        assertThat(approvalRepository.existsByStepInstanceId(step.getId())).isFalse();
+    }
+
+    // --- Round-6c regression test (item 1: atomic, one-shot decision recording) ---
+
+    @Test
+    void concurrentApproveAndRejectOnSameStepYieldsExactlyOneDecision() throws Exception {
+        List<String> executed = new CopyOnWriteArrayList<>();
+        StageHandler risky = ctx -> { executed.add("risky"); return Map.of(); };
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("risky", List.of(), risky, true, false, 0, 30, null, null, null));
+        WorkflowEngine engine = engine();
+        String workflowId = engine.submit("demo", stages, "run-6j");
+
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        CountDownLatch bothReady = new CountDownLatch(2);
+        CountDownLatch go = new CountDownLatch(1);
+        Callable<String> approveTask = () -> {
+            bothReady.countDown();
+            go.await(5, TimeUnit.SECONDS);
+            try {
+                engine.approve(workflowId, "risky", "approved", "human-a", "looks fine");
+                return "approved";
+            } catch (NoPendingApprovalException e) {
+                return "approve-lost";
+            }
+        };
+        Callable<String> rejectTask = () -> {
+            bothReady.countDown();
+            go.await(5, TimeUnit.SECONDS);
+            try {
+                engine.approve(workflowId, "risky", "rejected", "human-b", "too risky");
+                return "rejected";
+            } catch (NoPendingApprovalException e) {
+                return "reject-lost";
+            }
+        };
+
+        Future<String> approveFuture = pool.submit(approveTask);
+        Future<String> rejectFuture = pool.submit(rejectTask);
+        assertThat(bothReady.await(5, TimeUnit.SECONDS)).isTrue();
+        go.countDown(); // release both threads at once — the DB row lock, not test timing, decides the winner
+        String approveOutcome = approveFuture.get(10, TimeUnit.SECONDS);
+        String rejectOutcome = rejectFuture.get(10, TimeUnit.SECONDS);
+        pool.shutdown();
+
+        // Exactly one of the two calls actually recorded a decision; the other lost the race and
+        // was rejected as "no pending gate" — never silently accepted, never silently dropped.
+        List<String> outcomes = List.of(approveOutcome, rejectOutcome);
+        boolean approveWon = outcomes.contains("approved");
+        boolean rejectWon = outcomes.contains("rejected");
+        assertThat(approveWon ^ rejectWon).isTrue(); // exactly one winner, never both, never neither
+
+        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "risky").orElseThrow();
+        List<ApprovalEntity> approvalsForStep = approvalRepository.findAll().stream()
+                .filter(a -> step.getId().equals(a.getStepInstanceId()))
+                .toList();
+        assertThat(approvalsForStep).hasSize(1); // exactly one ApprovalEntity row, never two
+
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        if (approveWon) {
+            assertThat(approvalsForStep.get(0).getDecision()).isEqualTo("approved");
+            assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.COMPLETED);
+            assertThat(executed).containsExactly("risky");
+        } else {
+            assertThat(approvalsForStep.get(0).getDecision()).isEqualTo("rejected");
+            assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.FAILED);
+            assertThat(executed).isEmpty(); // entry gate: handler never ran
+        }
     }
 }

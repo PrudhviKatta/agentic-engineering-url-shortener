@@ -42,19 +42,21 @@ public class WorkflowController {
         WorkflowInstanceEntity instance = instanceRepository.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "workflow_not_found"));
 
-        @SuppressWarnings("unchecked")
-        Map<String, Object> contextArtifacts =
-                (Map<String, Object>) instance.getContextJson().getOrDefault("artifacts", Map.of());
-
         // Corrected 2026-09-13: repository method is plan-version-scoped since Task 21
         // (findByWorkflowIdAndPlanVersionOrderBySequence), not the bare findByWorkflowIdOrderBySequence
         // this brief originally showed.
         List<WorkflowStateResponse.StepView> steps = stepRepository
                 .findByWorkflowIdAndPlanVersionOrderBySequence(id, instance.getPlanVersion()).stream()
                 .map(s -> {
+                    // Round-6c correction: each step's inputs reflect ITS OWN persisted snapshot —
+                    // the artifacts actually available when its batch began — not the workflow's
+                    // current/final artifact map attached identically to every historical step.
+                    // Null (omitted) for a step whose batch hasn't started yet.
                     Map<String, Object> inputs = new LinkedHashMap<>();
                     inputs.put("dependsOn", s.getDependsOn());
-                    inputs.put("contextArtifactsAtReadTime", contextArtifacts);
+                    if (s.getInputsSnapshot() != null) {
+                        inputs.put("contextArtifactsAtStageStart", s.getInputsSnapshot());
+                    }
                     return new WorkflowStateResponse.StepView(
                             s.getName(), s.getStatus(), s.getStartedAt(), s.getEndedAt(), s.getRetryCount(),
                             inputs, s.getResult());

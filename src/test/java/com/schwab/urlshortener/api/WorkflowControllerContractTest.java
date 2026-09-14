@@ -107,6 +107,87 @@ class WorkflowControllerContractTest {
     }
 
     @Test
+    void missingOrBlankActorReturns400() {
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("risky", List.of(), ctx -> Map.of(), true, false, 0, 30, null, null, null));
+        String workflowId = engine.submit("demo", stages, "contract-test-6");
+
+        ResponseEntity<Map> missingResp = rest.postForEntity(
+                url("/workflows/" + workflowId + "/approvals/risky"),
+                Map.of("decision", "approved", "reason", "ok"), // no "actor" key at all
+                Map.class);
+        assertThat(missingResp.getStatusCode().value()).isEqualTo(400);
+        assertThat(missingResp.getBody()).containsKey("error");
+
+        ResponseEntity<Map> blankResp = rest.postForEntity(
+                url("/workflows/" + workflowId + "/approvals/risky"),
+                Map.of("decision", "approved", "actor", "  ", "reason", "ok"),
+                Map.class);
+        assertThat(blankResp.getStatusCode().value()).isEqualTo(400);
+    }
+
+    @Test
+    void missingOrBlankReasonReturns400() {
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("risky", List.of(), ctx -> Map.of(), true, false, 0, 30, null, null, null));
+        String workflowId = engine.submit("demo", stages, "contract-test-7");
+
+        ResponseEntity<Map> missingResp = rest.postForEntity(
+                url("/workflows/" + workflowId + "/approvals/risky"),
+                Map.of("decision", "approved", "actor", "human"), // no "reason" key at all
+                Map.class);
+        assertThat(missingResp.getStatusCode().value()).isEqualTo(400);
+
+        ResponseEntity<Map> blankResp = rest.postForEntity(
+                url("/workflows/" + workflowId + "/approvals/risky"),
+                Map.of("decision", "approved", "actor", "human", "reason", ""),
+                Map.class);
+        assertThat(blankResp.getStatusCode().value()).isEqualTo(400);
+    }
+
+    @Test
+    void stepInputsSnapshotOnlyContainsArtifactsAvailableWhenThatStageBegan() {
+        // Three sequential stages, each producing one artifact the next depends on. An earlier
+        // step's persisted inputs must never contain an artifact a LATER step produced.
+        List<StageDefinition> stages = List.of(
+                StageDefinition.of("one", List.of(), ctx -> {
+                    ctx.addArtifact("from-one", "A");
+                    return Map.of();
+                }),
+                StageDefinition.of("two", List.of("one"), ctx -> {
+                    ctx.addArtifact("from-two", "B");
+                    return Map.of();
+                }),
+                StageDefinition.of("three", List.of("two"), ctx -> {
+                    ctx.addArtifact("from-three", "C");
+                    return Map.of();
+                }));
+        String workflowId = engine.submit("demo", stages, "contract-test-8");
+
+        ResponseEntity<Map> stateResp = rest.getForEntity(url("/workflows/" + workflowId), Map.class);
+        assertThat(stateResp.getBody().get("status")).isEqualTo("COMPLETED");
+        List<Map<String, Object>> steps = (List<Map<String, Object>>) stateResp.getBody().get("steps");
+        Map<String, Map<String, Object>> byName = new java.util.HashMap<>();
+        for (Map<String, Object> s : steps) byName.put((String) s.get("name"), s);
+
+        Map<String, Object> oneArtifacts = (Map<String, Object>)
+                ((Map<String, Object>) byName.get("one").get("inputs")).get("contextArtifactsAtStageStart");
+        Map<String, Object> twoArtifacts = (Map<String, Object>)
+                ((Map<String, Object>) byName.get("two").get("inputs")).get("contextArtifactsAtStageStart");
+        Map<String, Object> threeArtifacts = (Map<String, Object>)
+                ((Map<String, Object>) byName.get("three").get("inputs")).get("contextArtifactsAtStageStart");
+
+        // "one" began before anything ran: no artifacts at all yet.
+        assertThat(oneArtifacts).doesNotContainKeys("from-one", "from-two", "from-three");
+        // "two" began after "one" finished: sees "from-one", but not its own or "three"'s.
+        assertThat(twoArtifacts).containsKey("from-one");
+        assertThat(twoArtifacts).doesNotContainKeys("from-two", "from-three");
+        // "three" began after "two" finished: sees both prior artifacts, but never its own.
+        assertThat(threeArtifacts).containsKeys("from-one", "from-two");
+        assertThat(threeArtifacts).doesNotContainKey("from-three");
+    }
+
+    @Test
     void approvalOnAStepWithNoPendingGateReturns404() {
         List<StageDefinition> stages = List.of(StageDefinition.of("plain", List.of(), ctx -> Map.of()));
         String workflowId = engine.submit("demo", stages, "contract-test-4");

@@ -142,11 +142,12 @@ public class WorkflowEngine {
         recordEvent(workflowId, "human", "approval_" + decision + ":" + stepName, "OK", reason);
 
         if ("rejected".equals(decision)) {
-            if (step.getStatus() != StepStatus.SUCCEEDED) {
+            // Branch on stage.entryApproval() directly, not on the step's current status.
+            if (stage.entryApproval()) {
                 step.setStatus(StepStatus.FAILED); // entry-gate reject: handler never ran
+            } else {
+                step.setStatus(StepStatus.SUCCEEDED); // exit-gate reject: handler already completed
             }
-            // exit-gate reject: leave SUCCEEDED — the handler did complete; only
-            // downstream stages are permanently withheld (they simply never run).
             stepRepository.save(step);
             instance.setStatus(WorkflowStatus.FAILED);
             instanceRepository.save(instance);

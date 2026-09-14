@@ -68,4 +68,29 @@ class WorkflowEngineApprovalTest {
         assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.FAILED);
         assertThat(executed).isEmpty();
     }
+
+    @Test
+    void rejectedExitGateApprovalLeavesStepSucceededButBlocksDownstream() {
+        List<String> executed = new CopyOnWriteArrayList<>();
+        StageHandler design = ctx -> { executed.add("design"); return Map.of(); };
+        StageHandler after = ctx -> { executed.add("after"); return Map.of(); };
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("design", List.of(), design, false, true, 0, 30, null),
+                StageDefinition.of("after", List.of("design"), after));
+
+        WorkflowEngine engine = engine();
+        String workflowId = engine.submit("demo", stages, "run-4b");
+
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.PENDING_APPROVAL);
+        assertThat(executed).containsExactly("design"); // exit gate: handler DID run before halting
+
+        engine.approve(workflowId, "design", "rejected", "human", "wrong approach");
+
+        instance = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.FAILED);
+        WorkflowStepEntity designStep = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "design").orElseThrow();
+        assertThat(designStep.getStatus()).isEqualTo(StepStatus.SUCCEEDED); // handler's own completion stands
+        assertThat(executed).containsExactly("design"); // "after" must never run
+    }
 }

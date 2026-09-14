@@ -19,6 +19,9 @@ public class PolicyEngine {
     public PolicyEngine(String classpathLocation) {
         try (InputStream in = new ClassPathResource(classpathLocation).getInputStream()) {
             PolicyDocument doc = new YAMLMapper().readValue(in, PolicyDocument.class);
+            if (doc.policies() == null) {
+                throw new IllegalStateException("policy file has no 'policies' list: " + classpathLocation);
+            }
             this.version = doc.version();
             this.policies = doc.policies();
         } catch (IOException e) {

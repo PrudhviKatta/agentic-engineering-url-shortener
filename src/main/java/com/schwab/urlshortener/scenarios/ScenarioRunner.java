@@ -6,7 +6,6 @@ import com.schwab.urlshortener.orchestration.persistence.*;
 import java.io.PrintStream;
 import java.util.List;
 import java.util.Map;
-import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.stereotype.Component;
 
@@ -16,18 +15,15 @@ public class ScenarioRunner implements CommandLineRunner {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final WorkflowInstanceJpaRepository instanceRepository;
-    private final WorkflowStepJpaRepository stepRepository;
     private final WorkflowEventJpaRepository eventRepository;
-    private final ApprovalJpaRepository approvalRepository;
+    private final WorkflowEngine engine;
 
     public ScenarioRunner(WorkflowInstanceJpaRepository instanceRepository,
-                           WorkflowStepJpaRepository stepRepository,
                            WorkflowEventJpaRepository eventRepository,
-                           ApprovalJpaRepository approvalRepository) {
+                           WorkflowEngine engine) {
         this.instanceRepository = instanceRepository;
-        this.stepRepository = stepRepository;
         this.eventRepository = eventRepository;
-        this.approvalRepository = approvalRepository;
+        this.engine = engine;
     }
 
     @Override
@@ -45,7 +41,6 @@ public class ScenarioRunner implements CommandLineRunner {
     }
 
     void runScenario(String scenario, PrintStream out) throws Exception {
-        WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository);
         List<StageDefinition> stages = List.of(
                 StageDefinition.of("requirement", List.of(), ctx -> Map.of()),
                 StageDefinition.of("decomposition", List.of("requirement"), ctx -> Map.of())

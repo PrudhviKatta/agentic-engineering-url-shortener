@@ -4,12 +4,14 @@ import com.schwab.urlshortener.orchestration.persistence.*;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
+import org.springframework.stereotype.Component;
 
 // Two distinct gate types, both needed (guide requires "entry AND exit gates"):
 //   entryApproval: handler must NOT run until approved (destructive/irreversible actions)
 //   exitApproval:  handler runs normally; only its DEPENDENTS wait on approval
 //                  (reviewing a produced design, a detected ambiguity, a readiness report)
 // A single boolean cannot express both — do not collapse these back into one flag.
+@Component
 public class WorkflowEngine {
 
     // Non-static, per-instance: same-object convenience linking submit() to its own runFrom()

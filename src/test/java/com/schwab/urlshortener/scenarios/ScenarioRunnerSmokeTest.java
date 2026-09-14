@@ -5,6 +5,7 @@ import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.schwab.urlshortener.orchestration.WorkflowEngine;
 import com.schwab.urlshortener.orchestration.persistence.*;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -23,8 +24,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 // and lookups by findByWorkflowId... throw NoSuchElementException. Same root cause and
 // same fix as Tasks 22/23/24's WorkflowEngine tests - not a ScenarioRunner or
 // WorkflowEngine bug.
+//
+// Task 26 correction: @DataJpaTest does not perform general @Component scanning, so making
+// WorkflowEngine a shared @Component (Task 26 Step 0) does not by itself make it available in
+// this slice context — ScenarioRunner's constructor now requires it as a bean. @Import must
+// name it explicitly, the same way ScenarioRunner itself is explicitly imported.
 @DataJpaTest
-@Import(ScenarioRunner.class)
+@Import({ScenarioRunner.class, WorkflowEngine.class})
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 class ScenarioRunnerSmokeTest {
 

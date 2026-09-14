@@ -2049,6 +2049,16 @@ class WorkflowEngineExecutionTest {
     }
 }
 ```
+
+> **Round-6 correction (2026-09-13, Codex REQUEST AMENDMENTS item 5):** `submitRunsParallelGroupConcurrently`
+> above is this task's ORIGINAL, now-superseded test — asserting completion ORDER via a
+> `Thread.sleep` is inherently non-deterministic (a slow CI runner can let "slow" finish first). The
+> actual `WorkflowEngineExecutionTest.java` on `main` replaces it with a `CountDownLatch`-based test:
+> both handlers must independently reach a shared `bothStarted.countDown()` before either is allowed
+> past a `releaseGate` latch, which is only possible if the engine genuinely runs them on separate
+> threads at the same time. This note documents the correction rather than rewriting the historical
+> snippet above.
+
 - [ ] **Step 2: Run to confirm failure** — compile error, `WorkflowEngine` doesn't exist.
 - [ ] **Step 3: Implement**
 ```java
@@ -2527,6 +2537,26 @@ public class WorkflowEngine {
     // except runStage/stepStatus now take the same threaded planVersion parameter as runFrom.
 }
 ```
+
+> **Round-6 correction (2026-09-13, Codex REQUEST AMENDMENTS on Section 13):** the `approve()` and
+> `isApproved()`/exit-gate shown above are this task's ORIGINAL, now-superseded design — they were
+> found to accept any decision string, never check that the target step was actually
+> `WAITING_APPROVAL` (premature/duplicate/non-gate approvals were silently accepted), key
+> `isApproved` by `stepName` instead of the already-added `stepInstanceId` FK, and — in the exit-gate
+> loop specifically — only ever gate the FIRST unapproved exit-gated sibling in a parallel batch,
+> silently letting any OTHER exit-gated sibling through ungated on resume. All four defects are
+> fixed in the actual `src/main/java/.../orchestration/WorkflowEngine.java` on `main`: `approve()`
+> now validates the decision value, requires `WAITING_APPROVAL` on the target step before proceeding
+> (this one check rejects premature, duplicate, AND non-gate approvals), and looks up approvals by
+> `stepInstanceId`; the exit-gate check re-scans every exit-gated stage in the full batch (not just
+> the transient `pending` subset) on every `runFrom` call, so every sibling is gated until each has
+> its own decision. See `WorkflowEngineApprovalTest` for the regression tests
+> (`invalidDecisionValueIsRejected`, `prematureApprovalOnAStepNotYetAtItsGateIsRejected`,
+> `duplicateApprovalOnAnAlreadyDecidedStepIsRejected`, `nonGateStepCanNeverBeApproved`,
+> `everyExitGatedSiblingInAParallelBatchRequiresItsOwnApproval`). This note documents the
+> correction rather than rewriting the historical snippet above, to keep this task's own
+> trace-through narrative (Step 4, below) intact as a record of what was originally reasoned through.
+
 - [ ] **Step 4: Run to confirm pass** — run both new tests **and** Task 22's tests (regression, after updating its `engine()` helper for the new constructor arg) — all PASS. Trace `workflowHaltsAtApprovalGateAndResumesOnApprove` by hand against the code above before running it: `submit()` → batch `[risky]` → entry gate fires (not approved) → `WAITING_APPROVAL`/`PENDING_APPROVAL`, `executed` empty ✓ → `approve("approved")` → `stage.entryApproval()` true → step reset to `PENDING` → `runFrom` re-enters → entry gate now passes (`isApproved` true) → handler runs → `executed` contains `"risky"`, step `SUCCEEDED`, workflow `COMPLETED` ✓.
 - [ ] **Step 5: Commit** — `git commit -m "feat(governance): enforce human approval transitions"`
 
@@ -3058,6 +3088,24 @@ public class WorkflowController {
     }
 }
 ```
+
+> **Round-6 correction (2026-09-13, Codex REQUEST AMENDMENTS on Section 13):** the snippets above are
+> this task's ORIGINAL, now-superseded design — they omit `correlationId`/`planVersion`/
+> `decisionLineage` and each step's `inputs`/`outputs` from `WorkflowStateResponse`;
+> `workflowId`/`actorId`/`affectedArtifact`/`payload` from `AuditEventResponse`; return an implicit
+> `200` from `approve()` instead of the `204` `openapi.yaml` specifies; and perform no validation at
+> all (an invalid `decision` value or an unknown/non-pending gate should be `400`/`404`, not a
+> silent `200`/`500`). The actual `WorkflowController.java`/`WorkflowStateResponse.java`/
+> `AuditEventResponse.java`/`WorkflowEventEntity.java` on `main` match `openapi.yaml`'s
+> `WorkflowStateResponse`/`AuditEventResponse`/`recordApproval` schemas exactly: `getWorkflow` builds
+> `decisionLineage` from the persisted `contextJson`'s `decisions` list and each step's `inputs` from
+> `depends_on` plus the workflow's context artifacts, `getAudit` 404s on an unknown workflow id, and
+> `approve` is `@ResponseStatus(NO_CONTENT)` with two new `@ExceptionHandler`s
+> (`InvalidApprovalDecisionException` → 400, `NoPendingApprovalException` → 404) backing the
+> `WorkflowEngine.approve()` validation described in Task 23's Round-6 correction note above. See
+> `WorkflowControllerContractTest` for the regression tests. This note documents the correction
+> rather than rewriting the historical snippet above.
+
 - [ ] **Step 4: Run to confirm pass** — PASS
 - [ ] **Step 5: Commit** — `git commit -m "feat(api): expose workflow state and audit inspection endpoints"`
 

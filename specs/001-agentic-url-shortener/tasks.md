@@ -440,6 +440,18 @@ objects" — the first pass's `registerActivationCondition(...)`/`registerFallba
 `Predicate`/`StageHandler` objects directly on the live `WorkflowEngine` instance does not survive a
 process restart, contradicting REQ-017 and the binding REQ-028 5-second recovery-time objective)*
 
+**Status: PARTIAL (corrected 2026-09-13, Round-6, Codex REQUEST AMENDMENTS item 4).** `StageCatalog`
+itself exists (`orchestration/StageCatalog.java`) with `handlerFor`/`activationConditionFor`/
+`fallbackFor`, and `StageDefinition`/`WorkflowStepEntity` both carry the two new
+`activationConditionKey`/`fallbackHandlerKey` fields/columns. **`WorkflowEngine` does not yet use any
+of this**: `runFrom`/`runStage` still resolve handlers exclusively from the in-memory `registry` map
+populated at `submit()` time, never from `StageCatalog`; no `SKIPPED`-via-activation-condition path
+exists; nothing reconstructs a stage list from persisted `WorkflowStepEntity` rows (a process
+restart still loses the registry, exactly the failure mode this task exists to prevent). Full wiring
+is deferred to Task 50 (restart-safety epic) per the runbook's own established scoping for that
+epic. The traceability update below is corrected accordingly — REQ-017/REQ-028 (restart-safety /
+recovery-time objective) are NOT satisfied by this task alone; only the catalog scaffolding is.
+
 - **Objective**: Let a stage be marked `SKIPPED` (never runs, satisfies dependents' preconditions
   anyway) when a catalog-registered predicate over `WorkflowContext` evaluates false at the point
   its batch is reached, and let a stage register a fallback handler — both looked up by a stable
@@ -468,7 +480,9 @@ process restart, contradicting REQ-017 and the binding REQ-028 5-second recovery
 - **Validation command**: `./mvnw test -Dtest=StageCatalogTest`
 - **Doc impact**: `plan.md` Section 3 gains a description of this mechanism; `data-model.md` gains
   the two new `WorkflowStepEntity` columns.
-- **Traceability update**: REQ-011/013/016/017/028 rows gain `T020b`.
+- **Traceability update**: REQ-011/013/016 rows gain `T020b` (catalog scaffolding only).
+  REQ-017/028 do NOT gain a completed `T020b` row — restart-safe reconstruction is not wired into
+  `WorkflowEngine` yet; see the PARTIAL status note above and Task 50.
 - **Risk/guardrail**: this revises T020b's original design (see the runbook's Phase 12, Task 49) —
   the earlier "don't touch the `StageDefinition` record, use a registration side-channel" decision
   is superseded here, disclosed, not silently reversed, because it does not survive a real restart

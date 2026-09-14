@@ -4,6 +4,11 @@ import com.schwab.urlshortener.orchestration.persistence.*;
 import com.schwab.urlshortener.policy.PolicyCheckResult;
 import com.schwab.urlshortener.policy.PolicyEngine;
 import com.schwab.urlshortener.policy.PolicyOutcome;
+import com.schwab.urlshortener.reliability.CompensationRegistry;
+import com.schwab.urlshortener.reliability.PermanentStageException;
+import com.schwab.urlshortener.reliability.StageTimeoutException;
+import com.schwab.urlshortener.reliability.TimeoutExecutor;
+import com.schwab.urlshortener.reliability.TransientStageException;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
@@ -32,6 +37,8 @@ public class WorkflowEngine {
     private final PolicyEvaluationJpaRepository policyEvaluationRepository;
     private final PolicyEngine policyEngine;
     private final PolicyExceptionJpaRepository policyExceptionRepository;
+    // Task 33: nullable — compensation is opt-in, same pattern as the policy fields above.
+    private final CompensationRegistry compensationRegistry;
 
     @Autowired
     public WorkflowEngine(WorkflowInstanceJpaRepository instanceRepository,
@@ -40,7 +47,7 @@ public class WorkflowEngine {
                            ApprovalJpaRepository approvalRepository,
                            PlatformTransactionManager transactionManager) {
         this(instanceRepository, stepRepository, eventRepository, approvalRepository,
-                transactionManager, null, null, null);
+                transactionManager, null, null, null, null);
     }
 
     // Task 28's constructor shape, preserved unchanged so WorkflowEnginePolicyEnforcementTest
@@ -55,9 +62,11 @@ public class WorkflowEngine {
                            PolicyEvaluationJpaRepository policyEvaluationRepository,
                            PolicyEngine policyEngine) {
         this(instanceRepository, stepRepository, eventRepository, approvalRepository,
-                transactionManager, policyEvaluationRepository, policyEngine, null);
+                transactionManager, policyEvaluationRepository, policyEngine, null, null);
     }
 
+    // Task 29's constructor shape, preserved unchanged so PolicyExceptionTest keeps compiling and
+    // passing exactly as written — compensationRegistry defaults to null.
     public WorkflowEngine(WorkflowInstanceJpaRepository instanceRepository,
                            WorkflowStepJpaRepository stepRepository,
                            WorkflowEventJpaRepository eventRepository,
@@ -66,6 +75,25 @@ public class WorkflowEngine {
                            PolicyEvaluationJpaRepository policyEvaluationRepository,
                            PolicyEngine policyEngine,
                            PolicyExceptionJpaRepository policyExceptionRepository) {
+        this(instanceRepository, stepRepository, eventRepository, approvalRepository,
+                transactionManager, policyEvaluationRepository, policyEngine, policyExceptionRepository, null);
+    }
+
+    // Task 33: fourth overload across Tasks 22/23/28/29/33 (4 -> 6 -> 7 -> 9 positional
+    // parameters). A real code smell — a builder or a small dependencies-holder object would be
+    // cleaner — but retrofitting one now means touching five already-green test files for a
+    // purely cosmetic win. Recorded as a backlog item for Task 47's final engineering summary
+    // ("replace WorkflowEngine's constructor overloads with a builder") rather than silently
+    // living with it forever.
+    public WorkflowEngine(WorkflowInstanceJpaRepository instanceRepository,
+                           WorkflowStepJpaRepository stepRepository,
+                           WorkflowEventJpaRepository eventRepository,
+                           ApprovalJpaRepository approvalRepository,
+                           PlatformTransactionManager transactionManager,
+                           PolicyEvaluationJpaRepository policyEvaluationRepository,
+                           PolicyEngine policyEngine,
+                           PolicyExceptionJpaRepository policyExceptionRepository,
+                           CompensationRegistry compensationRegistry) {
         this.instanceRepository = instanceRepository;
         this.stepRepository = stepRepository;
         this.eventRepository = eventRepository;
@@ -74,6 +102,7 @@ public class WorkflowEngine {
         this.policyEvaluationRepository = policyEvaluationRepository;
         this.policyEngine = policyEngine;
         this.policyExceptionRepository = policyExceptionRepository;
+        this.compensationRegistry = compensationRegistry;
     }
 
     public String submit(String feature, List<StageDefinition> stages, String correlationId) {
@@ -390,7 +419,59 @@ public class WorkflowEngine {
         step.setInputsSnapshot(inputsSnapshot);
         stepRepository.save(step);
 
-        Map<String, Object> result = stage.handler().run(ctx);
+        // Task 33: bounded retry, per-attempt timeout, and compensation-on-exhaustion.
+        // Classification comes from the handler itself: PermanentStageException never retries;
+        // TransientStageException and StageTimeoutException (the timeout wrapper's own signal)
+        // both count as retryable, up to stage.maxRetries() additional attempts beyond the first,
+        // incrementing step.retryCount on every failed attempt so it's visible mid-flight, not
+        // just in a final tally. Every existing caller (Tasks 20-29's tests, the shared production
+        // bean) is unaffected: StageDefinition.of(...) defaults maxRetries=0/timeoutSeconds=30, so
+        // a normal non-throwing handler still runs exactly once, inside a 30s timeout window it
+        // never approaches, and proceeds through the unchanged policy-check/SUCCEEDED path below.
+        Map<String, Object> result = null;
+        boolean succeeded = false;
+        for (int attempt = 0; attempt <= stage.maxRetries(); attempt++) {
+            try {
+                result = TimeoutExecutor.withTimeout(stage.handler(), stage.timeoutSeconds() * 1000L).run(ctx);
+                succeeded = true;
+                break;
+            } catch (PermanentStageException e) {
+                break; // never retried; falls through to the exhaustion/compensation path below
+            } catch (TransientStageException | StageTimeoutException e) {
+                // retryCount tracks retries actually PERFORMED (bounded by maxRetries), not raw
+                // failed-attempt count: the exhausting final failure doesn't trigger another
+                // attempt, so it must not increment this counter past maxRetries. Incrementing
+                // unconditionally here (on every failure including the last) was caught as a
+                // genuine off-by-one during this task's own TDD cycle — it would have left
+                // retryCount == maxRetries + 1 on exhaustion.
+                if (attempt == stage.maxRetries()) break; // exhausted; this failure won't be retried
+                step.setRetryCount(step.getRetryCount() + 1);
+                stepRepository.save(step);
+            }
+        }
+
+        if (!succeeded) {
+            // Design note (brief, Task 33): a compensated failure does NOT throw — the batch and
+            // the workflow proceed normally toward COMPLETED. Compensation is "the failure was
+            // handled," a controlled saga-style continuation, not a block. Only the UNCOMPENSATED
+            // exhaustion path throws SafeStopException, matching Task 28's policy-failure path.
+            boolean compensated = compensationRegistry != null
+                    && compensationRegistry.run(stage.name(), result != null ? result : Map.of());
+            step.setEndedAt(Instant.now());
+            step.setResult(result != null ? result : Map.of());
+            if (compensated) {
+                step.setStatus(StepStatus.COMPENSATED);
+                stepRepository.save(step);
+                // actorType "orchestrator": the engine deciding to run a compensation on the
+                // stage's behalf, not the stage's own agent-attributed action.
+                recordEvent(workflowId, "orchestrator", "workflow-engine", "compensation_ran:" + stage.name(),
+                        stage.name(), "OK", null);
+                return; // handled: this batch and the workflow continue normally
+            }
+            step.setStatus(StepStatus.SAFE_STOPPED);
+            stepRepository.save(step);
+            throw new SafeStopException("retries exhausted, no compensation registered for stage " + stage.name());
+        }
 
         // Task 28: policy enforcement runs right after the handler returns, before the step is
         // marked SUCCEEDED — a mandatory FAIL must be able to preempt success, not follow it.

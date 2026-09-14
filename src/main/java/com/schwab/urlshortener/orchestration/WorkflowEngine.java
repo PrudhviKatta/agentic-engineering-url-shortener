@@ -319,12 +319,28 @@ public class WorkflowEngine {
         return Boolean.TRUE.equals(applied);
     }
 
+    // Independent-review finding (post-item-7 follow-up): two concurrent runFrom() calls — e.g.
+    // one thread per approve() call on DIFFERENT sibling exit gates in the same batch — each
+    // independently recompute `pending` by reading step status, and both can observe the SAME
+    // dependent stage as PENDING before either has dispatched it, double-executing its handler.
+    // Every fix already in this file (applyInstanceUpdate, the per-iteration terminal re-check)
+    // protects the WORKFLOW INSTANCE's status; none of them claim the STEP itself, which is what
+    // this closes: only a thread that wins the atomic PENDING -> RUNNING transition below actually
+    // runs the stage's handler. The loser sees a non-PENDING status and skips it as a no-op — the
+    // winner's execution already covers it, and future.get() below only ever waits on the threads
+    // that actually claimed a stage.
     private void runBatch(String workflowId, int planVersion, List<StageDefinition> pending, WorkflowContext ctx,
                            Map<String, Object> inputsSnapshot) {
-        ExecutorService pool = Executors.newFixedThreadPool(Math.max(1, pending.size()));
+        List<StageDefinition> claimed = pending.stream()
+                .filter(stage -> claimStage(workflowId, planVersion, stage.name(), inputsSnapshot))
+                .toList();
+        if (claimed.isEmpty()) {
+            return; // every stage in this batch was already claimed by a concurrent runFrom() call
+        }
+        ExecutorService pool = Executors.newFixedThreadPool(Math.max(1, claimed.size()));
         try {
             List<Future<?>> futures = new ArrayList<>();
-            for (StageDefinition stage : pending) {
+            for (StageDefinition stage : claimed) {
                 futures.add(pool.submit(() -> runStage(workflowId, planVersion, stage, ctx, inputsSnapshot)));
             }
             for (Future<?> future : futures) {
@@ -345,6 +361,29 @@ public class WorkflowEngine {
         } finally {
             pool.shutdown();
         }
+    }
+
+    // Atomically transitions a step PENDING -> RUNNING under the step's existing pessimistic row
+    // lock (the same lock recordDecisionInTransaction uses), so exactly one concurrent caller
+    // dispatches this stage's handler. Sets startedAt/inputsSnapshot here — the values a losing
+    // caller would otherwise have raced to write — so runStage's own read afterward is guaranteed
+    // fresh rather than reused from a stale in-memory reference.
+    private boolean claimStage(String workflowId, int planVersion, String stageName,
+                                Map<String, Object> inputsSnapshot) {
+        Boolean claimed = transactionTemplate.execute(status -> {
+            WorkflowStepEntity step = stepRepository
+                    .findWithLockByWorkflowIdAndPlanVersionAndName(workflowId, planVersion, stageName)
+                    .orElseThrow();
+            if (step.getStatus() != StepStatus.PENDING) {
+                return Boolean.FALSE;
+            }
+            step.setStatus(StepStatus.RUNNING);
+            step.setStartedAt(Instant.now());
+            step.setInputsSnapshot(inputsSnapshot);
+            stepRepository.save(step);
+            return Boolean.TRUE;
+        });
+        return Boolean.TRUE.equals(claimed);
     }
 
     public void approve(String workflowId, String stepName, String decision, String actor, String reason) {
@@ -503,11 +542,10 @@ public class WorkflowEngine {
 
     private void runStage(String workflowId, int planVersion, StageDefinition stage, WorkflowContext ctx,
                            Map<String, Object> inputsSnapshot) {
+        // status/startedAt/inputsSnapshot are already committed here — claimStage (in runBatch)
+        // performed the atomic PENDING -> RUNNING transition before this call was ever dispatched.
+        // A fresh read, not a reused reference, so this reflects that committed state.
         WorkflowStepEntity step = requireStep(workflowId, planVersion, stage.name());
-        step.setStatus(StepStatus.RUNNING);
-        step.setStartedAt(Instant.now());
-        step.setInputsSnapshot(inputsSnapshot);
-        stepRepository.save(step);
 
         // Codex REQUEST AMENDMENTS item 5: actually wire T030's RetryExecutor (bounded exponential
         // backoff) around T031's TimeoutExecutor, rather than a hand-rolled loop that never slept

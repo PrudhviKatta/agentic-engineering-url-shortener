@@ -416,4 +416,56 @@ class WorkflowEngineApprovalTest {
         assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.FAILED);
         assertThat(executed).doesNotContain("after");
     }
+
+    // --- Independent-review finding (post-item-7 follow-up): concurrent APPROVE+APPROVE on
+    // different sibling exit gates must not double-execute the dependent stage's handler ---
+
+    @Test
+    void concurrentApprovalsOnDifferentSiblingGatesRunTheDependentHandlerExactlyOnce() throws Exception {
+        // Both siblings get APPROVED (not one rejected) truly concurrently — the interleaving the
+        // rejection-focused test above cannot exercise, since a rejection short-circuits before
+        // ever calling runFrom(). Here BOTH approve() calls reach runFrom() concurrently, and both
+        // can legitimately see "after" as PENDING before either dispatches it.
+        java.util.concurrent.atomic.AtomicInteger afterInvocations = new java.util.concurrent.atomic.AtomicInteger();
+        StageHandler security = ctx -> Map.of();
+        StageHandler documentation = ctx -> Map.of();
+        StageHandler after = ctx -> { afterInvocations.incrementAndGet(); return Map.of(); };
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("security", List.of(), security, false, true, 0, 30, "verify", null, null),
+                new StageDefinition("documentation", List.of(), documentation, false, true, 0, 30, "verify", null, null),
+                StageDefinition.of("after", List.of("security", "documentation"), after));
+
+        WorkflowEngine engine = engine();
+        String workflowId = engine.submit("demo", stages, "run-7b");
+        assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
+                .isEqualTo(WorkflowStatus.PENDING_APPROVAL);
+
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        CountDownLatch bothReady = new CountDownLatch(2);
+        CountDownLatch go = new CountDownLatch(1);
+        Callable<Void> approveSecurity = () -> {
+            bothReady.countDown();
+            go.await(5, TimeUnit.SECONDS);
+            engine.approve(workflowId, "security", "approved", "human-a", "ok");
+            return null;
+        };
+        Callable<Void> approveDocumentation = () -> {
+            bothReady.countDown();
+            go.await(5, TimeUnit.SECONDS);
+            engine.approve(workflowId, "documentation", "approved", "human-b", "ok");
+            return null;
+        };
+
+        Future<Void> f1 = pool.submit(approveSecurity);
+        Future<Void> f2 = pool.submit(approveDocumentation);
+        assertThat(bothReady.await(5, TimeUnit.SECONDS)).isTrue();
+        go.countDown();
+        f1.get(10, TimeUnit.SECONDS);
+        f2.get(10, TimeUnit.SECONDS);
+        pool.shutdown();
+
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.COMPLETED);
+        assertThat(afterInvocations.get()).isEqualTo(1);
+    }
 }

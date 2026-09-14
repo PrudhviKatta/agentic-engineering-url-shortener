@@ -37,6 +37,9 @@ class TimeoutTest {
         StageHandler broken = ctx -> { throw new TransientStageException("simulated failure"); };
         StageHandler wrapped = TimeoutExecutor.withTimeout(broken, 1000);
 
-        assertThatThrownBy(() -> wrapped.run(null)).isInstanceOf(TransientStageException.class);
+        // isExactlyInstanceOf, not isInstanceOf: since StageTimeoutException now EXTENDS
+        // TransientStageException, isInstanceOf would pass even under the exact misclassification
+        // this test exists to catch — only the exact type proves it wasn't reclassified.
+        assertThatThrownBy(() -> wrapped.run(null)).isExactlyInstanceOf(TransientStageException.class);
     }
 }

@@ -26,4 +26,11 @@ spring:
       # Minor findings): this comment previously implied that file already existed.
       ddl-auto: update
     show-sql: false
+    # LOAD-BEARING for WorkflowEngine's concurrency correctness (Codex REQUEST AMENDMENTS item 7
+    # independent review, Minor 3) — do not set true. WorkflowEngine.runFrom/applyInstanceUpdate/
+    # claimStage rely on every repository call opening its OWN fresh EntityManager/transaction, so
+    # concurrent threads see each other's committed writes instead of a stale first-level-cache
+    # read. open-in-view=true binds one EntityManager across the whole HTTP request and silently
+    # reintroduces the stale-read bug documented at WorkflowEngine.java's runFrom Javadoc (the same
+    # failure mode that killed an earlier whole-transaction locking attempt in that method).
     open-in-view: false

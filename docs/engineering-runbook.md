@@ -2580,7 +2580,7 @@ class WorkflowEngineContextLineageTest {
         // its decision BEFORE the halt, so a fresh, unpersisted ctx on resume would lose it —
         // that loss is exactly the bug this task's fix must prevent.
         List<StageDefinition> stages = List.of(
-                new StageDefinition("gate", List.of(), gate, false, true, 0, 30, null),
+                new StageDefinition("gate", List.of(), gate, false, true, 0, 30, null, null, null),
                 StageDefinition.of("after", List.of("gate"), after)
         );
 

@@ -331,4 +331,58 @@ class WorkflowEngineReliabilityIntegrationTest {
         WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
         assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.COMPLETED);
     }
+
+    // --- Second scoped re-review finding: a mixed batch (one sibling POLICY_BLOCKED, one
+    // RETRY_EXHAUSTED) must not strand the instance RUNNING when only one sibling clears ---
+
+    @Test
+    void mixedBatchWithOnePolicyBlockedSiblingStaysRetryableAfterTheOtherSiblingClears() {
+        AtomicInteger implInvocations = new AtomicInteger(0);
+        StageHandler impl = ctx -> {
+            implInvocations.incrementAndGet();
+            ctx.addArtifact("urlSchemeAllowlistEnforced", false); // SEC-001 will FAIL
+            ctx.addArtifact("ssrfGuardEnforced", true);
+            return Map.of();
+        };
+        AtomicInteger flakyInvocations = new AtomicInteger(0);
+        StageHandler flakyThenWorks = ctx -> {
+            if (flakyInvocations.incrementAndGet() == 1) throw new TransientStageException("simulated");
+            return Map.of();
+        };
+        // Two independent root stages — same topological batch, no dependency between them.
+        List<StageDefinition> stages = List.of(
+                StageDefinition.of("implementation", List.of(), impl),
+                new StageDefinition("flaky", List.of(), flakyThenWorks, false, false, 0, 5, null, null, null));
+        PolicyEngine policyEngine = new PolicyEngine("policies/v1.yaml");
+        WorkflowEngine engine = engineWithPolicy(policyEngine);
+
+        String workflowId = engine.submit("demo", stages, "run-33j");
+        assertThat(implInvocations.get()).isEqualTo(1);
+        assertThat(flakyInvocations.get()).isEqualTo(1);
+        assertThat(stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "implementation")
+                .orElseThrow().getSafeStopReason()).isEqualTo(SafeStopReason.POLICY_BLOCKED);
+        assertThat(stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "flaky")
+                .orElseThrow().getSafeStopReason()).isEqualTo(SafeStopReason.RETRY_EXHAUSTED);
+
+        // Retry without granting the exception: "flaky" resets and genuinely re-runs to success;
+        // "implementation" stays blocked. The instance must land back on SAFE_STOPPED — not be
+        // left RUNNING — so a second retrySafeStopped call remains valid once the exception is
+        // eventually granted.
+        engine.retrySafeStopped(workflowId);
+        assertThat(flakyInvocations.get()).isEqualTo(2);
+        assertThat(implInvocations.get()).isEqualTo(1); // never re-run
+        assertThat(stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "flaky")
+                .orElseThrow().getStatus()).isEqualTo(StepStatus.SUCCEEDED);
+        WorkflowInstanceEntity afterFirstRetry = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(afterFirstRetry.getStatus()).isEqualTo(WorkflowStatus.SAFE_STOPPED);
+
+        // Grant the exception, retry again: the boundary clears and the workflow completes.
+        engine.grantPolicyException(workflowId, "SEC-001", "prototype demo only", "implementation stage",
+                "human-candidate", "manual review before merge", Instant.now().plus(Duration.ofDays(1)));
+        engine.retrySafeStopped(workflowId); // must NOT throw "not SAFE_STOPPED (status: RUNNING)"
+
+        assertThat(implInvocations.get()).isEqualTo(1); // still never re-run
+        WorkflowInstanceEntity completed = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(completed.getStatus()).isEqualTo(WorkflowStatus.COMPLETED);
+    }
 }

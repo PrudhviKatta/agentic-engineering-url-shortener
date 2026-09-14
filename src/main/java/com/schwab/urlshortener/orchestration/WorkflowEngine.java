@@ -260,10 +260,25 @@ public class WorkflowEngine {
             // necessarily finished doing so. Either way, this call is not the one that gets to
             // carry the workflow forward. WAITING_APPROVAL/SUCCEEDED/COMPENSATED are the outcomes
             // the exit-gate scan below is designed to handle and are safe to fall through to.
-            if (batch.stream().anyMatch(s -> {
-                StepStatus st = stepStatus(workflowId, planVersion, s.name());
-                return st == StepStatus.RUNNING || st == StepStatus.SAFE_STOPPED;
-            })) {
+            List<StepStatus> siblingStatuses = batch.stream()
+                    .map(s -> stepStatus(workflowId, planVersion, s.name()))
+                    .toList();
+            if (siblingStatuses.contains(StepStatus.RUNNING)) {
+                return;
+            }
+            if (siblingStatuses.contains(StepStatus.SAFE_STOPPED)) {
+                // Second scoped re-review finding: a mixed batch where ONE sibling is still
+                // SAFE_STOPPED (e.g. POLICY_BLOCKED, awaiting grantPolicyException) while ANOTHER
+                // sibling was reset by retrySafeStopped (e.g. RETRY_EXHAUSTED) and just re-ran
+                // successfully leaves this thread here — correctly halted from advancing — but
+                // the instance itself was set RUNNING by retrySafeStopped before this call, and
+                // nothing re-asserts SAFE_STOPPED on it. Without this, retrySafeStopped's own
+                // precondition ("workflow ... is not SAFE_STOPPED (status: RUNNING)") permanently
+                // refuses a second call, even after the operator grants the missing exception —
+                // an operationally unrecoverable workflow. applyInstanceUpdate is idempotent with
+                // the winner's own SAFE_STOPPED write in the concurrent case (same target state)
+                // and a no-op if the instance is already FAILED/COMPLETED.
+                applyInstanceUpdate(workflowId, i -> i.setStatus(WorkflowStatus.SAFE_STOPPED));
                 return;
             }
 

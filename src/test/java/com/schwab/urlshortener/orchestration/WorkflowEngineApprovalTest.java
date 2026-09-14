@@ -10,6 +10,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
@@ -467,5 +468,77 @@ class WorkflowEngineApprovalTest {
         WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
         assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.COMPLETED);
         assertThat(afterInvocations.get()).isEqualTo(1);
+    }
+
+    // --- Scoped re-review finding: claimStage alone stops double-execution but not the losing
+    // thread racing ahead into a batch DOWNSTREAM of the one it lost. A losing thread that finds
+    // its own `pending` empty must not treat that as "nothing left to do here" and fall through
+    // to the next batch while the winner's stage is still RUNNING. ---
+
+    @Test
+    void loserOfAClaimRaceDoesNotRunADependentBatchWhileTheWinnersSiblingIsStillRunning() throws Exception {
+        CountDownLatch afterMayFinish = new CountDownLatch(1);
+        CountDownLatch tailStarted = new CountDownLatch(1);
+        AtomicBoolean tailObservedAfterStillRunning = new AtomicBoolean(false);
+        StageHandler security = ctx -> Map.of();
+        StageHandler documentation = ctx -> Map.of();
+        StageHandler after = ctx -> {
+            try {
+                afterMayFinish.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return Map.of();
+        };
+        StageHandler tail = ctx -> {
+            if (afterMayFinish.getCount() > 0) {
+                tailObservedAfterStillRunning.set(true);
+            }
+            tailStarted.countDown();
+            return Map.of();
+        };
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("security", List.of(), security, false, true, 0, 30, "verify", null, null),
+                new StageDefinition("documentation", List.of(), documentation, false, true, 0, 30, "verify", null, null),
+                StageDefinition.of("after", List.of("security", "documentation"), after),
+                StageDefinition.of("tail", List.of("after"), tail));
+
+        WorkflowEngine engine = engine();
+        String workflowId = engine.submit("demo", stages, "run-7c");
+
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        CountDownLatch bothReady = new CountDownLatch(2);
+        CountDownLatch go = new CountDownLatch(1);
+        Callable<Void> approveSecurity = () -> {
+            bothReady.countDown();
+            go.await(5, TimeUnit.SECONDS);
+            engine.approve(workflowId, "security", "approved", "human-a", "ok");
+            return null;
+        };
+        Callable<Void> approveDocumentation = () -> {
+            bothReady.countDown();
+            go.await(5, TimeUnit.SECONDS);
+            engine.approve(workflowId, "documentation", "approved", "human-b", "ok");
+            return null;
+        };
+
+        Future<Void> f1 = pool.submit(approveSecurity);
+        Future<Void> f2 = pool.submit(approveDocumentation);
+        assertThat(bothReady.await(5, TimeUnit.SECONDS)).isTrue();
+        go.countDown();
+
+        // "after" is blocked on its latch. Give a buggy loser thread a real window to race ahead
+        // into "tail" before we release it — this must NOT happen regardless of how long we wait.
+        assertThat(tailStarted.await(500, TimeUnit.MILLISECONDS)).isFalse();
+
+        afterMayFinish.countDown();
+        f1.get(10, TimeUnit.SECONDS);
+        f2.get(10, TimeUnit.SECONDS);
+        assertThat(tailStarted.await(10, TimeUnit.SECONDS)).isTrue();
+        pool.shutdown();
+
+        assertThat(tailObservedAfterStillRunning.get()).isFalse();
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.COMPLETED);
     }
 }

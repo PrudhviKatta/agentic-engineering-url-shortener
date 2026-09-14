@@ -244,6 +244,29 @@ public class WorkflowEngine {
                 }
             }
 
+            // Scoped re-review finding (post-claimStage follow-up): claimStage stops a stage's
+            // handler from running twice, but on its own does nothing to stop the THREAD that
+            // lost the claim from walking straight past this batch — pending was empty for it
+            // (the only stage in it was already RUNNING, not PENDING, so the filter above dropped
+            // it), so it fell through both the runBatch call above and would otherwise reach the
+            // exit-gate scan and the next batch while the winner's stage was still executing (or,
+            // worse, while the winner's stage had just SAFE_STOPPED and the winner's own
+            // SafeStopException catch — which is what actually halts the workflow — hadn't run
+            // yet, since that catch lives entirely in the WINNER's call stack and this thread
+            // never goes through it). A fresh read here, of every stage in the FULL batch (not
+            // just this call's `pending`), is what actually closes both: RUNNING means a sibling
+            // is still executing; SAFE_STOPPED means a sibling just failed and the thread that
+            // caused it — the only one that runs the SAFE_STOPPED-transition logic above — hasn't
+            // necessarily finished doing so. Either way, this call is not the one that gets to
+            // carry the workflow forward. WAITING_APPROVAL/SUCCEEDED/COMPENSATED are the outcomes
+            // the exit-gate scan below is designed to handle and are safe to fall through to.
+            if (batch.stream().anyMatch(s -> {
+                StepStatus st = stepStatus(workflowId, planVersion, s.name());
+                return st == StepStatus.RUNNING || st == StepStatus.SAFE_STOPPED;
+            })) {
+                return;
+            }
+
             // Exit gate: block AFTER running, before any dependent batch proceeds. This scans
             // EVERY exit-gated stage in the FULL batch (not just the subset that was `pending`
             // THIS call) and requires each one to carry its own approval before dependents

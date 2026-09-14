@@ -14,6 +14,7 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 // @DataJpaTest wraps each test in a transaction on the test thread's own connection.
 // WorkflowEngine.runFrom/retrySafeStopped dispatch stage handlers onto its internal thread pool,
@@ -93,5 +94,25 @@ class PolicyExceptionTest {
 
         WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
         assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.SAFE_STOPPED); // SEC-001 still unexcused
+    }
+
+    @Test
+    void retrySafeStoppedOnANonSafeStoppedWorkflowIsRejected() {
+        // Regression test (independent-review finding): calling retrySafeStopped on a workflow
+        // that isn't actually SAFE_STOPPED must be rejected, not silently resurrect a FAILED
+        // workflow to RUNNING or bypass a pending approval gate elsewhere in the graph.
+        StageHandler impl = ctx -> Map.of();
+        List<StageDefinition> stages = List.of(StageDefinition.of("implementation", List.of(), impl));
+        WorkflowEngine engine = new WorkflowEngine(
+                instanceRepository, stepRepository, eventRepository, approvalRepository, transactionManager,
+                policyEvaluationRepository, null, policyExceptionRepository); // no PolicyEngine: never safe-stops
+
+        String workflowId = engine.submit("demo", stages, "run-29d");
+
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.COMPLETED); // definitely not SAFE_STOPPED
+
+        assertThatThrownBy(() -> engine.retrySafeStopped(workflowId))
+                .isInstanceOf(IllegalStateException.class);
     }
 }

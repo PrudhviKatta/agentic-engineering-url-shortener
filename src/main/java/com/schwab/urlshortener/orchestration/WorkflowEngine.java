@@ -465,13 +465,24 @@ public class WorkflowEngine {
     // stage's handler already ran once (during the safe-stopped attempt) and will simply run
     // again; hasApprovedUnexpiredException now sees the just-granted exception, so the same
     // mandatory FAIL no longer blocks. If a DIFFERENT mandatory policy still fails with no
-    // exception, the stage safe-stops again — same as any first attempt. Deliberately permissive
-    // (no "workflow must actually be SAFE_STOPPED" guard): if no step is SAFE_STOPPED, the loop is
-    // a no-op and runFrom's own tail is idempotent (re-derives COMPLETED from persisted status if
-    // everything already succeeded), so calling this on a non-safe-stopped workflow is harmless
-    // rather than needing its own error path.
+    // exception, the stage safe-stops again — same as any first attempt.
+    //
+    // Review correction (independent review): this method requires the workflow to actually be
+    // SAFE_STOPPED before doing anything. An earlier version of this comment claimed unconditionally
+    // resetting instance.status to RUNNING was harmless even with zero SAFE_STOPPED steps — that
+    // claim was false in two reachable states: a FAILED workflow (a rejected entry-gate approval
+    // left some step FAILED, not PENDING) would be resurrected to RUNNING and runFrom would silently
+    // skip that step's batch and execute downstream stages that depend on a stage that never
+    // actually succeeded; a PENDING_APPROVAL workflow with an unrelated entry-gated step still
+    // WAITING_APPROVAL would similarly resurrect to RUNNING and runFrom could execute downstream
+    // batches before that pending approval decision is ever made — an approval-gate bypass. Only the
+    // exit-gate-pending case was genuinely idempotent as originally claimed.
     public void retrySafeStopped(String workflowId) {
         WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        if (instance.getStatus() != WorkflowStatus.SAFE_STOPPED) {
+            throw new IllegalStateException(
+                    "workflow " + workflowId + " is not SAFE_STOPPED (status: " + instance.getStatus() + ")");
+        }
         int planVersion = instance.getPlanVersion();
         List<WorkflowStepEntity> steps = stepRepository.findByWorkflowIdAndPlanVersionOrderBySequence(workflowId, planVersion);
         for (WorkflowStepEntity step : steps) {

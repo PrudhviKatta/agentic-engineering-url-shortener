@@ -648,6 +648,32 @@ public class WorkflowEngine {
     // grant it ahead of time, before the stage that would otherwise fail ever runs).
     public void grantPolicyException(String workflowId, String policyId, String reason, String scope,
                                       String approvingAuthority, String compensatingControl, Instant expiry) {
+        // Codex REQUEST AMENDMENTS item 4: validate before touching any state — same discipline
+        // approve() already applies to its own inputs. Every field here maps directly to a
+        // data-model.md-approved NOT NULL column (see PolicyExceptionEntity); this is the
+        // application-level enforcement that guarantees this engine's own insert path can never
+        // violate what the schema already requires.
+        if (workflowId == null || !instanceRepository.existsById(workflowId)) {
+            throw new InvalidPolicyExceptionRequestException("unknown workflow: " + workflowId);
+        }
+        if (policyId == null || policyId.isBlank()) {
+            throw new InvalidPolicyExceptionRequestException("policyId must be present and non-blank");
+        }
+        if (policyEngine != null && !policyEngine.hasPolicy(policyId)) {
+            throw new InvalidPolicyExceptionRequestException("unknown policy: " + policyId);
+        }
+        requireNonBlank(reason, "reason");
+        requireNonBlank(scope, "scope");
+        requireNonBlank(approvingAuthority, "approvingAuthority");
+        requireNonBlank(compensatingControl, "compensatingControl");
+        if (expiry == null) {
+            throw new InvalidPolicyExceptionRequestException("expiry must be present");
+        }
+        if (!expiry.isAfter(Instant.now())) {
+            throw new InvalidPolicyExceptionRequestException(
+                    "expiry must be in the future, got: " + expiry + " (an exception is never granted already-expired)");
+        }
+
         PolicyExceptionEntity exception = new PolicyExceptionEntity();
         exception.setWorkflowId(workflowId);
         exception.setPolicyId(policyId);
@@ -660,6 +686,12 @@ public class WorkflowEngine {
         policyExceptionRepository.save(exception);
         recordEvent(workflowId, "human", approvingAuthority, "policy_exception_granted:" + policyId,
                 policyId, "OK", reason);
+    }
+
+    private static void requireNonBlank(String value, String fieldName) {
+        if (value == null || value.isBlank()) {
+            throw new InvalidPolicyExceptionRequestException(fieldName + " must be present and non-blank");
+        }
     }
 
     // Task 29: resets every SAFE_STOPPED step in the workflow's CURRENT plan version back to

@@ -45,6 +45,13 @@ public class PolicyEngine {
 
     public String version() { return version; }
 
+    // Codex REQUEST AMENDMENTS item 4: lets a caller (WorkflowEngine.grantPolicyException) verify
+    // a policyId is real before recording an exception for it, rather than silently accepting an
+    // exception that can never actually excuse anything because it names a policy that doesn't exist.
+    public boolean hasPolicy(String policyId) {
+        return policies.stream().anyMatch(p -> p.id().equals(policyId));
+    }
+
     public List<PolicyCheckResult> evaluate(String stageName, Map<String, Object> context) {
         List<PolicyCheckResult> results = new ArrayList<>();
         for (PolicyDefinition policy : policies) {

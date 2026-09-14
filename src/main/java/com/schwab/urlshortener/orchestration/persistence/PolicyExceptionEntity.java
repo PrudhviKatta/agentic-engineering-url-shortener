@@ -11,25 +11,31 @@ public class PolicyExceptionEntity {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name = "workflow_id")
+    // Codex REQUEST AMENDMENTS item 4: data-model.md's approved schema marks EVERY column on this
+    // table "No" nullable (unlike approvals' partial nullability) — every field here is required
+    // by design, not just by application-level convention.
+    @Column(name = "workflow_id", nullable = false)
     private String workflowId;
 
-    @Column(name = "policy_id")
+    @Column(name = "policy_id", nullable = false)
     private String policyId;
 
+    @Column(nullable = false)
     private String reason;
 
+    @Column(nullable = false)
     private String scope;
 
-    @Column(name = "approving_authority")
+    @Column(name = "approving_authority", nullable = false)
     private String approvingAuthority;
 
-    @Column(name = "compensating_control")
+    @Column(name = "compensating_control", nullable = false)
     private String compensatingControl;
 
-    @Column(name = "approved_at")
+    @Column(name = "approved_at", nullable = false)
     private Instant approvedAt;
 
+    @Column(nullable = false)
     private Instant expiry;
 
     public Long getId() { return id; }

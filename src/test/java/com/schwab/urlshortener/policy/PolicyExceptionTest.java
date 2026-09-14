@@ -83,9 +83,18 @@ class PolicyExceptionTest {
                 policyEvaluationRepository, policyEngine, policyExceptionRepository);
 
         String workflowId = engine.submit("demo", stages, "run-29b");
+        // Codex REQUEST AMENDMENTS item 4: grantPolicyException now rejects an already-expired
+        // expiry outright, so an exception can no longer be granted expired in one step — grant
+        // one with a short future expiry and let it actually lapse before retrying, to exercise
+        // hasApprovedUnexpiredException's real expiry check rather than a rejected grant.
         engine.grantPolicyException(workflowId, "SEC-001", "prototype demo only",
                 "implementation stage", "human-candidate", "manual review before merge",
-                Instant.now().minus(Duration.ofDays(1))); // already expired
+                Instant.now().plus(Duration.ofMillis(50)));
+        try {
+            Thread.sleep(200);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
         engine.retrySafeStopped(workflowId);
 
         WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
@@ -135,5 +144,82 @@ class PolicyExceptionTest {
 
         assertThatThrownBy(() -> engine.retrySafeStopped(workflowId))
                 .isInstanceOf(IllegalStateException.class);
+    }
+
+    // --- Codex REQUEST AMENDMENTS item 4: harden grantPolicyException ---
+
+    private WorkflowEngine engineWithRealPolicy() {
+        return new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository,
+                transactionManager, policyEvaluationRepository, new PolicyEngine("policies/v1.yaml"), policyExceptionRepository);
+    }
+
+    private String aWorkflowId(WorkflowEngine engine) {
+        StageHandler impl = ctx -> {
+            ctx.addArtifact("urlSchemeAllowlistEnforced", true);
+            ctx.addArtifact("ssrfGuardEnforced", true);
+            return Map.of();
+        };
+        return engine.submit("demo", List.of(StageDefinition.of("implementation", List.of(), impl)), "run-4x");
+    }
+
+    @Test
+    void grantingAnExceptionForAnUnknownWorkflowIsRejected() {
+        WorkflowEngine engine = engineWithRealPolicy();
+        assertThatThrownBy(() -> engine.grantPolicyException("does-not-exist", "SEC-001", "reason", "scope",
+                "human", "control", Instant.now().plus(Duration.ofDays(1))))
+                .isInstanceOf(InvalidPolicyExceptionRequestException.class);
+    }
+
+    @Test
+    void grantingAnExceptionForAnUnknownPolicyIsRejected() {
+        WorkflowEngine engine = engineWithRealPolicy();
+        String workflowId = aWorkflowId(engine);
+        assertThatThrownBy(() -> engine.grantPolicyException(workflowId, "NOT-A-REAL-POLICY", "reason", "scope",
+                "human", "control", Instant.now().plus(Duration.ofDays(1))))
+                .isInstanceOf(InvalidPolicyExceptionRequestException.class);
+    }
+
+    @Test
+    void blankOrMissingRequiredFieldsAreRejected() {
+        WorkflowEngine engine = engineWithRealPolicy();
+        String workflowId = aWorkflowId(engine);
+        Instant futureExpiry = Instant.now().plus(Duration.ofDays(1));
+
+        assertThatThrownBy(() -> engine.grantPolicyException(workflowId, null, "reason", "scope", "human", "control", futureExpiry))
+                .isInstanceOf(InvalidPolicyExceptionRequestException.class);
+        assertThatThrownBy(() -> engine.grantPolicyException(workflowId, "SEC-001", null, "scope", "human", "control", futureExpiry))
+                .isInstanceOf(InvalidPolicyExceptionRequestException.class);
+        assertThatThrownBy(() -> engine.grantPolicyException(workflowId, "SEC-001", "  ", "scope", "human", "control", futureExpiry))
+                .isInstanceOf(InvalidPolicyExceptionRequestException.class);
+        assertThatThrownBy(() -> engine.grantPolicyException(workflowId, "SEC-001", "reason", null, "human", "control", futureExpiry))
+                .isInstanceOf(InvalidPolicyExceptionRequestException.class);
+        assertThatThrownBy(() -> engine.grantPolicyException(workflowId, "SEC-001", "reason", "scope", null, "control", futureExpiry))
+                .isInstanceOf(InvalidPolicyExceptionRequestException.class);
+        assertThatThrownBy(() -> engine.grantPolicyException(workflowId, "SEC-001", "reason", "scope", "human", null, futureExpiry))
+                .isInstanceOf(InvalidPolicyExceptionRequestException.class);
+        assertThatThrownBy(() -> engine.grantPolicyException(workflowId, "SEC-001", "reason", "scope", "human", "   ", futureExpiry))
+                .isInstanceOf(InvalidPolicyExceptionRequestException.class);
+    }
+
+    @Test
+    void missingOrPastExpiryIsRejected() {
+        WorkflowEngine engine = engineWithRealPolicy();
+        String workflowId = aWorkflowId(engine);
+
+        assertThatThrownBy(() -> engine.grantPolicyException(workflowId, "SEC-001", "reason", "scope", "human", "control", null))
+                .isInstanceOf(InvalidPolicyExceptionRequestException.class);
+        assertThatThrownBy(() -> engine.grantPolicyException(workflowId, "SEC-001", "reason", "scope", "human", "control",
+                Instant.now().minus(Duration.ofSeconds(1))))
+                .isInstanceOf(InvalidPolicyExceptionRequestException.class);
+    }
+
+    @Test
+    void aValidRequestIsStillAccepted() {
+        // Regression guard: the hardening above must not reject a genuinely valid request.
+        WorkflowEngine engine = engineWithRealPolicy();
+        String workflowId = aWorkflowId(engine);
+        engine.grantPolicyException(workflowId, "SEC-001", "reason", "scope", "human", "control",
+                Instant.now().plus(Duration.ofDays(1)));
+        // No exception thrown — success.
     }
 }

@@ -7,5 +7,12 @@ package com.schwab.urlshortener.orchestration;
 public enum SafeStopReason {
     POLICY_BLOCKED,
     RETRY_EXHAUSTED,
-    COMPENSATION_FAILED
+    COMPENSATION_FAILED,
+    // Codex REQUEST AMENDMENTS follow-up (Section 17 review): a handler exception outside the
+    // Permanent/TransientStageException hierarchy (a genuine bug — NPE, IllegalStateException,
+    // etc.) that RetryExecutor/TimeoutExecutor don't classify. Resolved the same way
+    // RETRY_EXHAUSTED is (genuinely re-run on resume — the handler never actually completed),
+    // tagged distinctly so the audit trail and reason logs don't mislabel an unexpected bug as an
+    // ordinary retry exhaustion.
+    UNEXPECTED_FAILURE
 }

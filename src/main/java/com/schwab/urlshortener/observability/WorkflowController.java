@@ -54,7 +54,8 @@ public class WorkflowController {
         if (request.feature() == null || request.feature().isBlank()) {
             throw new UnreadableRequirementException("feature must be present and non-blank");
         }
-        String workflowId = engine.submit(request.feature(), BaselineWorkflowGraph.stages(), UUID.randomUUID().toString());
+        String workflowId = engine.submit(request.feature(), BaselineWorkflowGraph.stages(),
+                UUID.randomUUID().toString(), request.requirementText());
         WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
         return new WorkflowCreatedResponse(instance.getId(), instance.getStatus(),
                 instance.getCorrelationId(), instance.getPlanVersion());

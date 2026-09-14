@@ -11,6 +11,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
@@ -540,5 +541,62 @@ class WorkflowEngineApprovalTest {
         assertThat(tailObservedAfterStillRunning.get()).isFalse();
         WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
         assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.COMPLETED);
+    }
+
+    // --- Codex REQUEST AMENDMENTS follow-up (Section 17 review): runBatch must keep waiting for
+    // an interrupted future's SAME handler, not move on and leave it orphaned ---
+
+    @Test
+    void aBatchThreadInterruptedWhileWaitingStillJoinsTheHandlerBeforeReturning() throws Exception {
+        CountDownLatch handlerMayFinish = new CountDownLatch(1);
+        AtomicBoolean handlerFinished = new AtomicBoolean(false);
+        StageHandler slow = ctx -> {
+            try {
+                handlerMayFinish.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            handlerFinished.set(true);
+            return Map.of();
+        };
+        List<StageDefinition> stages = List.of(StageDefinition.of("slow", List.of(), slow));
+
+        WorkflowEngine engine = engine();
+        AtomicReference<Throwable> escaped = new AtomicReference<>();
+        AtomicReference<String> workflowIdRef = new AtomicReference<>();
+        Thread submitter = new Thread(() -> {
+            try {
+                workflowIdRef.set(engine.submit("demo", stages, "run-7d"));
+            } catch (Throwable t) {
+                escaped.set(t);
+            }
+        });
+        submitter.start();
+
+        // Interrupt the submitting thread while it is very likely still blocked in
+        // runBatch's future.get() — the handler itself is still held on handlerMayFinish, so the
+        // interrupt cannot possibly land after the handler has already completed.
+        Thread.sleep(100);
+        submitter.interrupt();
+        submitter.interrupt(); // twice, to exercise being interrupted more than once while waiting
+
+        // Give the (buggy, pre-fix) code a real window to return early before the handler is
+        // even allowed to finish — this must NOT happen.
+        Thread.sleep(200);
+        assertThat(handlerFinished.get()).isFalse();
+        assertThat(submitter.isAlive()).isTrue(); // still blocked, correctly still waiting
+
+        handlerMayFinish.countDown();
+        submitter.join(10_000);
+
+        assertThat(submitter.isAlive()).isFalse();
+        assertThat(handlerFinished.get()).isTrue();
+        assertThat(escaped.get()).isNull(); // no exception escaped submit() — the handler succeeded
+        String workflowId = workflowIdRef.get();
+        assertThat(workflowId).isNotNull();
+        assertThat(stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "slow")
+                .orElseThrow().getStatus()).isEqualTo(StepStatus.SUCCEEDED);
+        assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
+                .isEqualTo(WorkflowStatus.COMPLETED);
     }
 }

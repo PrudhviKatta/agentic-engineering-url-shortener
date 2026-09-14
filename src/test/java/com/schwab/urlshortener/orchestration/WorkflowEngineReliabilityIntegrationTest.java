@@ -426,4 +426,84 @@ class WorkflowEngineReliabilityIntegrationTest {
         WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
         assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.SAFE_STOPPED);
     }
+
+    // --- Codex REQUEST AMENDMENTS follow-up (Section 17 review): an unexpected handler runtime
+    // exception (outside the Permanent/TransientStageException hierarchy) must not strand a step
+    // or the workflow RUNNING forever ---
+
+    @Test
+    void anUnexpectedHandlerExceptionSafeStopsInsteadOfStrandingTheStepRunning() {
+        StageHandler buggy = ctx -> { throw new IllegalStateException("not a StageException at all"); };
+        List<StageDefinition> stages = List.of(StageDefinition.of("buggy", List.of(), buggy));
+
+        WorkflowEngine engine = engineWithCompensation(new CompensationRegistry());
+        String workflowId = engine.submit("demo", stages, "run-33m");
+
+        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "buggy")
+                .orElseThrow();
+        assertThat(step.getStatus()).isEqualTo(StepStatus.SAFE_STOPPED);
+        assertThat(step.getSafeStopReason()).isEqualTo(SafeStopReason.UNEXPECTED_FAILURE);
+        assertThat(step.getEndedAt()).isNotNull();
+
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.SAFE_STOPPED);
+
+        // retrySafeStopped treats UNEXPECTED_FAILURE the same as RETRY_EXHAUSTED — genuinely
+        // re-runs the (still-buggy) handler, safe-stopping again rather than looping silently.
+        engine.retrySafeStopped(workflowId);
+        WorkflowStepEntity retried = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "buggy")
+                .orElseThrow();
+        assertThat(retried.getStatus()).isEqualTo(StepStatus.SAFE_STOPPED);
+        assertThat(retried.getSafeStopReason()).isEqualTo(SafeStopReason.UNEXPECTED_FAILURE);
+        assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
+                .isEqualTo(WorkflowStatus.SAFE_STOPPED);
+    }
+
+    // --- Codex REQUEST AMENDMENTS follow-up (Section 17 review): concurrent retrySafeStopped()
+    // calls on the same workflow must not double-execute a handler ---
+
+    @Test
+    void concurrentRetrySafeStoppedCallsRunTheHandlerExactlyOnce() throws Exception {
+        AtomicInteger invocations = new AtomicInteger(0);
+        StageHandler flakyThenWorks = ctx -> {
+            if (invocations.incrementAndGet() == 1) throw new TransientStageException("simulated");
+            return Map.of("ok", true);
+        };
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("flaky", List.of(), flakyThenWorks, false, false, 0, 5, null, null, null));
+
+        WorkflowEngine engine = engineWithCompensation(new CompensationRegistry());
+        String workflowId = engine.submit("demo", stages, "run-33n");
+        assertThat(invocations.get()).isEqualTo(1);
+        assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
+                .isEqualTo(WorkflowStatus.SAFE_STOPPED);
+
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        java.util.concurrent.CountDownLatch bothReady = new java.util.concurrent.CountDownLatch(2);
+        java.util.concurrent.CountDownLatch go = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.Callable<Void> retry = () -> {
+            bothReady.countDown();
+            go.await(5, java.util.concurrent.TimeUnit.SECONDS);
+            try {
+                engine.retrySafeStopped(workflowId);
+            } catch (IllegalStateException ignored) {
+                // the losing caller: by the time it acquires the instance lock, the winner has
+                // already moved the instance past SAFE_STOPPED — exactly the intended outcome.
+            }
+            return null;
+        };
+        java.util.concurrent.Future<Void> f1 = pool.submit(retry);
+        java.util.concurrent.Future<Void> f2 = pool.submit(retry);
+        assertThat(bothReady.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        go.countDown();
+        f1.get(10, java.util.concurrent.TimeUnit.SECONDS);
+        f2.get(10, java.util.concurrent.TimeUnit.SECONDS);
+        pool.shutdown();
+
+        // The handler ran once for the original attempt and exactly once more for the retry —
+        // never twice for the retry itself, regardless of how the two concurrent callers raced.
+        assertThat(invocations.get()).isEqualTo(2);
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.COMPLETED);
+    }
 }

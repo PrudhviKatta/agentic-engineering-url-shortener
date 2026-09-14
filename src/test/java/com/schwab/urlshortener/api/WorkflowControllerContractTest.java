@@ -253,6 +253,35 @@ class WorkflowControllerContractTest {
     }
 
     @Test
+    void postWorkflowsPersistsTheSubmittedRequirementTextVerbatimWithProvenance() {
+        // Codex REQUEST AMENDMENTS follow-up (Section 17 review): requirementText was validated
+        // at the controller but then discarded — never reaching contextJson or any persisted
+        // column. Confirms the exact submitted text now shows up in the FIRST stage's own
+        // persisted inputsSnapshot (contextArtifactsAtStageStart), not merely that 201 was
+        // returned.
+        String requirementText = "Add an optional expiresAt field to link creation, exact wording matters.";
+        ResponseEntity<Map> createResp = rest.postForEntity(
+                url("/workflows"),
+                Map.of("feature", "add-expiration-endpoint", "requirementText", requirementText),
+                Map.class);
+        assertThat(createResp.getStatusCode().value()).isEqualTo(201);
+        String workflowId = (String) createResp.getBody().get("id");
+
+        ResponseEntity<Map> stateResp = rest.getForEntity(url("/workflows/" + workflowId), Map.class);
+        List<Map<String, Object>> steps = (List<Map<String, Object>>) stateResp.getBody().get("steps");
+        Map<String, Object> ingestion = steps.stream()
+                .filter(s -> "requirement_ingestion".equals(s.get("name")))
+                .findFirst().orElseThrow();
+        Map<String, Object> inputs = (Map<String, Object>) ingestion.get("inputs");
+        Map<String, Object> artifacts = (Map<String, Object>) inputs.get("contextArtifactsAtStageStart");
+        assertThat(artifacts).containsKey("requirement");
+        Map<String, Object> requirement = (Map<String, Object>) artifacts.get("requirement");
+        assertThat(requirement.get("text")).isEqualTo(requirementText);
+        assertThat(requirement.get("submittedVia")).isEqualTo("POST /workflows");
+        assertThat(requirement.get("submittedAt")).isNotNull();
+    }
+
+    @Test
     void postWorkflowsWithMissingRequirementTextReturns422() {
         ResponseEntity<Map> resp = rest.postForEntity(
                 url("/workflows"), Map.of("feature", "add-expiration-endpoint"), Map.class);

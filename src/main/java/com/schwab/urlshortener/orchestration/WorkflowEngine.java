@@ -112,6 +112,21 @@ public class WorkflowEngine {
     }
 
     public String submit(String feature, List<StageDefinition> stages, String correlationId) {
+        return submit(feature, stages, correlationId, null);
+    }
+
+    // Codex REQUEST AMENDMENTS follow-up (Section 17 review): the original 3-arg submit() (kept
+    // above, delegating here with requirementText=null, for every caller — ScenarioRunner, every
+    // existing test — that has no requirement text to carry) validated requirementText at the
+    // controller and then dropped it entirely; it never reached contextJson or any persisted
+    // column, so Stage 1's own requirement was never captured verbatim or with provenance,
+    // contrary to REQ-011/the OpenAPI contract. Seeding it into the initial artifacts map here —
+    // before runFrom() ever runs a stage — means it is genuinely part of the workflow context
+    // from the very first batch onward: buildContext(instance) reads it back on every subsequent
+    // resume, and it shows up in the first stage's own persisted inputsSnapshot
+    // (contextArtifactsAtStageStart), inspectable via GET /workflows/{id} without any new API
+    // surface.
+    public String submit(String feature, List<StageDefinition> stages, String correlationId, String requirementText) {
         DependencyGraph graph = new DependencyGraph(stages);
         graph.validate();
         String workflowId = UUID.randomUUID().toString();
@@ -122,6 +137,15 @@ public class WorkflowEngine {
         instance.setFeature(feature);
         instance.setStatus(WorkflowStatus.RUNNING);
         instance.setCorrelationId(correlationId);
+        if (requirementText != null) {
+            Map<String, Object> requirement = new LinkedHashMap<>();
+            requirement.put("text", requirementText);
+            requirement.put("submittedAt", Instant.now().toString());
+            requirement.put("submittedVia", "POST /workflows");
+            Map<String, Object> artifacts = new LinkedHashMap<>();
+            artifacts.put("requirement", requirement);
+            instance.setContextJson(Map.of("decisions", List.of(), "artifacts", artifacts));
+        }
         instanceRepository.save(instance);
 
         int sequence = 0;
@@ -220,18 +244,26 @@ public class WorkflowEngine {
                 } catch (SafeStopException e) {
                     // The failing step's own SAFE_STOPPED status/safeStopReason/result were already
                     // persisted inside runStage before this propagated. The instance-level context
-                    // (decisions/artifacts) is deliberately NOT persisted here for RETRY_EXHAUSTED
-                    // or COMPENSATION_FAILED — a safe-stopped batch's cross-stage context is not
-                    // treated as a safe new baseline for a resume that will re-run the handler.
-                    // Codex REQUEST AMENDMENTS item 6 exception: POLICY_BLOCKED means the handler
-                    // already succeeded and won't be re-run on resume — retrySafeStopped needs the
-                    // artifacts it produced to re-evaluate the policy boundary, so this IS persisted
-                    // for that one reason.
+                    // (decisions/artifacts) is ALWAYS persisted here now — Codex REQUEST AMENDMENTS
+                    // follow-up (Section 17 review) corrected a real defect in the previous
+                    // POLICY_BLOCKED-only version: `ctx` is SHARED across every stage runBatch just
+                    // dispatched, not owned by the one that failed, so restricting the persist to
+                    // one specific reason discarded every OTHER (already-succeeded) sibling's
+                    // artifacts in a mixed batch too — not just the failing stage's own. A mixed
+                    // batch (e.g. one sibling POLICY_BLOCKED, one RETRY_EXHAUSTED) whose
+                    // SafeStopException happened to come from the non-POLICY_BLOCKED sibling
+                    // (Round 5's runBatch join order is unspecified) discarded the successful
+                    // sibling's evidence, and a subsequent policy-boundary re-evaluation could then
+                    // fail-closed on a policy that had genuinely PASSED on the original run —
+                    // forcing an operator to grant an unnecessary exception just to unblock a
+                    // legitimate workflow. Persisting unconditionally is safe: a RETRY_EXHAUSTED/
+                    // COMPENSATION_FAILED/UNEXPECTED_FAILURE step's OWN handler will still
+                    // genuinely re-run on resume (resetSafeStoppedStepToPending) and simply
+                    // overwrites whatever artifact keys it itself owns — nothing reads a failed
+                    // stage's own prior partial artifact to decide what to do on retry.
                     applyInstanceUpdate(workflowId, i -> {
                         i.setStatus(WorkflowStatus.SAFE_STOPPED);
-                        if (e.reason() == SafeStopReason.POLICY_BLOCKED) {
-                            i.setContextJson(Map.of("decisions", ctx.decisions(), "artifacts", ctx.artifacts()));
-                        }
+                        i.setContextJson(Map.of("decisions", ctx.decisions(), "artifacts", ctx.artifacts()));
                     });
                     recordEvent(workflowId, "orchestrator", "workflow-engine", "safe_stop_triggered",
                             null, "SAFE_STOPPED", e.getMessage());
@@ -404,30 +436,49 @@ public class WorkflowEngine {
         Throwable firstOther = null;
         boolean interrupted = false;
         for (Future<?> future : futures) {
-            try {
-                future.get();
-            } catch (InterruptedException e) {
-                interrupted = true;
-            } catch (ExecutionException e) {
-                // Task 28: a SafeStopException from a mandatory policy failure must propagate as
-                // itself — not wrapped in a generic RuntimeException — so runFrom's catch above
-                // can distinguish "safe-stop the workflow" from "an unexpected handler error."
-                Throwable cause = e.getCause();
-                if (cause instanceof SafeStopException && firstSafeStop == null) {
-                    firstSafeStop = cause;
-                } else if (firstOther == null) {
-                    firstOther = cause;
+            // Codex REQUEST AMENDMENTS follow-up (Section 17 review): an InterruptedException
+            // from future.get() means THIS thread was interrupted while waiting, not that the
+            // future itself failed — the handler it's waiting on is still running. Moving on to
+            // the next future without re-awaiting this one is exactly the orphan-thread gap the
+            // Round 5 fix (join every future unconditionally) was meant to close, just reachable
+            // via a different trigger. Retry get() on the SAME future — java.util.concurrent
+            // clears a thread's interrupt status the moment a blocking call consumes it, so the
+            // retry does not spin or return immediately unless re-interrupted — and only restore
+            // the interrupt flag once every future has actually been joined.
+            boolean joined = false;
+            while (!joined) {
+                try {
+                    future.get();
+                    joined = true;
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                } catch (ExecutionException e) {
+                    // Task 28: a SafeStopException from a mandatory policy failure must propagate
+                    // as itself — not wrapped in a generic RuntimeException — so runFrom's catch
+                    // above can distinguish "safe-stop the workflow" from "an unexpected handler
+                    // error."
+                    Throwable cause = e.getCause();
+                    if (cause instanceof SafeStopException && firstSafeStop == null) {
+                        firstSafeStop = cause;
+                    } else if (firstOther == null) {
+                        firstOther = cause;
+                    }
+                    joined = true;
                 }
             }
         }
+        // Codex REQUEST AMENDMENTS follow-up (Section 17 review): restore the interrupt flag so a
+        // caller that cares can observe it — but do NOT synthesize an exception purely because
+        // this thread was interrupted while waiting. Every future was still joined to its REAL
+        // outcome above (that's the whole point of retrying get() on the same future rather than
+        // abandoning it), so if every stage actually succeeded, this method returning normally is
+        // the correct behavior; throwing here would misrepresent a fully successful batch as
+        // failed merely because the waiting thread was interrupted partway through.
         if (interrupted) {
             Thread.currentThread().interrupt();
         }
         if (firstSafeStop != null) {
             throw (SafeStopException) firstSafeStop;
-        }
-        if (interrupted) {
-            throw new RuntimeException(new InterruptedException("interrupted while awaiting batch stages"));
         }
         if (firstOther != null) {
             throw new RuntimeException(firstOther);
@@ -633,6 +684,7 @@ public class WorkflowEngine {
         // SUCCEEDED path below.
         Map<String, Object> result = null;
         boolean succeeded = false;
+        SafeStopReason failureReason = SafeStopReason.RETRY_EXHAUSTED;
         StageHandler timeoutBounded = TimeoutExecutor.withTimeout(stage.handler(), stage.timeoutSeconds() * 1000L);
         StageHandler retryable = RetryExecutor.withBoundedRetry(timeoutBounded, stage.maxRetries(),
                 RETRY_BACKOFF_BASE_MILLIS, attempt -> {
@@ -647,6 +699,19 @@ public class WorkflowEngine {
         } catch (TransientStageException e) {
             // retries exhausted (a plain transient failure or a StageTimeoutException — now the
             // same catch clause since StageTimeoutException extends TransientStageException)
+        } catch (RuntimeException e) {
+            // Codex REQUEST AMENDMENTS follow-up (Section 17 review): neither RetryExecutor nor
+            // TimeoutExecutor catches anything outside the Permanent/TransientStageException
+            // hierarchy — an unexpected handler bug (NPE, IllegalStateException, etc.) previously
+            // propagated straight out of runStage uncaught, leaving the step at RUNNING (set by
+            // claimStage before the handler ran) and the workflow instance untouched forever: no
+            // terminal write, no SafeStopException for runFrom's catch to react to. Fail-closed:
+            // this falls into the same exhaustion/compensation path below a genuinely exhausted
+            // retry takes, tagged with its own reason so the audit trail and retrySafeStopped's
+            // resume logic (which already treats every non-POLICY_BLOCKED reason identically —
+            // reset and genuinely re-run) can tell an unexpected bug apart from ordinary
+            // exhaustion without any further branching needed there.
+            failureReason = SafeStopReason.UNEXPECTED_FAILURE;
         }
 
         if (!succeeded) {
@@ -690,10 +755,10 @@ public class WorkflowEngine {
                 return; // handled: this batch and the workflow continue normally
             }
             step.setStatus(StepStatus.SAFE_STOPPED);
-            step.setSafeStopReason(SafeStopReason.RETRY_EXHAUSTED);
+            step.setSafeStopReason(failureReason);
             stepRepository.save(step);
-            throw new SafeStopException("retries exhausted, no compensation registered for stage " + stage.name(),
-                    SafeStopReason.RETRY_EXHAUSTED);
+            throw new SafeStopException("stage " + stage.name() + " did not succeed and no compensation was"
+                    + " registered (or compensation was not applicable): " + failureReason, failureReason);
         }
 
         // Task 28: policy enforcement runs right after the handler returns, before the step is
@@ -821,11 +886,26 @@ public class WorkflowEngine {
     // batches before that pending approval decision is ever made — an approval-gate bypass. Only the
     // exit-gate-pending case was genuinely idempotent as originally claimed.
     public void retrySafeStopped(String workflowId) {
-        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
-        if (instance.getStatus() != WorkflowStatus.SAFE_STOPPED) {
+        // Codex REQUEST AMENDMENTS follow-up (Section 17 review): the SAFE_STOPPED -> RUNNING
+        // transition below is now claimed atomically under the instance's existing pessimistic
+        // row lock, exactly like claimStage does for a step's PENDING -> RUNNING transition.
+        // Before this, two concurrent retrySafeStopped(workflowId) calls could both read the
+        // instance as SAFE_STOPPED (unlocked), both read the SAME steps list (unlocked), and both
+        // proceed to reset the same non-POLICY_BLOCKED step — caller A's reset could be claimed
+        // and run to completion by claimStage/runStage, then caller B's stale in-memory
+        // WorkflowStepEntity (read before A's write) could still get saved back with status
+        // PENDING and every OTHER field frozen at its pre-A values, undoing A's already-committed
+        // progress and re-arming the step for a second execution. Claiming the instance FIRST
+        // means only one caller ever reaches the per-step work below; a second concurrent caller
+        // blocks on the instance lock and, once it acquires it, observes RUNNING (not
+        // SAFE_STOPPED) and is rejected exactly like any other "not actually safe-stopped" call —
+        // no step-level race is reachable at all.
+        if (!claimSafeStoppedForRetry(workflowId)) {
+            WorkflowInstanceEntity current = instanceRepository.findById(workflowId).orElseThrow();
             throw new IllegalStateException(
-                    "workflow " + workflowId + " is not SAFE_STOPPED (status: " + instance.getStatus() + ")");
+                    "workflow " + workflowId + " is not SAFE_STOPPED (status: " + current.getStatus() + ")");
         }
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
         int planVersion = instance.getPlanVersion();
         StageRegistration registration = registry.get(workflowId);
         List<WorkflowStepEntity> steps = stepRepository.findByWorkflowIdAndPlanVersionOrderBySequence(workflowId, planVersion);
@@ -833,9 +913,9 @@ public class WorkflowEngine {
         // Codex REQUEST AMENDMENTS item 6: a POLICY_BLOCKED step's handler already ran to
         // completion once — re-running it would risk double-executing whatever real side effect it
         // had. Resolve ONLY the policy boundary against the persisted (post-handler) context,
-        // never touching stage.handler() again. A RETRY_EXHAUSTED or COMPENSATION_FAILED step
-        // never actually completed, so it genuinely needs to run again — reset to PENDING as
-        // before, letting runFrom's normal machinery re-execute it.
+        // never touching stage.handler() again. A RETRY_EXHAUSTED, COMPENSATION_FAILED, or
+        // UNEXPECTED_FAILURE step never actually completed, so it genuinely needs to run again —
+        // reset to PENDING as before, letting runFrom's normal machinery re-execute it.
         WorkflowContext ctx = buildContext(instance);
         boolean anyProgress = false;
         for (WorkflowStepEntity step : steps) {
@@ -846,24 +926,61 @@ public class WorkflowEngine {
                 if (reevaluatePolicyBoundary(workflowId, step, stage, ctx)) {
                     anyProgress = true;
                 }
-            } else {
-                step.setStatus(StepStatus.PENDING);
-                step.setSafeStopReason(null);
-                stepRepository.save(step);
+            } else if (resetSafeStoppedStepToPending(workflowId, planVersion, step.getName())) {
                 anyProgress = true;
             }
         }
         if (!anyProgress) {
             // Nothing actually changed — every SAFE_STOPPED step is still policy-blocked with no
-            // (newly) approved exception. Leave the workflow exactly as it was rather than
-            // resurrecting it to RUNNING and letting runFrom silently march past a batch that
-            // never actually cleared (mandatoryFail returning without throwing would otherwise be
-            // invisible to runFrom's batch loop, which only reacts to a thrown SafeStopException).
+            // (newly) approved exception. Reassert SAFE_STOPPED (this call's own claim above
+            // already moved the instance to RUNNING) rather than leaving it resurrected to RUNNING
+            // for no reason and letting runFrom silently march past a batch that never actually
+            // cleared (mandatoryFail returning without throwing would otherwise be invisible to
+            // runFrom's batch loop, which only reacts to a thrown SafeStopException).
+            applyInstanceUpdate(workflowId, i -> i.setStatus(WorkflowStatus.SAFE_STOPPED));
             return;
         }
-        instance.setStatus(WorkflowStatus.RUNNING);
-        instanceRepository.save(instance);
         runFrom(workflowId);
+    }
+
+    // Atomically transitions the workflow instance SAFE_STOPPED -> RUNNING under its existing
+    // pessimistic row lock — the same lock/helper shape as applyInstanceUpdate, specialized to a
+    // compare-and-set so only ONE concurrent retrySafeStopped(workflowId) caller ever proceeds
+    // past this point.
+    private boolean claimSafeStoppedForRetry(String workflowId) {
+        Boolean claimed = transactionTemplate.execute(status -> {
+            WorkflowInstanceEntity fresh = instanceRepository.findWithLockById(workflowId).orElseThrow();
+            if (fresh.getStatus() != WorkflowStatus.SAFE_STOPPED) {
+                return Boolean.FALSE;
+            }
+            fresh.setStatus(WorkflowStatus.RUNNING);
+            instanceRepository.save(fresh);
+            return Boolean.TRUE;
+        });
+        return Boolean.TRUE.equals(claimed);
+    }
+
+    // Atomically transitions a SAFE_STOPPED (non-POLICY_BLOCKED) step to PENDING under the step's
+    // existing pessimistic row lock — the same shape as claimStage, applied to the opposite
+    // transition. A fresh, locked read-check-write instead of retrySafeStopped's caller reusing
+    // its own earlier unlocked list read is what actually closes the stale-object-save race
+    // described above; retrySafeStopped's own instance-level claim already ensures only one
+    // caller reaches this per-workflow, but locking each step individually too costs nothing and
+    // keeps this helper correct standing alone, matching claimStage's own defense-in-depth.
+    private boolean resetSafeStoppedStepToPending(String workflowId, int planVersion, String stepName) {
+        Boolean reset = transactionTemplate.execute(status -> {
+            WorkflowStepEntity step = stepRepository
+                    .findWithLockByWorkflowIdAndPlanVersionAndName(workflowId, planVersion, stepName)
+                    .orElseThrow();
+            if (step.getStatus() != StepStatus.SAFE_STOPPED || step.getSafeStopReason() == SafeStopReason.POLICY_BLOCKED) {
+                return Boolean.FALSE;
+            }
+            step.setStatus(StepStatus.PENDING);
+            step.setSafeStopReason(null);
+            stepRepository.save(step);
+            return Boolean.TRUE;
+        });
+        return Boolean.TRUE.equals(reset);
     }
 
     // Codex REQUEST AMENDMENTS item 6: re-runs ONLY the policy check for a step whose handler

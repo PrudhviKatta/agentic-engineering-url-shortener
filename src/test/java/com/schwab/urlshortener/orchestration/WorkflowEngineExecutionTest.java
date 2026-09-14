@@ -19,9 +19,10 @@ class WorkflowEngineExecutionTest {
     @Autowired private WorkflowInstanceJpaRepository instanceRepository;
     @Autowired private WorkflowStepJpaRepository stepRepository;
     @Autowired private WorkflowEventJpaRepository eventRepository;
+    @Autowired private ApprovalJpaRepository approvalRepository;
 
     private WorkflowEngine engine() {
-        return new WorkflowEngine(instanceRepository, stepRepository, eventRepository);
+        return new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository);
     }
 
     @Test

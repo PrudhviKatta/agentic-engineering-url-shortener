@@ -261,9 +261,10 @@ class WorkflowEngineApprovalTest {
         assertThatThrownBy(() -> engine.approve(workflowId, "risky", "approved", "   ", "ok"))
                 .isInstanceOf(InvalidApprovalDecisionException.class);
 
-        // Untouched by either rejected call — the gate is still exactly as it was. (approvalRepository
-        // is a shared, file-backed H2 datastore across the whole suite, so scope the "no row written"
-        // check to THIS step instance rather than asserting the whole table is empty.)
+        // Untouched by either rejected call — the gate is still exactly as it was. (@DataJpaTest's
+        // datasource isn't reset between test methods within this class, so approvalRepository
+        // still holds rows from earlier tests here — scope the "no row written" check to THIS step
+        // instance rather than asserting the whole table is empty.)
         WorkflowStepEntity step = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "risky").orElseThrow();
         assertThat(step.getStatus()).isEqualTo(StepStatus.WAITING_APPROVAL);
         assertThat(approvalRepository.existsByStepInstanceId(step.getId())).isFalse();

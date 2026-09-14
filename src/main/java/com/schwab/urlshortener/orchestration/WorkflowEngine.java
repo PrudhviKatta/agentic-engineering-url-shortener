@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -211,12 +212,34 @@ public class WorkflowEngine {
 
     private DecisionOutcome recordDecisionAtomically(String workflowId, String stepName, String decision,
                                                        String actor, String reason) {
+        try {
+            return recordDecisionInTransaction(workflowId, stepName, decision, actor, reason);
+        } catch (PessimisticLockingFailureException e) {
+            // A concurrent approve() call on the SAME step is holding the row lock past H2's lock
+            // timeout: rather than let that surface as a 500, treat it the same as losing the race
+            // outright — by the time this caller could act, the winner has (or is about to have)
+            // already decided this gate.
+            throw new NoPendingApprovalException(
+                    "no approval currently pending on step " + stepName + " (contended by a concurrent decision)");
+        }
+    }
+
+    private DecisionOutcome recordDecisionInTransaction(String workflowId, String stepName, String decision,
+                                                          String actor, String reason) {
         return transactionTemplate.execute(status -> {
             WorkflowInstanceEntity instance = instanceRepository.findById(workflowId)
                     .orElseThrow(() -> new NoPendingApprovalException("unknown workflow: " + workflowId));
 
             // Round-6b correction (independent-review finding): a terminal workflow accepts no
             // further decisions — see the original note preserved from that round below.
+            // Disclosed limitation (Round-6c independent review): this read is NOT covered by the
+            // step-level pessimistic lock below, so it only serializes decisions on the SAME step.
+            // Two DIFFERENT exit-gated siblings decided concurrently (reject one, approve the other,
+            // truly simultaneously) can each pass this check before either commits, letting the
+            // approved sibling's later runFrom() call — which itself has no terminal-status guard —
+            // carry a workflow the rejection already failed through to COMPLETED. Out of scope for
+            // this round's three items (all specifically about a single step's own decision); would
+            // need workflow-instance-level locking to close, not just this step's row lock.
             if (instance.getStatus() == WorkflowStatus.FAILED || instance.getStatus() == WorkflowStatus.COMPLETED) {
                 throw new NoPendingApprovalException(
                         "workflow " + workflowId + " is already terminal (" + instance.getStatus() + ")");

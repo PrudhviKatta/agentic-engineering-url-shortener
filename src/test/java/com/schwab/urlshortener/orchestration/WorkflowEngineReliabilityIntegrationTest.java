@@ -19,6 +19,7 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 // @DataJpaTest wraps each test in a transaction on the test thread's own connection.
 // WorkflowEngine.runFrom dispatches stage handlers onto its internal thread pool, and Task 33's
@@ -505,5 +506,119 @@ class WorkflowEngineReliabilityIntegrationTest {
         assertThat(invocations.get()).isEqualTo(2);
         WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
         assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.COMPLETED);
+    }
+
+    // --- Independent-review finding (Section 17 follow-up review, N2): persisting safe-stop
+    // context unconditionally must not let a mandatory policy PASS on stale evidence written by
+    // an attempt whose handler never actually succeeded ---
+
+    @Test
+    void staleEvidenceFromAFailedAttemptDoesNotSatisfyAMandatoryPolicyOnResume() {
+        AtomicInteger invocations = new AtomicInteger(0);
+        StageHandler impl = ctx -> {
+            if (invocations.incrementAndGet() == 1) {
+                // Writes real compliance evidence, THEN fails — this attempt's handler never
+                // actually completed successfully, so this evidence must not be trusted later.
+                ctx.addArtifact("urlSchemeAllowlistEnforced", true);
+                ctx.addArtifact("ssrfGuardEnforced", true);
+                throw new TransientStageException("simulated failure after writing evidence");
+            }
+            // Second attempt succeeds but does NOT (re)write the evidence this time.
+            return Map.of();
+        };
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("implementation", List.of(), impl, false, false, 0, 5, null, null, null));
+        PolicyEngine policyEngine = new PolicyEngine("policies/v1.yaml");
+        WorkflowEngine engine = engineWithPolicy(policyEngine);
+
+        String workflowId = engine.submit("demo", stages, "run-33o");
+        assertThat(invocations.get()).isEqualTo(1);
+        WorkflowStepEntity firstAttempt = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "implementation")
+                .orElseThrow();
+        assertThat(firstAttempt.getSafeStopReason()).isEqualTo(SafeStopReason.RETRY_EXHAUSTED);
+
+        // The failed attempt's own evidence must NOT have been persisted as a trustworthy
+        // baseline — this is a single-stage batch with no successful sibling to preserve.
+        WorkflowInstanceEntity afterFirstFailure = instanceRepository.findById(workflowId).orElseThrow();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> persistedArtifacts =
+                (Map<String, Object>) afterFirstFailure.getContextJson().getOrDefault("artifacts", Map.of());
+        assertThat(persistedArtifacts).doesNotContainKey("ssrfGuardEnforced");
+
+        engine.retrySafeStopped(workflowId);
+        assertThat(invocations.get()).isEqualTo(2);
+
+        // The handler genuinely succeeded this time, but WITHOUT re-supplying the mandatory
+        // evidence — fail-closed must still block it, not silently pass on the earlier attempt's
+        // stale writes.
+        WorkflowStepEntity retried = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "implementation")
+                .orElseThrow();
+        assertThat(retried.getStatus()).isEqualTo(StepStatus.SAFE_STOPPED);
+        assertThat(retried.getSafeStopReason()).isEqualTo(SafeStopReason.POLICY_BLOCKED);
+        assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
+                .isEqualTo(WorkflowStatus.SAFE_STOPPED);
+    }
+
+    // --- Independent-review finding (Section 17 follow-up review, N1): any exception after
+    // retrySafeStopped's instance claim must revert the instance to SAFE_STOPPED, not strand it
+    // RUNNING ---
+
+    @Test
+    void retrySafeStoppedRevertsToSafeStoppedWhenTheRegistrationIsMissingAfterTheClaim() {
+        // Reproduces the exact scenario independent review found (N1): registry.get(workflowId)
+        // is an in-memory ConcurrentHashMap, empty for a workflow whose process has restarted,
+        // while the DB still shows it SAFE_STOPPED. Built directly via the repositories
+        // (bypassing submit(), which is what populates the registry) so no StageRegistration is
+        // ever registered for this workflow id — the claim below commits SAFE_STOPPED -> RUNNING
+        // and then genuinely has nothing to resolve the policy boundary or reset steps with.
+        WorkflowEngine engine = engineWithCompensation(new CompensationRegistry());
+        String workflowId = "orphaned-workflow-33p";
+        WorkflowInstanceEntity instance = new WorkflowInstanceEntity();
+        instance.setId(workflowId);
+        instance.setFeature("demo");
+        instance.setStatus(WorkflowStatus.SAFE_STOPPED);
+        instance.setCorrelationId("run-33p");
+        instanceRepository.save(instance);
+        WorkflowStepEntity step = new WorkflowStepEntity();
+        step.setWorkflowId(workflowId);
+        step.setName("doomed");
+        step.setStatus(StepStatus.SAFE_STOPPED);
+        step.setSafeStopReason(SafeStopReason.RETRY_EXHAUSTED);
+        step.setSequence(0);
+        step.setDependsOn(List.of());
+        step.setPlanVersion(1);
+        stepRepository.save(step);
+
+        assertThatThrownBy(() -> engine.retrySafeStopped(workflowId)).isInstanceOf(IllegalStateException.class);
+
+        // The claim committed SAFE_STOPPED -> RUNNING before the missing registration was
+        // discovered — this must have been reverted, not left stranded RUNNING forever.
+        assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
+                .isEqualTo(WorkflowStatus.SAFE_STOPPED);
+
+        // And retrySafeStopped remains callable — not permanently refused by its own
+        // "not SAFE_STOPPED" precondition.
+        assertThatThrownBy(() -> engine.retrySafeStopped(workflowId)).isInstanceOf(IllegalStateException.class);
+        assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
+                .isEqualTo(WorkflowStatus.SAFE_STOPPED);
+    }
+
+    // --- Independent-review finding (Section 17 follow-up review, N4): the original exception's
+    // detail must not be discarded for UNEXPECTED_FAILURE ---
+
+    @Test
+    void unexpectedFailureCarriesTheOriginalExceptionDetailIntoTheAuditTrail() {
+        StageHandler buggy = ctx -> { throw new IllegalStateException("very specific bug detail"); };
+        List<StageDefinition> stages = List.of(StageDefinition.of("buggy", List.of(), buggy));
+
+        WorkflowEngine engine = engineWithCompensation(new CompensationRegistry());
+        String workflowId = engine.submit("demo", stages, "run-33q");
+
+        List<WorkflowEventEntity> events = eventRepository.findByWorkflowIdOrderById(workflowId);
+        WorkflowEventEntity safeStopEvent = events.stream()
+                .filter(ev -> "safe_stop_triggered".equals(ev.getAction()))
+                .findFirst().orElseThrow();
+        assertThat(safeStopEvent.getReason()).contains("very specific bug detail");
+        assertThat(safeStopEvent.getReason()).contains("IllegalStateException");
     }
 }

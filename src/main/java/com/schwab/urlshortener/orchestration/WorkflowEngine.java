@@ -164,45 +164,65 @@ public class WorkflowEngine {
         return workflowId;
     }
 
-    // Task 35 (REQ-018 dynamic replanning; REQ-030 change safety). Invalidates every stage
-    // reachable from fromStage (by dependency-graph reachability — i.e. fromStage itself and every
-    // stage that transitively depends on it — not merely sequence order), inserts newStages as the
-    // replacement, bumps the workflow's plan_version, and resumes. `ctx.decisions()`/
-    // `ctx.artifacts()` accumulated before the replan point are untouched — replan never rebuilds
-    // or resets the WorkflowContext, it only changes which stages exist going forward — so lineage
-    // recorded by a survivor stage (e.g. "design" in the canonical scenario) is neither lost nor
-    // duplicated by the resume that follows.
+    // Task 35 (REQ-018 dynamic replanning; REQ-030 change safety), remediated after independent
+    // review found the first version genuinely defective — not merely under-tested. Invalidates
+    // every stage reachable from fromStage (fromStage itself plus every stage that transitively
+    // depends on it), inserts newStages as the replacement, bumps the workflow's plan_version, and
+    // resumes. `ctx.decisions()`/`ctx.artifacts()` accumulated before the replan point are
+    // untouched — replan never rebuilds or resets the WorkflowContext, it only changes which stages
+    // exist going forward.
     //
-    // Plan-version isolation: EVERY existing lookup in this engine (stepStatus/requireStep/
-    // claimStage/approve/runFrom's own batch loop) resolves a step by (workflowId, planVersion,
-    // name) using the INSTANCE's single current plan_version — there is no per-step plan_version
-    // resolution. That means a surviving stage (not reachable from fromStage, so not invalidated)
-    // MUST be carried forward onto the NEW plan_version — the SAME row, same id, only its
-    // plan_version column changes — or it becomes permanently unaddressable the moment
-    // instance.planVersion advances (every future approve()/runFrom() call would look for it under
-    // a plan_version its row no longer carries and throw NoSuchElementException). This is a
-    // re-tag, not a rewrite of history: status/result/retryCount/timestamps/every other field on
-    // the row is untouched, exactly as ADR-006's plan-version-scoped model expects — approvals
-    // reference a step by its durable stepInstanceId (see ApprovalEntity), never by planVersion, so
-    // re-stamping a survivor's planVersion cannot retroactively invalidate or misattribute any
-    // approval already decided against that same row.
+    // REQ-018 is a hard eligibility gate, not a documentation note: "only the not-yet-started
+    // portion" may be altered, and prior history is NEVER rewritten. A stage counts as not-yet-
+    // started only if its handler genuinely never ran — status PENDING, or WAITING_APPROVAL behind
+    // an ENTRY gate whose preGateStatus is still PENDING (blocked before ever running). A stage
+    // whose handler already executed (SUCCEEDED, COMPENSATED, an EXIT gate's WAITING_APPROVAL —
+    // preGateStatus not PENDING —, RUNNING, SAFE_STOPPED, or already INVALIDATED) makes the ENTIRE
+    // replan request rejected, mutating nothing — never a partial invalidation of "the eligible
+    // subset." This is checked, and everything below is validated, strictly BEFORE any row is
+    // touched, and the whole operation (eligibility recheck under lock, invalidate, insert
+    // replacements, bump plan_version, record the audit event) commits as ONE transaction, with the
+    // workflow instance AND every reachable stage's row locked for its duration — runFrom is called
+    // only after that transaction has committed, never from inside it (matching every other
+    // multi-step mutation in this class — see applyInstanceUpdate's own comment on why: worker
+    // threads runBatch dispatches use a different connection and cannot see this transaction's
+    // writes until it commits).
+    //
+    // Plan-version isolation: workflow_steps.plan_version is immutable once a row is created — it
+    // records the plan active when that row was created, and this method never re-stamps a
+    // survivor's row (an earlier, defective version of this method did; corrected). Every lookup
+    // this engine performs (requireStep/stepStatus/claimStage/approve/runFrom's own batch loop) now
+    // resolves "the currently active row for this stage name" by excluding INVALIDATED rows, never
+    // by matching a single plan_version — see WorkflowStepJpaRepository.findByWorkflowIdAndNameAnd
+    // StatusNot's own comment. This is what lets a survivor keep its original plan_version forever
+    // while still being found correctly after later replans advance the workflow's plan_version.
+    // Approvals reference a step by its durable stepInstanceId (see ApprovalEntity), never by
+    // planVersion, so a survivor's untouched row correctly keeps governing any approval already
+    // decided against it.
     //
     // Invalidated stages are dropped entirely from the ACTIVE stage list going forward (not kept
     // alongside their replacement) — DependencyGraph keys stages by name in a plain map with no
     // duplicate-name guard, so keeping an invalidated stage around while newStages reintroduces the
     // exact same name (explicitly a legitimate case per data-model.md) would silently collide.
-    // Their WorkflowStepEntity rows remain in the database forever, frozen at the plan_version they
-    // were actually created under — permanent, immutable history, inspectable via the full-history
-    // repository queries the audit trail already uses, just excluded from future scheduling.
+    // Their WorkflowStepEntity rows remain in the database forever, frozen exactly as they were —
+    // permanent, immutable history, inspectable via the full-history repository queries the audit
+    // trail already uses, just excluded from future scheduling.
     public void replan(String workflowId, String fromStage, List<StageDefinition> newStages,
                         String actor, String reason) {
-        // Claim: pessimistic-locked, exactly like approve()'s own instance-level claim — a
-        // concurrent decision on this same workflow cannot interleave with the precondition checks
-        // below. Committed immediately (short transaction) so the per-step mutations that follow,
-        // and the runFrom() call at the very end, see this write from a fresh connection, matching
-        // every other multi-step mutation in this class (see applyInstanceUpdate's own comment on
-        // why runFrom must never run inside an outer transaction).
-        ReplanClaim claim = transactionTemplate.execute(status -> {
+        if (actor == null || actor.isBlank()) {
+            throw new InvalidApprovalDecisionException("actor must be present and non-blank");
+        }
+        if (reason == null || reason.isBlank()) {
+            throw new InvalidApprovalDecisionException("reason must be present and non-blank");
+        }
+        Set<String> newNames = new HashSet<>();
+        for (StageDefinition s : newStages) {
+            if (!newNames.add(s.name())) {
+                throw new IllegalArgumentException("duplicate stage name in newStages: " + s.name());
+            }
+        }
+
+        transactionTemplate.execute(status -> {
             WorkflowInstanceEntity instance = instanceRepository.findWithLockById(workflowId)
                     .orElseThrow(() -> new IllegalStateException("unknown workflow: " + workflowId));
             if (instance.getStatus() == WorkflowStatus.FAILED || instance.getStatus() == WorkflowStatus.COMPLETED) {
@@ -214,65 +234,89 @@ public class WorkflowEngine {
                 throw new IllegalStateException("workflow " + workflowId + " has no in-memory stage "
                         + "registration (process restarted?) — cannot replan it");
             }
-            if (registration.stages().stream().noneMatch(s -> s.name().equals(fromStage))) {
+            List<StageDefinition> currentStages = registration.stages();
+            if (currentStages.stream().noneMatch(s -> s.name().equals(fromStage))) {
                 throw new IllegalArgumentException("unknown stage: " + fromStage);
             }
+
+            Set<String> reachable = reachableFrom(fromStage, currentStages); // includes fromStage
+            List<StageDefinition> survivors = currentStages.stream()
+                    .filter(s -> !reachable.contains(s.name())).toList();
+            for (StageDefinition survivor : survivors) {
+                if (newNames.contains(survivor.name())) {
+                    throw new IllegalArgumentException(
+                            "newStages reintroduces a surviving stage's own name: " + survivor.name());
+                }
+            }
+
+            // Validate the proposed graph BEFORE touching any row: an invalid replan (cycle,
+            // unknown dependency) must leave every table completely unchanged, not merely leave
+            // the instance stuck in a transitional status. Nothing has been mutated yet at this
+            // point (only read-only checks so far), so a thrown exception here rolls the whole
+            // transaction back to a no-op.
+            List<StageDefinition> updatedStages = new ArrayList<>(survivors);
+            updatedStages.addAll(newStages);
+            DependencyGraph updatedGraph = new DependencyGraph(updatedStages);
+            updatedGraph.validate();
+
+            // REQ-018 eligibility, rechecked under a row lock per reachable stage (not the plain
+            // read an earlier version of this method used) so a concurrent claimStage()/approve()
+            // targeting the SAME row cannot race this decision — whichever side acquires the row's
+            // lock first is serialized against the other, which then re-reads the now-committed
+            // state rather than a stale snapshot. Locked in a fixed order (stage name, stable
+            // across calls) to avoid a lock-ordering deadlock against another concurrent replan.
+            Map<String, WorkflowStepEntity> reachableRows = new LinkedHashMap<>();
+            for (String name : reachable.stream().sorted().toList()) {
+                WorkflowStepEntity row = stepRepository
+                        .findWithLockByWorkflowIdAndNameAndStatusNot(workflowId, name, StepStatus.INVALIDATED)
+                        .orElseThrow(() -> new IllegalArgumentException("unknown stage: " + name));
+                boolean notYetStarted = row.getStatus() == StepStatus.PENDING
+                        || (row.getStatus() == StepStatus.WAITING_APPROVAL
+                            && row.getPreGateStatus() == StepStatus.PENDING);
+                if (!notYetStarted) {
+                    throw new IllegalStateException("stage " + name + " has already started (status: "
+                            + row.getStatus() + ") — replan may only alter not-yet-started work (REQ-018)");
+                }
+                reachableRows.put(name, row);
+            }
+
+            // Every precondition holds — mutate, atomically, still under the instance lock (and
+            // every reachable row's own lock) acquired above.
             int oldPlanVersion = instance.getPlanVersion();
+            int newPlanVersion = oldPlanVersion + 1;
+
+            for (WorkflowStepEntity row : reachableRows.values()) {
+                row.setStatus(StepStatus.INVALIDATED);
+                stepRepository.save(row);
+            }
+
+            List<WorkflowStepEntity> activeSteps =
+                    stepRepository.findByWorkflowIdAndStatusNotOrderBySequence(workflowId, StepStatus.INVALIDATED);
+            int nextSequence = activeSteps.stream().mapToInt(WorkflowStepEntity::getSequence).max().orElse(-1) + 1;
+            for (StageDefinition stage : newStages) {
+                WorkflowStepEntity step = new WorkflowStepEntity();
+                step.setWorkflowId(workflowId);
+                step.setName(stage.name());
+                step.setStatus(StepStatus.PENDING);
+                step.setSequence(nextSequence++);
+                step.setDependsOn(stage.dependsOn());
+                step.setPlanVersion(newPlanVersion);
+                stepRepository.save(step);
+            }
+
+            registry.put(workflowId, new StageRegistration(updatedStages, updatedGraph));
+
             instance.setStatus(WorkflowStatus.REPLANNING);
+            instance.setPlanVersion(newPlanVersion);
             instanceRepository.save(instance);
-            return new ReplanClaim(oldPlanVersion, registration.stages());
+
+            recordEvent(workflowId, "human", actor, "replanned", fromStage, "OK", reason,
+                    Map.of("fromVersion", oldPlanVersion, "toVersion", newPlanVersion, "fromStage", fromStage));
+            return null;
         });
-
-        int oldPlanVersion = claim.oldPlanVersion();
-        int newPlanVersion = oldPlanVersion + 1;
-        List<StageDefinition> currentStages = claim.currentStages();
-
-        Set<String> reachable = reachableFrom(fromStage, currentStages); // includes fromStage itself
-        List<StageDefinition> survivors = currentStages.stream()
-                .filter(s -> !reachable.contains(s.name())).toList();
-        List<StageDefinition> updatedStages = new ArrayList<>(survivors);
-        updatedStages.addAll(newStages);
-        DependencyGraph updatedGraph = new DependencyGraph(updatedStages);
-        // UnknownDependencyException/CycleException propagate uncaught here — no step row has been
-        // touched yet (only the transient REPLANNING status above), so there is nothing to undo.
-        updatedGraph.validate();
-
-        List<WorkflowStepEntity> currentSteps =
-                stepRepository.findByWorkflowIdAndPlanVersionOrderBySequence(workflowId, oldPlanVersion);
-        int nextSequence = currentSteps.stream().mapToInt(WorkflowStepEntity::getSequence).max().orElse(-1) + 1;
-
-        for (String name : reachable) {
-            WorkflowStepEntity step = requireStep(workflowId, oldPlanVersion, name);
-            step.setStatus(StepStatus.INVALIDATED);
-            stepRepository.save(step);
-        }
-        for (StageDefinition stage : survivors) {
-            WorkflowStepEntity step = requireStep(workflowId, oldPlanVersion, stage.name());
-            step.setPlanVersion(newPlanVersion);
-            stepRepository.save(step);
-        }
-        for (StageDefinition stage : newStages) {
-            WorkflowStepEntity step = new WorkflowStepEntity();
-            step.setWorkflowId(workflowId);
-            step.setName(stage.name());
-            step.setStatus(StepStatus.PENDING);
-            step.setSequence(nextSequence++);
-            step.setDependsOn(stage.dependsOn());
-            step.setPlanVersion(newPlanVersion);
-            stepRepository.save(step);
-        }
-
-        registry.put(workflowId, new StageRegistration(updatedStages, updatedGraph));
-
-        applyInstanceUpdate(workflowId, i -> i.setPlanVersion(newPlanVersion));
-
-        recordEvent(workflowId, "human", actor, "replanned", fromStage, "OK", reason,
-                Map.of("fromVersion", oldPlanVersion, "toVersion", newPlanVersion, "fromStage", fromStage));
 
         runFrom(workflowId);
     }
-
-    private record ReplanClaim(int oldPlanVersion, List<StageDefinition> currentStages) { }
 
     // Reachability via forward-dependency BFS from fromStage (includes fromStage itself) — "every
     // stage that fromStage's replacement could affect," not merely stages sequenced after it.
@@ -329,7 +373,6 @@ public class WorkflowEngine {
             return;
         }
 
-        int planVersion = instance.getPlanVersion();
         WorkflowContext ctx = buildContext(instance);
 
         for (List<StageDefinition> batch : registration.graph().topologicalBatches()) {
@@ -350,7 +393,7 @@ public class WorkflowEngine {
             }
 
             List<StageDefinition> pending = batch.stream()
-                    .filter(s -> stepStatus(workflowId, planVersion, s.name()) == StepStatus.PENDING)
+                    .filter(s -> activeStepStatus(workflowId, s.name()) == StepStatus.PENDING)
                     .toList();
 
             // Entry gate: block BEFORE running any handler in this batch. Each entry-gated stage
@@ -360,7 +403,12 @@ public class WorkflowEngine {
             // visited in turn across repeated resumes without needing a batch-wide pre-scan.
             for (StageDefinition stage : pending) {
                 if (stage.entryApproval()) {
-                    WorkflowStepEntity step = requireStep(workflowId, planVersion, stage.name());
+                    // A concurrent replan() may have invalidated this exact stage in the window
+                    // since the `pending` filter above read its status — treat that as "no longer
+                    // this thread's concern" (skip) rather than crash; the replan's own runFrom
+                    // call is what actually governs this stage's fate now.
+                    WorkflowStepEntity step = activeStepOrNull(workflowId, stage.name());
+                    if (step == null) continue;
                     if (!isApproved(step)) {
                         enterPendingApproval(step);
                         // Halt entirely either way: handler has NOT run, and if applyInstanceUpdate
@@ -381,7 +429,7 @@ public class WorkflowEngine {
                 // well-defined instead of a race against siblings.
                 Map<String, Object> batchStartArtifacts = Map.copyOf(ctx.artifacts());
                 try {
-                    runBatch(workflowId, planVersion, pending, ctx, batchStartArtifacts);
+                    runBatch(workflowId, pending, ctx, batchStartArtifacts);
                 } catch (SafeStopException e) {
                     // The failing step's own SAFE_STOPPED status/safeStopReason/result were already
                     // persisted inside runStage before this propagated. The instance-level context
@@ -423,7 +471,7 @@ public class WorkflowEngine {
                     // after the trustworthy stage wrote it could still leak its own value through,
                     // reopening D1.
                     Map<String, Object> safeArtifacts =
-                            mergeTrustworthyArtifacts(workflowId, planVersion, batch, ctx, batchStartArtifacts);
+                            mergeTrustworthyArtifacts(workflowId, batch, ctx, batchStartArtifacts);
                     ctx.resetArtifactsTo(safeArtifacts);
                     applyInstanceUpdate(workflowId, i -> {
                         i.setStatus(WorkflowStatus.SAFE_STOPPED);
@@ -450,7 +498,7 @@ public class WorkflowEngine {
                 // from what was just persisted — so filtering only the persisted row would still
                 // let the excluded stage's writes flow into the very next batch via the live map.
                 Map<String, Object> safeArtifacts =
-                        mergeTrustworthyArtifacts(workflowId, planVersion, batch, ctx, batchStartArtifacts);
+                        mergeTrustworthyArtifacts(workflowId, batch, ctx, batchStartArtifacts);
                 ctx.resetArtifactsTo(safeArtifacts);
                 if (!applyInstanceUpdate(workflowId,
                         i -> i.setContextJson(Map.of("decisions", ctx.decisions(), "artifacts", safeArtifacts)))) {
@@ -474,8 +522,12 @@ public class WorkflowEngine {
             // necessarily finished doing so. Either way, this call is not the one that gets to
             // carry the workflow forward. WAITING_APPROVAL/SUCCEEDED/COMPENSATED are the outcomes
             // the exit-gate scan below is designed to handle and are safe to fall through to.
+            // A concurrently-invalidated sibling maps to null here (activeStepStatus, not the
+            // strict requireStep) — harmless: it matches neither RUNNING nor SAFE_STOPPED below, so
+            // it's silently excluded from both checks, exactly like a stage this batch never
+            // dispatched at all.
             List<StepStatus> siblingStatuses = batch.stream()
-                    .map(s -> stepStatus(workflowId, planVersion, s.name()))
+                    .map(s -> activeStepStatus(workflowId, s.name()))
                     .toList();
             if (siblingStatuses.contains(StepStatus.RUNNING)) {
                 return;
@@ -510,7 +562,10 @@ public class WorkflowEngine {
             List<WorkflowStepEntity> stillWaitingForApproval = new ArrayList<>();
             for (StageDefinition stage : batch) {
                 if (!stage.exitApproval()) continue;
-                WorkflowStepEntity step = requireStep(workflowId, planVersion, stage.name());
+                // A concurrent replan() may have invalidated this stage since `batch` was captured
+                // — no longer this thread's concern; skip rather than crash.
+                WorkflowStepEntity step = activeStepOrNull(workflowId, stage.name());
+                if (step == null) continue;
                 StepStatus status = step.getStatus();
                 // Task 33 correction (independent-review finding): COMPENSATED is a real terminal
                 // outcome a stage can now reach (retries exhausted, a registered compensation ran)
@@ -532,6 +587,28 @@ public class WorkflowEngine {
                     if (status != StepStatus.WAITING_APPROVAL) {
                         enterPendingApproval(step);
                     }
+                    stillWaitingForApproval.add(step);
+                }
+            }
+            // Task 35 remediation: discovered while testing replan against a batch with TWO
+            // independent entry-gated siblings decided via separate approve() calls. The entry-gate
+            // loop above (over `pending`) only ever catches a stage the FIRST time it is found
+            // PENDING-and-unapproved — once enterPendingApproval flips it to WAITING_APPROVAL, it is
+            // no longer PENDING, so a LATER call approving a DIFFERENT sibling in the same batch
+            // never looks at it again. The exit-gate scan above doesn't cover it either (it
+            // explicitly skips non-exit-gated stages). Concretely: sibling A's own approve() leaves
+            // it WAITING_APPROVAL (undecided) and returns without touching sibling B; sibling B's
+            // own SEPARATE approve() call resumes runFrom, finds B (now approved, PENDING) as the
+            // only member of `pending`, runs it, and — with nothing left checking A's still-pending
+            // entry gate — the workflow was incorrectly marked COMPLETED with A never having run at
+            // all. Re-deriving "still needs a decision" from persisted status over the FULL batch,
+            // exactly like the exit-gate scan already does, closes it: an entry-gated stage sitting
+            // at WAITING_APPROVAL with no decision yet re-halts the workflow on every call until
+            // it's actually decided, regardless of what else in the same batch has resolved.
+            for (StageDefinition stage : batch) {
+                if (!stage.entryApproval()) continue;
+                WorkflowStepEntity step = activeStepOrNull(workflowId, stage.name());
+                if (step != null && step.getStatus() == StepStatus.WAITING_APPROVAL && !hasAnyDecision(step)) {
                     stillWaitingForApproval.add(step);
                 }
             }
@@ -583,7 +660,7 @@ public class WorkflowEngine {
     // unfiltered map, letting a COMPENSATED stage's own pre-failure writes flow forward into the
     // NEXT batch's baseline even though the exact same rule already excluded them on the
     // safe-stop path.
-    private Map<String, Object> mergeTrustworthyArtifacts(String workflowId, int planVersion,
+    private Map<String, Object> mergeTrustworthyArtifacts(String workflowId,
             List<StageDefinition> batch, WorkflowContext ctx, Map<String, Object> batchStartArtifacts) {
         Map<String, Object> safeArtifacts = new LinkedHashMap<>(batchStartArtifacts);
         for (StageDefinition sibling : batch) {
@@ -591,11 +668,17 @@ public class WorkflowEngine {
             if (written.isEmpty()) {
                 continue; // this stage's handler never ran, or wrote nothing new
             }
-            StepStatus st = stepStatus(workflowId, planVersion, sibling.name());
+            // A sibling with non-empty writtenBy(...) must already have run its handler to
+            // completion (writesByStage is only ever populated by a real addArtifact call), and
+            // REQ-018 forbids replan() from ever invalidating a stage that has already started —
+            // so activeStepOrNull is provably non-null here. Resolved defensively anyway (null-safe
+            // rather than a bare requireStep) rather than relying on that invariant holding forever
+            // across future changes.
+            WorkflowStepEntity siblingStep = activeStepOrNull(workflowId, sibling.name());
+            StepStatus st = siblingStep == null ? null : siblingStep.getStatus();
             boolean trustworthy = st == StepStatus.SUCCEEDED || st == StepStatus.WAITING_APPROVAL
                     || (st == StepStatus.SAFE_STOPPED
-                        && requireStep(workflowId, planVersion, sibling.name()).getSafeStopReason()
-                                == SafeStopReason.POLICY_BLOCKED);
+                        && siblingStep.getSafeStopReason() == SafeStopReason.POLICY_BLOCKED);
             if (trustworthy) {
                 safeArtifacts.putAll(written);
             }
@@ -613,10 +696,10 @@ public class WorkflowEngine {
     // runs the stage's handler. The loser sees a non-PENDING status and skips it as a no-op — the
     // winner's execution already covers it, and future.get() below only ever waits on the threads
     // that actually claimed a stage.
-    private void runBatch(String workflowId, int planVersion, List<StageDefinition> pending, WorkflowContext ctx,
+    private void runBatch(String workflowId, List<StageDefinition> pending, WorkflowContext ctx,
                            Map<String, Object> inputsSnapshot) {
         List<StageDefinition> claimed = pending.stream()
-                .filter(stage -> claimStage(workflowId, planVersion, stage.name(), inputsSnapshot))
+                .filter(stage -> claimStage(workflowId, stage.name(), inputsSnapshot))
                 .toList();
         if (claimed.isEmpty()) {
             return; // every stage in this batch was already claimed by a concurrent runFrom() call
@@ -625,7 +708,7 @@ public class WorkflowEngine {
         List<Future<?>> futures = new ArrayList<>();
         try {
             for (StageDefinition stage : claimed) {
-                futures.add(pool.submit(() -> runStage(workflowId, planVersion, stage, ctx, inputsSnapshot)));
+                futures.add(pool.submit(() -> runStage(workflowId, stage, ctx, inputsSnapshot)));
             }
         } finally {
             pool.shutdown();
@@ -704,13 +787,17 @@ public class WorkflowEngine {
     // dispatches this stage's handler. Sets startedAt/inputsSnapshot here — the values a losing
     // caller would otherwise have raced to write — so runStage's own read afterward is guaranteed
     // fresh rather than reused from a stale in-memory reference.
-    private boolean claimStage(String workflowId, int planVersion, String stageName,
-                                Map<String, Object> inputsSnapshot) {
+    private boolean claimStage(String workflowId, String stageName, Map<String, Object> inputsSnapshot) {
         Boolean claimed = transactionTemplate.execute(status -> {
+            // Task 35 remediation: a concurrent replan() legitimately invalidates a PENDING stage
+            // (REQ-018 permits invalidating not-yet-started work) in the window between this
+            // stage's own status being read as PENDING elsewhere and this claim attempt. That is
+            // not a bug to crash on — it is exactly "someone else already decided this stage isn't
+            // running," the same outcome as losing the claim race to a concurrent runFrom.
             WorkflowStepEntity step = stepRepository
-                    .findWithLockByWorkflowIdAndPlanVersionAndName(workflowId, planVersion, stageName)
-                    .orElseThrow();
-            if (step.getStatus() != StepStatus.PENDING) {
+                    .findWithLockByWorkflowIdAndNameAndStatusNot(workflowId, stageName, StepStatus.INVALIDATED)
+                    .orElse(null);
+            if (step == null || step.getStatus() != StepStatus.PENDING) {
                 return Boolean.FALSE;
             }
             step.setStatus(StepStatus.RUNNING);
@@ -800,7 +887,7 @@ public class WorkflowEngine {
             // this same step blocks here until this transaction commits or rolls back, then re-reads
             // the now-committed status — never a stale, pre-decision read.
             WorkflowStepEntity step = stepRepository
-                    .findWithLockByWorkflowIdAndPlanVersionAndName(workflowId, planVersion, stepName)
+                    .findWithLockByWorkflowIdAndNameAndStatusNot(workflowId, stepName, StepStatus.INVALIDATED)
                     .orElseThrow(() -> new NoPendingApprovalException("unknown step: " + stepName));
 
             // Reject premature (step never reached its gate), duplicate (step already decided), and
@@ -876,12 +963,12 @@ public class WorkflowEngine {
         stepRepository.save(step);
     }
 
-    private void runStage(String workflowId, int planVersion, StageDefinition stage, WorkflowContext ctx,
+    private void runStage(String workflowId, StageDefinition stage, WorkflowContext ctx,
                            Map<String, Object> inputsSnapshot) {
         // status/startedAt/inputsSnapshot are already committed here — claimStage (in runBatch)
         // performed the atomic PENDING -> RUNNING transition before this call was ever dispatched.
         // A fresh read, not a reused reference, so this reflects that committed state.
-        WorkflowStepEntity step = requireStep(workflowId, planVersion, stage.name());
+        WorkflowStepEntity step = requireStep(workflowId, stage.name());
 
         // Codex REQUEST AMENDMENTS item 5: actually wire T030's RetryExecutor (bounded exponential
         // backoff) around T031's TimeoutExecutor, rather than a hand-rolled loop that never slept
@@ -1254,14 +1341,18 @@ public class WorkflowEngine {
         // completed it before some unrelated later failure).
         try {
             WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
-            int planVersion = instance.getPlanVersion();
             StageRegistration registration = registry.get(workflowId);
             if (registration == null) {
                 throw new IllegalStateException("workflow " + workflowId + " has no in-memory stage "
                         + "registration (process restarted?) — cannot resolve policy boundaries or resets");
             }
+            // Task 35 remediation: every currently-ACTIVE row, not just rows at the instance's
+            // current plan_version — a survivor from an earlier replan keeps its own original
+            // plan_version forever (it is never re-stamped), so filtering by the instance's current
+            // plan_version alone would silently skip a SAFE_STOPPED survivor untouched by any later
+            // replan.
             List<WorkflowStepEntity> steps =
-                    stepRepository.findByWorkflowIdAndPlanVersionOrderBySequence(workflowId, planVersion);
+                    stepRepository.findByWorkflowIdAndStatusNotOrderBySequence(workflowId, StepStatus.INVALIDATED);
 
             // Codex REQUEST AMENDMENTS item 6: a POLICY_BLOCKED step's handler already ran to
             // completion once — re-running it would risk double-executing whatever real side
@@ -1279,7 +1370,7 @@ public class WorkflowEngine {
                     if (reevaluatePolicyBoundary(workflowId, step, stage)) {
                         anyProgress = true;
                     }
-                } else if (resetSafeStoppedStepToPending(workflowId, planVersion, step.getName())) {
+                } else if (resetSafeStoppedStepToPending(workflowId, step.getName())) {
                     anyProgress = true;
                 }
             }
@@ -1325,10 +1416,10 @@ public class WorkflowEngine {
     // described above; retrySafeStopped's own instance-level claim already ensures only one
     // caller reaches this per-workflow, but locking each step individually too costs nothing and
     // keeps this helper correct standing alone, matching claimStage's own defense-in-depth.
-    private boolean resetSafeStoppedStepToPending(String workflowId, int planVersion, String stepName) {
+    private boolean resetSafeStoppedStepToPending(String workflowId, String stepName) {
         Boolean reset = transactionTemplate.execute(status -> {
             WorkflowStepEntity step = stepRepository
-                    .findWithLockByWorkflowIdAndPlanVersionAndName(workflowId, planVersion, stepName)
+                    .findWithLockByWorkflowIdAndNameAndStatusNot(workflowId, stepName, StepStatus.INVALIDATED)
                     .orElseThrow();
             if (step.getStatus() != StepStatus.SAFE_STOPPED || step.getSafeStopReason() == SafeStopReason.POLICY_BLOCKED) {
                 return Boolean.FALSE;
@@ -1420,12 +1511,38 @@ public class WorkflowEngine {
         eventRepository.save(event);
     }
 
-    private StepStatus stepStatus(String workflowId, int planVersion, String name) {
-        return requireStep(workflowId, planVersion, name).getStatus();
+    // Task 35 remediation: null, not an exception, when no active row exists — a CONCURRENT
+    // replan() can invalidate a stage between the moment a runFrom() call captured its (now-stale)
+    // in-memory stage list and the moment it checks that stage's persisted status here. Every
+    // caller of this method is scanning some OTHER stage's status to decide whether it currently
+    // blocks anything — a stage a concurrent replan just invalidated is, by definition, no longer
+    // part of the live plan, and should be treated as "not currently blocking/trustworthy," never
+    // as a reason to crash. Discovered via a genuine concurrent replan/approve race (not a
+    // hypothetical): the previous version threw a bare NoSuchElementException here, which — unlike
+    // every exception runStage's own try/catch fail-closes — propagated straight out of runFrom
+    // uncaught. Contrast with requireStep below, used only where the row is known to still exist by
+    // invariant.
+    private StepStatus activeStepStatus(String workflowId, String name) {
+        WorkflowStepEntity step = activeStepOrNull(workflowId, name);
+        return step == null ? null : step.getStatus();
     }
 
-    private WorkflowStepEntity requireStep(String workflowId, int planVersion, String name) {
-        return stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, planVersion, name).orElseThrow();
+    private WorkflowStepEntity activeStepOrNull(String workflowId, String name) {
+        return stepRepository.findByWorkflowIdAndNameAndStatusNot(workflowId, name, StepStatus.INVALIDATED)
+                .orElse(null);
+    }
+
+    // Strict variant for the one call site (runStage, on the stage claimStage just transitioned to
+    // RUNNING moments earlier in the same call) where the row is guaranteed to still exist: REQ-018
+    // eligibility explicitly forbids replan() from ever invalidating a RUNNING stage, so a
+    // concurrent replan cannot have removed it out from under runStage.
+    private WorkflowStepEntity requireStep(String workflowId, String name) {
+        WorkflowStepEntity step = activeStepOrNull(workflowId, name);
+        if (step == null) {
+            throw new IllegalStateException(
+                    "stage " + name + " has no active row — this should be unreachable (invariant violation)");
+        }
+        return step;
     }
 
     // Extracted from runFrom (Codex REQUEST AMENDMENTS item 6): reused by retrySafeStopped/

@@ -5,6 +5,7 @@ import com.schwab.urlshortener.observability.dto.*;
 import com.schwab.urlshortener.orchestration.BaselineWorkflowGraph;
 import com.schwab.urlshortener.orchestration.InvalidApprovalDecisionException;
 import com.schwab.urlshortener.orchestration.NoPendingApprovalException;
+import com.schwab.urlshortener.orchestration.StepStatus;
 import com.schwab.urlshortener.orchestration.UnreadableRequirementException;
 import com.schwab.urlshortener.orchestration.WorkflowEngine;
 import com.schwab.urlshortener.orchestration.persistence.*;
@@ -66,11 +67,12 @@ public class WorkflowController {
         WorkflowInstanceEntity instance = instanceRepository.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "workflow_not_found"));
 
-        // Corrected 2026-09-13: repository method is plan-version-scoped since Task 21
-        // (findByWorkflowIdAndPlanVersionOrderBySequence), not the bare findByWorkflowIdOrderBySequence
-        // this brief originally showed.
+        // Task 35 remediation: the currently ACTIVE step set, not rows scoped to a single
+        // plan_version — a survivor stage from an earlier replan keeps its own original
+        // plan_version forever, so filtering by instance.getPlanVersion() alone would silently
+        // drop it from this response the moment a later replan advances the instance's version.
         List<WorkflowStateResponse.StepView> steps = stepRepository
-                .findByWorkflowIdAndPlanVersionOrderBySequence(id, instance.getPlanVersion()).stream()
+                .findByWorkflowIdAndStatusNotOrderBySequence(id, StepStatus.INVALIDATED).stream()
                 .map(s -> {
                     // Round-6c correction: each step's inputs reflect ITS OWN persisted snapshot —
                     // the artifacts actually available when its batch began — not the workflow's

@@ -869,4 +869,42 @@ class WorkflowEngineReliabilityIntegrationTest {
         assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
                 .isEqualTo(WorkflowStatus.SAFE_STOPPED);
     }
+
+    // --- 5th independent-review finding (Section 18 follow-up review): evidence written by a
+    // FAILED automatic retry attempt must never satisfy a policy check for a LATER, successful
+    // attempt of the SAME runStage call — beginStageAttribution previously spanned the whole call,
+    // not each individual attempt, so a stale write from a dead attempt survived alongside the
+    // successful attempt's own (incomplete) evidence ---
+
+    @Test
+    void evidenceFromAFailedRetryAttemptDoesNotSatisfyPolicyOnALaterSuccessfulAttempt() {
+        AtomicInteger invocations = new AtomicInteger(0);
+        StageHandler impl = ctx -> {
+            if (invocations.incrementAndGet() == 1) {
+                // Attempt 1 writes real evidence, then fails transiently — this write must not
+                // survive into attempt 2's own evaluation.
+                ctx.addArtifact("urlSchemeAllowlistEnforced", true);
+                ctx.addArtifact("ssrfGuardEnforced", true);
+                throw new TransientStageException("attempt 1 fails after writing evidence");
+            }
+            // Attempt 2 succeeds but does NOT re-supply the evidence.
+            return Map.of();
+        };
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("implementation", List.of(), impl, false, false, 1, 5, null, null, null));
+        PolicyEngine policyEngine = new PolicyEngine("policies/v1.yaml");
+        WorkflowEngine engine = engineWithPolicy(policyEngine);
+
+        String workflowId = engine.submit("demo", stages, "run-33x");
+
+        // The handler ran twice within ONE submit() call (RetryExecutor's own internal retry,
+        // maxRetries=1) — this is NOT a retrySafeStopped resume.
+        assertThat(invocations.get()).isEqualTo(2);
+        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "implementation")
+                .orElseThrow();
+        assertThat(step.getStatus()).isEqualTo(StepStatus.SAFE_STOPPED);
+        assertThat(step.getSafeStopReason()).isEqualTo(SafeStopReason.POLICY_BLOCKED);
+        assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
+                .isEqualTo(WorkflowStatus.SAFE_STOPPED);
+    }
 }

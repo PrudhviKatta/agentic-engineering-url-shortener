@@ -30,6 +30,27 @@ public class WorkflowContext {
     // key) closes it: the caller now merges the values THIS map itself captured, never re-reading
     // the shared `artifacts` map for a value it wants to trust.
     private final Map<String, Map<String, Object>> writesByStage = new java.util.concurrent.ConcurrentHashMap<>();
+    // 6th independent-review finding (Section 18 follow-up review, straggler-write race):
+    // beginAttempt's writesByStage.remove(stageName) closes the case where a FAILED attempt's
+    // evidence sits untouched until a LATER attempt starts. It does NOT close a genuinely
+    // concurrent case: TimeoutExecutor gives up on an attempt (future.get() times out) and moves on
+    // to the next attempt WITHOUT waiting for the abandoned attempt's worker thread to actually
+    // stop — shutdownNow() only interrupts it, and a handler stuck in non-interruptible work keeps
+    // running in the background (see TimeoutExecutor's own comment). That straggler thread still
+    // has its InheritableThreadLocal currentStage slot set to this stage's name — nothing ever
+    // clears a specific thread's own copy — so it can call addArtifact AFTER beginAttempt has
+    // already reset the bucket for a NEW attempt, landing its stale write right back into the SAME
+    // shared bucket the new attempt is using, with no way to tell the two apart by stage name
+    // alone. attemptGeneration + currentAttemptGeneration below tag every write with the attempt
+    // that produced it: beginAttempt bumps a per-stage counter and stamps that thread's own
+    // generation; addArtifact drops (does not merge into writesByStage OR the shared `artifacts`
+    // map at all) any write whose generation no longer matches the CURRENT live generation for that
+    // stage at the moment the write happens. A straggler's generation is permanently stamped at its
+    // own attempt's start and can never advance, so once a newer attempt has begun, every one of its
+    // writes is provably stale and is discarded outright — not just excluded from attribution, but
+    // never allowed to touch shared state a future batch's baseline could pick up either.
+    private final Map<String, Integer> attemptGeneration = new java.util.concurrent.ConcurrentHashMap<>();
+    private final InheritableThreadLocal<Integer> currentAttemptGeneration = new InheritableThreadLocal<>();
     // InheritableThreadLocal, not ThreadLocal: TimeoutExecutor.withTimeout runs the ACTUAL handler
     // on its own dedicated per-attempt worker thread (a fresh single-thread executor per attempt),
     // not on the thread runStage itself calls beginStageAttribution from. A plain ThreadLocal set
@@ -68,11 +89,19 @@ public class WorkflowContext {
     }
 
     public void addArtifact(String name, Object value) {
-        artifacts.put(name, value);
         String stage = currentStage.get();
         if (stage != null) {
+            // A write attributed to a stage must additionally prove it came from the CURRENTLY
+            // active attempt for that stage, not merely SOME attempt that once ran — see the
+            // attemptGeneration field comment for the straggler-thread race this closes.
+            Integer mine = currentAttemptGeneration.get();
+            Integer active = attemptGeneration.get(stage);
+            if (mine == null || !mine.equals(active)) {
+                return; // stale/abandoned attempt: dropped entirely, never becomes trusted evidence
+            }
             writesByStage.computeIfAbsent(stage, k -> new java.util.concurrent.ConcurrentHashMap<>()).put(name, value);
         }
+        artifacts.put(name, value);
     }
 
     // WorkflowEngine.runStage calls this immediately before invoking a stage's handler (on that
@@ -81,6 +110,23 @@ public class WorkflowContext {
     // internal retry attempts, which stay on the same thread) is attributed to this stage name.
     public void beginStageAttribution(String stageName) { currentStage.set(stageName); }
     public void endStageAttribution() { currentStage.remove(); }
+
+    // 5th independent-review finding (Section 18 follow-up review): beginStageAttribution spans a
+    // stage's WHOLE runStage call, including every one of its own automatic retry attempts
+    // (RetryExecutor loops on the SAME thread, never resetting attribution between attempts) — so
+    // a key an EARLIER, FAILED attempt wrote survived in writesByStage even if a LATER, successful
+    // attempt never rewrote it, letting stale evidence from a dead attempt satisfy a policy check
+    // the successful attempt never actually earned. WorkflowEngine.runStage calls this at the
+    // START of every individual attempt (wrapping the handler itself, before TimeoutExecutor's own
+    // per-attempt thread is even created) to discard exactly THIS stage's prior-attempt writes —
+    // never another stage's, since writesByStage is keyed by stage name, so a concurrent sibling
+    // writing the same artifact key is completely unaffected regardless of timing. Only the FINAL
+    // attempt's own writes survive into writtenBy(stageName) by the time the handler returns.
+    public void beginAttempt(String stageName) {
+        int generation = attemptGeneration.merge(stageName, 1, Integer::sum);
+        currentAttemptGeneration.set(generation);
+        writesByStage.remove(stageName);
+    }
 
     // Returns exactly the (key, value) pairs THIS stage's own invocation wrote — captured at write
     // time, not re-read from the live `artifacts` map. A caller merging a trustworthy stage's

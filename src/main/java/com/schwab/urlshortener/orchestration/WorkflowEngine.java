@@ -768,7 +768,19 @@ public class WorkflowEngine {
         boolean succeeded = false;
         SafeStopReason failureReason = SafeStopReason.RETRY_EXHAUSTED;
         Throwable failureCause = null;
-        StageHandler timeoutBounded = TimeoutExecutor.withTimeout(stage.handler(), stage.timeoutSeconds() * 1000L);
+        // 5th independent-review finding (Section 18 follow-up review): resets THIS stage's own
+        // writesByStage bucket at the start of EVERY attempt (including the first), before the
+        // real handler runs — so an attempt that throws after writing mandatory-policy evidence
+        // can never have that evidence survive into a LATER, successful attempt's own evaluation.
+        // Deliberately per-stage isolation via WorkflowContext.beginAttempt (clearing only this
+        // stage's own bucket in the shared writesByStage map), not a separate per-attempt context
+        // object or clearing keys in the shared `artifacts` map itself — concurrent siblings may
+        // legitimately write the SAME artifact key, and this must not touch their contributions.
+        StageHandler perAttemptIsolated = attemptCtx -> {
+            attemptCtx.beginAttempt(stage.name());
+            return stage.handler().run(attemptCtx);
+        };
+        StageHandler timeoutBounded = TimeoutExecutor.withTimeout(perAttemptIsolated, stage.timeoutSeconds() * 1000L);
         StageHandler retryable = RetryExecutor.withBoundedRetry(timeoutBounded, stage.maxRetries(),
                 RETRY_BACKOFF_BASE_MILLIS, attempt -> {
                     step.setRetryCount(step.getRetryCount() + 1);

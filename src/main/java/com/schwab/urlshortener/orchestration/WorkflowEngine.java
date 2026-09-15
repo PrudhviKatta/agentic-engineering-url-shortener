@@ -164,6 +164,138 @@ public class WorkflowEngine {
         return workflowId;
     }
 
+    // Task 35 (REQ-018 dynamic replanning; REQ-030 change safety). Invalidates every stage
+    // reachable from fromStage (by dependency-graph reachability — i.e. fromStage itself and every
+    // stage that transitively depends on it — not merely sequence order), inserts newStages as the
+    // replacement, bumps the workflow's plan_version, and resumes. `ctx.decisions()`/
+    // `ctx.artifacts()` accumulated before the replan point are untouched — replan never rebuilds
+    // or resets the WorkflowContext, it only changes which stages exist going forward — so lineage
+    // recorded by a survivor stage (e.g. "design" in the canonical scenario) is neither lost nor
+    // duplicated by the resume that follows.
+    //
+    // Plan-version isolation: EVERY existing lookup in this engine (stepStatus/requireStep/
+    // claimStage/approve/runFrom's own batch loop) resolves a step by (workflowId, planVersion,
+    // name) using the INSTANCE's single current plan_version — there is no per-step plan_version
+    // resolution. That means a surviving stage (not reachable from fromStage, so not invalidated)
+    // MUST be carried forward onto the NEW plan_version — the SAME row, same id, only its
+    // plan_version column changes — or it becomes permanently unaddressable the moment
+    // instance.planVersion advances (every future approve()/runFrom() call would look for it under
+    // a plan_version its row no longer carries and throw NoSuchElementException). This is a
+    // re-tag, not a rewrite of history: status/result/retryCount/timestamps/every other field on
+    // the row is untouched, exactly as ADR-006's plan-version-scoped model expects — approvals
+    // reference a step by its durable stepInstanceId (see ApprovalEntity), never by planVersion, so
+    // re-stamping a survivor's planVersion cannot retroactively invalidate or misattribute any
+    // approval already decided against that same row.
+    //
+    // Invalidated stages are dropped entirely from the ACTIVE stage list going forward (not kept
+    // alongside their replacement) — DependencyGraph keys stages by name in a plain map with no
+    // duplicate-name guard, so keeping an invalidated stage around while newStages reintroduces the
+    // exact same name (explicitly a legitimate case per data-model.md) would silently collide.
+    // Their WorkflowStepEntity rows remain in the database forever, frozen at the plan_version they
+    // were actually created under — permanent, immutable history, inspectable via the full-history
+    // repository queries the audit trail already uses, just excluded from future scheduling.
+    public void replan(String workflowId, String fromStage, List<StageDefinition> newStages,
+                        String actor, String reason) {
+        // Claim: pessimistic-locked, exactly like approve()'s own instance-level claim — a
+        // concurrent decision on this same workflow cannot interleave with the precondition checks
+        // below. Committed immediately (short transaction) so the per-step mutations that follow,
+        // and the runFrom() call at the very end, see this write from a fresh connection, matching
+        // every other multi-step mutation in this class (see applyInstanceUpdate's own comment on
+        // why runFrom must never run inside an outer transaction).
+        ReplanClaim claim = transactionTemplate.execute(status -> {
+            WorkflowInstanceEntity instance = instanceRepository.findWithLockById(workflowId)
+                    .orElseThrow(() -> new IllegalStateException("unknown workflow: " + workflowId));
+            if (instance.getStatus() == WorkflowStatus.FAILED || instance.getStatus() == WorkflowStatus.COMPLETED) {
+                throw new IllegalStateException(
+                        "workflow " + workflowId + " is already terminal (" + instance.getStatus() + ")");
+            }
+            StageRegistration registration = registry.get(workflowId);
+            if (registration == null) {
+                throw new IllegalStateException("workflow " + workflowId + " has no in-memory stage "
+                        + "registration (process restarted?) — cannot replan it");
+            }
+            if (registration.stages().stream().noneMatch(s -> s.name().equals(fromStage))) {
+                throw new IllegalArgumentException("unknown stage: " + fromStage);
+            }
+            int oldPlanVersion = instance.getPlanVersion();
+            instance.setStatus(WorkflowStatus.REPLANNING);
+            instanceRepository.save(instance);
+            return new ReplanClaim(oldPlanVersion, registration.stages());
+        });
+
+        int oldPlanVersion = claim.oldPlanVersion();
+        int newPlanVersion = oldPlanVersion + 1;
+        List<StageDefinition> currentStages = claim.currentStages();
+
+        Set<String> reachable = reachableFrom(fromStage, currentStages); // includes fromStage itself
+        List<StageDefinition> survivors = currentStages.stream()
+                .filter(s -> !reachable.contains(s.name())).toList();
+        List<StageDefinition> updatedStages = new ArrayList<>(survivors);
+        updatedStages.addAll(newStages);
+        DependencyGraph updatedGraph = new DependencyGraph(updatedStages);
+        // UnknownDependencyException/CycleException propagate uncaught here — no step row has been
+        // touched yet (only the transient REPLANNING status above), so there is nothing to undo.
+        updatedGraph.validate();
+
+        List<WorkflowStepEntity> currentSteps =
+                stepRepository.findByWorkflowIdAndPlanVersionOrderBySequence(workflowId, oldPlanVersion);
+        int nextSequence = currentSteps.stream().mapToInt(WorkflowStepEntity::getSequence).max().orElse(-1) + 1;
+
+        for (String name : reachable) {
+            WorkflowStepEntity step = requireStep(workflowId, oldPlanVersion, name);
+            step.setStatus(StepStatus.INVALIDATED);
+            stepRepository.save(step);
+        }
+        for (StageDefinition stage : survivors) {
+            WorkflowStepEntity step = requireStep(workflowId, oldPlanVersion, stage.name());
+            step.setPlanVersion(newPlanVersion);
+            stepRepository.save(step);
+        }
+        for (StageDefinition stage : newStages) {
+            WorkflowStepEntity step = new WorkflowStepEntity();
+            step.setWorkflowId(workflowId);
+            step.setName(stage.name());
+            step.setStatus(StepStatus.PENDING);
+            step.setSequence(nextSequence++);
+            step.setDependsOn(stage.dependsOn());
+            step.setPlanVersion(newPlanVersion);
+            stepRepository.save(step);
+        }
+
+        registry.put(workflowId, new StageRegistration(updatedStages, updatedGraph));
+
+        applyInstanceUpdate(workflowId, i -> i.setPlanVersion(newPlanVersion));
+
+        recordEvent(workflowId, "human", actor, "replanned", fromStage, "OK", reason,
+                Map.of("fromVersion", oldPlanVersion, "toVersion", newPlanVersion, "fromStage", fromStage));
+
+        runFrom(workflowId);
+    }
+
+    private record ReplanClaim(int oldPlanVersion, List<StageDefinition> currentStages) { }
+
+    // Reachability via forward-dependency BFS from fromStage (includes fromStage itself) — "every
+    // stage that fromStage's replacement could affect," not merely stages sequenced after it.
+    private Set<String> reachableFrom(String fromStage, List<StageDefinition> stages) {
+        Map<String, List<String>> dependents = new HashMap<>();
+        for (StageDefinition s : stages) {
+            for (String dep : s.dependsOn()) {
+                dependents.computeIfAbsent(dep, k -> new ArrayList<>()).add(s.name());
+            }
+        }
+        Set<String> result = new LinkedHashSet<>();
+        Deque<String> queue = new ArrayDeque<>();
+        queue.add(fromStage);
+        while (!queue.isEmpty()) {
+            String current = queue.poll();
+            if (!result.add(current)) continue;
+            for (String dependent : dependents.getOrDefault(current, List.of())) {
+                queue.add(dependent);
+            }
+        }
+        return result;
+    }
+
     // Codex REQUEST AMENDMENTS item 7: every instance write below now goes through
     // applyInstanceUpdate — a short, independently-locked transaction that re-reads the instance
     // fresh, checks it isn't ALREADY terminal (a concurrent decision on a different sibling gate
@@ -1267,6 +1399,15 @@ public class WorkflowEngine {
 
     private void recordEvent(String workflowId, String actorType, String actorId, String action,
                               String affectedArtifact, String result, String reason) {
+        recordEvent(workflowId, actorType, actorId, action, affectedArtifact, result, reason, null);
+    }
+
+    // Task 35: payload-bearing overload — every prior 7-arg call site is unchanged, delegating here
+    // with payload=null. Used so far only by replan()'s "replanned" event ({fromVersion, toVersion,
+    // fromStage}), matching WorkflowEventEntity.payload's existing (already-present, previously
+    // always-null) column.
+    private void recordEvent(String workflowId, String actorType, String actorId, String action,
+                              String affectedArtifact, String result, String reason, Map<String, Object> payload) {
         WorkflowEventEntity event = new WorkflowEventEntity();
         event.setWorkflowId(workflowId);
         event.setActorType(actorType);
@@ -1275,6 +1416,7 @@ public class WorkflowEngine {
         event.setAffectedArtifact(affectedArtifact);
         event.setResult(result);
         event.setReason(reason);
+        event.setPayload(payload);
         eventRepository.save(event);
     }
 

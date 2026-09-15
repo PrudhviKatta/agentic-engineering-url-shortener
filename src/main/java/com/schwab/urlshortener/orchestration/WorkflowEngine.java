@@ -27,6 +27,12 @@ public class WorkflowEngine {
     // (backoffMillis * 2^attempt). Not exposed on StageDefinition/openapi.yaml — a fixed, disclosed
     // constant rather than new per-stage configuration surface this round didn't ask for.
     private static final long RETRY_BACKOFF_BASE_MILLIS = 100L;
+    // Codex round 4 finding: data-model.md Section 5 specifies workflow_events.reason as
+    // VARCHAR(1024) — approve()/replan() both eventually feed their caller-supplied reason into a
+    // recordEvent(...) call, so both reject an over-length reason here, at the point of entry,
+    // rather than letting it reach the database and rely on the column's own truncation/constraint
+    // behavior (which differs by database and is not a clean, typed error for the caller).
+    private static final int REASON_MAX_LENGTH = 1024;
 
     private final Map<String, StageRegistration> registry = new ConcurrentHashMap<>();
 
@@ -215,6 +221,10 @@ public class WorkflowEngine {
         if (reason == null || reason.isBlank()) {
             throw new InvalidApprovalDecisionException("reason must be present and non-blank");
         }
+        if (reason.length() > REASON_MAX_LENGTH) {
+            throw new InvalidApprovalDecisionException(
+                    "reason must be at most " + REASON_MAX_LENGTH + " characters, got " + reason.length());
+        }
         Set<String> newNames = new HashSet<>();
         for (StageDefinition s : newStages) {
             if (!newNames.add(s.name())) {
@@ -222,7 +232,30 @@ public class WorkflowEngine {
             }
         }
 
-        transactionTemplate.execute(status -> {
+        // Codex round 4 finding: `registry` is a plain in-memory ConcurrentHashMap, entirely
+        // outside the JDBC transaction below — a write to it is visible to every other thread the
+        // instant it happens, regardless of whether the surrounding transaction later commits or
+        // rolls back. Publishing the new StageRegistration INSIDE the transaction (an earlier
+        // version of this method did) meant a commit-time failure (e.g. a genuine DB constraint
+        // violation on one of the new rows) rolled the DATABASE back to the pre-replan state while
+        // the REGISTRY stayed on the replacement graph — permanently diverged, not just briefly:
+        // nothing re-publishes the old graph afterward. A later approve()/runFrom() call reading
+        // that stale-but-different registry could walk straight past an original, still-PENDING
+        // persisted step the (rolled-back) replacement graph no longer even lists, potentially
+        // completing the workflow without ever running it. Restoring the registry in a catch block
+        // does not close this: another thread can observe the bad intermediate graph in the window
+        // between the diverging write and the restore, however small. The only race-free fix is to
+        // never publish until the transaction has ALREADY committed — `transactionTemplate.execute`
+        // only returns (rather than throwing) once that has happened, so capturing the replacement
+        // registration as this call's return value and publishing it strictly AFTER the call
+        // returns means no thread can ever observe a registry state the database doesn't already
+        // durably agree with. A thread that reads the OLD registry in the narrow window between
+        // commit and this publish sees a graph consistent with the OLD (but still currently
+        // correct-for-that-graph) persisted state — activeStepOrNull/activeStepStatus's
+        // null-tolerant resolution (see their own comments) already treats a stage the old graph
+        // still lists but the DB no longer has as active as simply "not currently pending," never a
+        // crash — so that window is stale, not corrupt, and self-heals the moment this line runs.
+        StageRegistration published = transactionTemplate.execute(status -> {
             WorkflowInstanceEntity instance = instanceRepository.findWithLockById(workflowId)
                     .orElseThrow(() -> new IllegalStateException("unknown workflow: " + workflowId));
             if (instance.getStatus() == WorkflowStatus.FAILED || instance.getStatus() == WorkflowStatus.COMPLETED) {
@@ -304,16 +337,19 @@ public class WorkflowEngine {
                 stepRepository.save(step);
             }
 
-            registry.put(workflowId, new StageRegistration(updatedStages, updatedGraph));
-
             instance.setStatus(WorkflowStatus.REPLANNING);
             instance.setPlanVersion(newPlanVersion);
             instanceRepository.save(instance);
 
             recordEvent(workflowId, "human", actor, "replanned", fromStage, "OK", reason,
                     Map.of("fromVersion", oldPlanVersion, "toVersion", newPlanVersion, "fromStage", fromStage));
-            return null;
+            return new StageRegistration(updatedStages, updatedGraph);
         });
+
+        // Only reached if the transaction above committed successfully — see this method's own
+        // comment on why publishing here, and never inside the transaction, is what makes this
+        // race-free rather than merely "restored on failure."
+        registry.put(workflowId, published);
 
         runFrom(workflowId);
     }
@@ -826,6 +862,10 @@ public class WorkflowEngine {
         }
         if (reason == null || reason.isBlank()) {
             throw new InvalidApprovalDecisionException("reason must be present and non-blank");
+        }
+        if (reason.length() > REASON_MAX_LENGTH) {
+            throw new InvalidApprovalDecisionException(
+                    "reason must be at most " + REASON_MAX_LENGTH + " characters, got " + reason.length());
         }
 
         // Round-6c correction (item 1, atomic/one-shot decision recording): the read-check-write

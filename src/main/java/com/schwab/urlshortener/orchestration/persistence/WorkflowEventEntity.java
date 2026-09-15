@@ -35,6 +35,13 @@ public class WorkflowEventEntity {
 
     private String result;
 
+    // Corrected 2026-09-15 (Codex round 4 finding): data-model.md Section 5 specifies
+    // VARCHAR(1024) for this column ("Human-readable rationale — required by REQ-026 to be
+    // present on every event that has one"); the entity carried no explicit length at all, so
+    // Hibernate's default (255) was silently in effect instead — schema drift from the documented
+    // data model, not an intentional narrower limit. WorkflowEngine.approve()/replan() reject a
+    // caller-supplied reason longer than this before it would ever reach here.
+    @Column(length = 1024)
     private String reason;
 
     public Long getId() { return id; }

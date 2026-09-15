@@ -289,6 +289,25 @@ class WorkflowEngineApprovalTest {
         assertThat(approvalRepository.existsByStepInstanceId(step.getId())).isFalse();
     }
 
+    // Codex round 4 finding: data-model.md Section 5 specifies workflow_events.reason (and
+    // approvals.reason, decided_at time) as VARCHAR(1024) — a caller-supplied reason longer than
+    // that must be rejected cleanly, not truncated or left to a raw DB constraint failure.
+    @Test
+    void overLengthReasonIsRejected() {
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("risky", List.of(), ctx -> Map.of(), true, false, 0, 30, null, null, null));
+        WorkflowEngine engine = engine();
+        String workflowId = engine.submit("demo", stages, "run-6j");
+
+        String tooLong = "x".repeat(1025);
+        assertThatThrownBy(() -> engine.approve(workflowId, "risky", "approved", "human", tooLong))
+                .isInstanceOf(InvalidApprovalDecisionException.class);
+
+        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "risky").orElseThrow();
+        assertThat(step.getStatus()).isEqualTo(StepStatus.WAITING_APPROVAL);
+        assertThat(approvalRepository.existsByStepInstanceId(step.getId())).isFalse();
+    }
+
     // --- Round-6c regression test (item 1: atomic, one-shot decision recording) ---
 
     @Test

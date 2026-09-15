@@ -290,6 +290,84 @@ class WorkflowEngineReplanningTest {
                 .noneMatch(e -> "replanned".equals(e.getAction()))).isTrue();
     }
 
+    // Codex round 4 finding: data-model.md Section 5 specifies workflow_events.reason as
+    // VARCHAR(1024) — a caller-supplied reason longer than that must be rejected cleanly at the
+    // point of entry, not truncated or left to a raw DB constraint failure.
+    @Test
+    void replanRejectsAnOverLengthReasonWithoutMutatingAnything() {
+        StageHandler handler = ctx -> Map.of();
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("gate", List.of(), handler, false, true, 0, 30, null, null, null));
+        WorkflowEngine engine = engine();
+        String workflowId = engine.submit("demo", stages, "run-35m");
+
+        String tooLong = "x".repeat(1025);
+        assertThatThrownBy(() -> engine.replan(workflowId, "gate", List.of(), "human", tooLong))
+                .isInstanceOf(InvalidApprovalDecisionException.class);
+
+        assertThat(instanceRepository.findById(workflowId).orElseThrow().getPlanVersion()).isEqualTo(1);
+        assertThat(eventRepository.findByWorkflowIdOrderById(workflowId).stream()
+                .noneMatch(e -> "replanned".equals(e.getAction()))).isTrue();
+    }
+
+    // Codex round 4 finding: `registry` (the in-memory stage-list map) is a plain
+    // ConcurrentHashMap, entirely outside the JDBC transaction replan()'s own mutations run in — a
+    // write to it is visible to every other thread the instant it happens, regardless of whether
+    // the surrounding transaction later commits or rolls back. Publishing the replacement
+    // StageRegistration INSIDE that transaction (an earlier version of replan() did exactly this)
+    // meant a commit-time failure rolled the DATABASE back to the pre-replan state while the
+    // REGISTRY stayed on the replacement graph — permanently diverged, since nothing re-publishes
+    // the old graph afterward. This test forces a GENUINE commit-time failure — a replacement stage
+    // name that exceeds workflow_steps.name's own VARCHAR(255) column limit, a real
+    // DataIntegrityViolationException at flush/commit time, not a contrived test-only hook — after
+    // at least one reachable row has already been invalidated within the same transaction, and
+    // proves both halves of the fix: the DATABASE fully rolls back (the invalidated row reverts),
+    // and the REGISTRY was never mutated to the replacement graph in the first place — proven by
+    // resuming the ORIGINAL (never-replaced) graph correctly, not a partial or replacement one.
+    @Test
+    void aCommitTimeFailureDuringReplanRollsBackTheDatabaseAndNeverPublishesTheReplacementRegistry() {
+        AtomicBoolean implRan = new AtomicBoolean(false);
+        StageHandler gateHandler = ctx -> Map.of();
+        StageHandler implHandler = ctx -> { implRan.set(true); return Map.of(); };
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("gate", List.of(), gateHandler, false, true, 0, 30, null, null, null),
+                new StageDefinition("impl", List.of("gate"), implHandler, false, false, 0, 30, null, null, null));
+        WorkflowEngine engine = engine();
+        String workflowId = engine.submit("demo", stages, "run-35n");
+        // Halted at gate's exit approval; "impl" is PENDING, never started — eligible under REQ-018.
+        assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
+                .isEqualTo(WorkflowStatus.PENDING_APPROVAL);
+
+        // workflow_steps.name has no explicit @Column length, so Hibernate defaults to
+        // VARCHAR(255) — 300 characters is a genuine column-width violation, not a fabricated one.
+        String tooLongName = "x".repeat(300);
+        List<StageDefinition> newStages = List.of(StageDefinition.of(tooLongName, List.of(), ctx -> Map.of()));
+
+        assertThatThrownBy(() -> engine.replan(workflowId, "impl", newStages, "human",
+                "trigger a genuine mid-mutation commit failure"))
+                .isInstanceOf(RuntimeException.class);
+
+        // Database fully rolled back: "impl" is still PENDING (never invalidated), plan_version
+        // untouched, no replanned event, no oversized row persisted.
+        WorkflowStepEntity implStep = stepRepository
+                .findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "impl").orElseThrow();
+        assertThat(implStep.getStatus()).isEqualTo(StepStatus.PENDING);
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(instance.getPlanVersion()).isEqualTo(1);
+        assertThat(eventRepository.findByWorkflowIdOrderById(workflowId).stream()
+                .noneMatch(e -> "replanned".equals(e.getAction()))).isTrue();
+        assertThat(stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 2, tooLongName)).isEmpty();
+
+        // Registry not diverged: approving "gate" and resuming must still run the ORIGINAL "impl"
+        // stage (from the never-replaced graph) to completion. If the registry had been left on the
+        // (rolled-back) replacement graph, this would either fail to find "impl" at all or complete
+        // the workflow without ever running it.
+        engine.approve(workflowId, "gate", "approved", "human", "proceed on the original plan");
+        assertThat(implRan.get()).isTrue();
+        assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
+                .isEqualTo(WorkflowStatus.COMPLETED);
+    }
+
     // TDD requirement called out explicitly in tasks.md T035: a decision made against one plan
     // version must never be (mis)read as governing a different plan version's reintroduced gate of
     // the same step name. Constructed on a stage that is genuinely eligible under REQ-018: an

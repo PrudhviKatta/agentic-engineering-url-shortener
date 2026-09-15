@@ -29,27 +29,63 @@ public class WorkflowContext {
     // fail-open D1 was raised for. Recording the VALUE at the moment of the write (not just the
     // key) closes it: the caller now merges the values THIS map itself captured, never re-reading
     // the shared `artifacts` map for a value it wants to trust.
+    //
+    // 7th independent-review finding (Section 18 follow-up review, round 2 — Codex's own direct
+    // review of the 6th finding's fix): the 6th finding's fix (a per-stage attemptGeneration counter
+    // checked, non-atomically, at the top of addArtifact) had three real gaps, all now closed by the
+    // fields/methods below:
+    //   (a) TOCTOU: reading `attemptGeneration.get(stage)` and then writing into `writesByStage` were
+    //       two separate, unsynchronized steps. A straggler thread could read its generation as
+    //       still-current, get preempted, let a newer beginAttempt() run to completion, then resume
+    //       and perform its write — which the (already-passed) check never re-validates. Closed by
+    //       making the read-check-and-write a single atomic block, synchronized per stage (openLocks
+    //       below) — the same lock beginAttempt/sealAttempt also take, so no interleaving is
+    //       possible between "is my generation still open" and "record my write" for a given stage.
+    //   (b) No attempt-end invalidation: a generation stayed "current" forever once opened — nothing
+    //       ever closed it, so the FINAL attempt of a runStage call (the one whose failure/success
+    //       ends the retry loop with no further beginAttempt ever coming) could have a straggler
+    //       write accepted indefinitely, including after runStage itself has returned and even after
+    //       a later batch-level read of writtenBy(stage) has already happened. Closed by
+    //       openGeneration (a per-stage "which generation, if any, is currently open" map, distinct
+    //       from the monotonic attemptGeneration counter) and sealAttempt(stageName), which
+    //       WorkflowEngine.runStage calls exactly once, synchronously, the moment its retry loop as a
+    //       whole concludes (success or final exhaustion) — after that call, addArtifact rejects
+    //       every write for that stage, forever, regardless of generation number.
+    //   (c) Attribution isolation was not attempt isolation: even a validated write still landed in
+    //       the shared `artifacts` map immediately, so a LATER attempt's handler reading
+    //       ctx.artifacts() directly (not via writtenBy) could observe an EARLIER, since-superseded
+    //       attempt's own value — the write was correctly excluded from policy evaluation and
+    //       persistence (both read writtenBy(stage), never artifacts()), but not from a handler's own
+    //       eyes. Closed by no longer writing stage-attributed values into `artifacts` at all from
+    //       addArtifact — they live ONLY in writesByStage (this stage's own current-attempt buffer)
+    //       until WorkflowEngine's existing, already-correct mergeTrustworthyArtifacts/
+    //       resetArtifactsTo mechanism (Section 17/18) folds a batch's trustworthy per-stage writes
+    //       into `artifacts` once, at the batch boundary — the same mechanism, and the same timing,
+    //       that already governs what gets persisted and propagated into the next batch. No stage in
+    //       the current codebase relies on reading back its own uncommitted write via ctx.artifacts()
+    //       within a single attempt (confirmed by grep — no handler anywhere does this); if a future
+    //       stage genuinely needs read-your-own-write within one attempt, it should read
+    //       writtenBy(thisStageName) directly, not artifacts().
     private final Map<String, Map<String, Object>> writesByStage = new java.util.concurrent.ConcurrentHashMap<>();
-    // 6th independent-review finding (Section 18 follow-up review, straggler-write race):
-    // beginAttempt's writesByStage.remove(stageName) closes the case where a FAILED attempt's
-    // evidence sits untouched until a LATER attempt starts. It does NOT close a genuinely
-    // concurrent case: TimeoutExecutor gives up on an attempt (future.get() times out) and moves on
-    // to the next attempt WITHOUT waiting for the abandoned attempt's worker thread to actually
-    // stop — shutdownNow() only interrupts it, and a handler stuck in non-interruptible work keeps
-    // running in the background (see TimeoutExecutor's own comment). That straggler thread still
-    // has its InheritableThreadLocal currentStage slot set to this stage's name — nothing ever
-    // clears a specific thread's own copy — so it can call addArtifact AFTER beginAttempt has
-    // already reset the bucket for a NEW attempt, landing its stale write right back into the SAME
-    // shared bucket the new attempt is using, with no way to tell the two apart by stage name
-    // alone. attemptGeneration + currentAttemptGeneration below tag every write with the attempt
-    // that produced it: beginAttempt bumps a per-stage counter and stamps that thread's own
-    // generation; addArtifact drops (does not merge into writesByStage OR the shared `artifacts`
-    // map at all) any write whose generation no longer matches the CURRENT live generation for that
-    // stage at the moment the write happens. A straggler's generation is permanently stamped at its
-    // own attempt's start and can never advance, so once a newer attempt has begun, every one of its
-    // writes is provably stale and is discarded outright — not just excluded from attribution, but
-    // never allowed to touch shared state a future batch's baseline could pick up either.
+    // Monotonically increasing per-stage attempt counter: bumped once per beginAttempt call, never
+    // decremented, never reused. Distinct from openGeneration below — this counter's job is only to
+    // hand each attempt a unique, ever-increasing identity to stamp its thread with.
     private final Map<String, Integer> attemptGeneration = new java.util.concurrent.ConcurrentHashMap<>();
+    // Per-stage "which generation, if any, is currently open for writes" — set to the new generation
+    // by beginAttempt, and removed entirely by sealAttempt once WorkflowEngine.runStage's retry loop
+    // concludes (whether the stage ultimately succeeded or the retries were exhausted). A write whose
+    // stamped generation doesn't match this map's CURRENT value for the stage — including because the
+    // stage has no entry here at all, i.e. it was sealed — is stale and dropped. This is what actually
+    // closes gap (b) above: attemptGeneration alone never shrinks back to "nothing is open", so a
+    // generation-equality check against it alone can never expire on its own once the LAST attempt
+    // begins.
+    private final Map<String, Integer> openGeneration = new java.util.concurrent.ConcurrentHashMap<>();
+    // One monitor object per stage name, created on first use. beginAttempt, sealAttempt, and the
+    // check-and-write inside addArtifact all synchronize on the SAME object for a given stage name —
+    // this is what makes "is my generation still open" and "record my write" atomic together (gap
+    // (a) above), while leaving different stages (which never share a lock object) fully concurrent
+    // with each other, preserving the existing sibling-stage parallelism.
+    private final Map<String, Object> openLocks = new java.util.concurrent.ConcurrentHashMap<>();
     private final InheritableThreadLocal<Integer> currentAttemptGeneration = new InheritableThreadLocal<>();
     // InheritableThreadLocal, not ThreadLocal: TimeoutExecutor.withTimeout runs the ACTUAL handler
     // on its own dedicated per-attempt worker thread (a fresh single-thread executor per attempt),
@@ -79,6 +115,13 @@ public class WorkflowContext {
         this.artifacts = new java.util.concurrent.ConcurrentHashMap<>(artifacts);
     }
 
+    // Deliberately NOT attempt-isolated, unlike addArtifact — decisions are an append-only audit
+    // log of "what was attempted", not evidence a policy or a later attempt is asked to trust, so a
+    // failed attempt's own decision entry (e.g. "requirement_ingested" before it went on to throw)
+    // is legitimate history, not stale evidence. This is an explicit design choice, not an oversight
+    // (Codex's Section 18 follow-up round 2 asked this be called out rather than left silent): if a
+    // future caller ever needs to filter decisions by which attempt produced them, the timestamp
+    // already recorded here is sufficient to reconstruct that after the fact without new plumbing.
     public void recordDecision(String actor, String decision, String rationale) {
         Map<String, Object> entry = new LinkedHashMap<>();
         entry.put("actor", actor);
@@ -90,18 +133,32 @@ public class WorkflowContext {
 
     public void addArtifact(String name, Object value) {
         String stage = currentStage.get();
-        if (stage != null) {
-            // A write attributed to a stage must additionally prove it came from the CURRENTLY
-            // active attempt for that stage, not merely SOME attempt that once ran — see the
-            // attemptGeneration field comment for the straggler-thread race this closes.
-            Integer mine = currentAttemptGeneration.get();
-            Integer active = attemptGeneration.get(stage);
-            if (mine == null || !mine.equals(active)) {
-                return; // stale/abandoned attempt: dropped entirely, never becomes trusted evidence
+        if (stage == null) {
+            // Unattributed call (no beginStageAttribution in effect) — e.g. a caller seeding
+            // artifacts before any stage runs, or a unit test exercising WorkflowContext directly.
+            // Never routed through attempt isolation, same as always.
+            artifacts.put(name, value);
+            return;
+        }
+        Integer mine = currentAttemptGeneration.get();
+        synchronized (lockFor(stage)) {
+            Integer open = openGeneration.get(stage);
+            if (mine == null || open == null || !mine.equals(open)) {
+                // Stale (a newer attempt has since begun), sealed (this stage's retry loop has
+                // already concluded), or never-attempted (mine == null): dropped entirely. Not
+                // merged into writesByStage, and — unlike an earlier version of this fix — never
+                // merged into the shared `artifacts` map either, so a later attempt's own handler
+                // reading ctx.artifacts() directly can never observe it (7th finding, gap (c)).
+                return;
             }
             writesByStage.computeIfAbsent(stage, k -> new java.util.concurrent.ConcurrentHashMap<>()).put(name, value);
         }
-        artifacts.put(name, value);
+        // Deliberately NOT written into the shared `artifacts` map here. A stage's own writes
+        // reach `artifacts` only via WorkflowEngine's existing mergeTrustworthyArtifacts/
+        // resetArtifactsTo mechanism at the batch boundary, once this stage's status proves its
+        // handler actually completed trustworthily — the same mechanism, and the same timing, that
+        // already governs persistence and forward-propagation into the next batch. No stage in this
+        // codebase reads back its own uncommitted write via ctx.artifacts() within one attempt.
     }
 
     // WorkflowEngine.runStage calls this immediately before invoking a stage's handler (on that
@@ -111,21 +168,43 @@ public class WorkflowContext {
     public void beginStageAttribution(String stageName) { currentStage.set(stageName); }
     public void endStageAttribution() { currentStage.remove(); }
 
-    // 5th independent-review finding (Section 18 follow-up review): beginStageAttribution spans a
+    // 6th independent-review finding (Section 18 follow-up review): beginStageAttribution spans a
     // stage's WHOLE runStage call, including every one of its own automatic retry attempts
     // (RetryExecutor loops on the SAME thread, never resetting attribution between attempts) — so
     // a key an EARLIER, FAILED attempt wrote survived in writesByStage even if a LATER, successful
-    // attempt never rewrote it, letting stale evidence from a dead attempt satisfy a policy check
-    // the successful attempt never actually earned. WorkflowEngine.runStage calls this at the
-    // START of every individual attempt (wrapping the handler itself, before TimeoutExecutor's own
-    // per-attempt thread is even created) to discard exactly THIS stage's prior-attempt writes —
-    // never another stage's, since writesByStage is keyed by stage name, so a concurrent sibling
-    // writing the same artifact key is completely unaffected regardless of timing. Only the FINAL
-    // attempt's own writes survive into writtenBy(stageName) by the time the handler returns.
+    // attempt never rewrote it. WorkflowEngine.runStage's perAttemptIsolated wrapper calls this at
+    // the START of every individual attempt — it runs INSIDE TimeoutExecutor's own dedicated
+    // per-attempt worker thread (as the first thing that thread does), not before that thread is
+    // created; a straggler from an EARLIER attempt already has its own separate thread and its own
+    // separate InheritableThreadLocal copies by the time this runs. Scoped strictly to this stage's
+    // own name in every map here, so a concurrent sibling writing the same artifact key under a
+    // different stage name is completely unaffected regardless of timing.
     public void beginAttempt(String stageName) {
-        int generation = attemptGeneration.merge(stageName, 1, Integer::sum);
-        currentAttemptGeneration.set(generation);
-        writesByStage.remove(stageName);
+        synchronized (lockFor(stageName)) {
+            int generation = attemptGeneration.merge(stageName, 1, Integer::sum);
+            currentAttemptGeneration.set(generation);
+            openGeneration.put(stageName, generation);
+            writesByStage.remove(stageName);
+        }
+    }
+
+    // 7th independent-review finding (Section 18 follow-up review, round 2): closes the FINAL
+    // attempt of a runStage call — the one after which no further beginAttempt will ever be called
+    // for this stage, so a generation-equality check against attemptGeneration ALONE would stay
+    // satisfied forever, accepting a straggler's write no matter how long after runStage returns it
+    // arrives. WorkflowEngine.runStage calls this exactly once, synchronously, the instant its
+    // retry loop as a whole concludes (success or final exhaustion) — before writtenBy(stageName)
+    // is read for policy evaluation, and therefore also before the batch-level
+    // mergeTrustworthyArtifacts reads it again later. After this call, EVERY future addArtifact for
+    // this stage is rejected, permanently, regardless of what generation it claims.
+    public void sealAttempt(String stageName) {
+        synchronized (lockFor(stageName)) {
+            openGeneration.remove(stageName);
+        }
+    }
+
+    private Object lockFor(String stageName) {
+        return openLocks.computeIfAbsent(stageName, k -> new Object());
     }
 
     // Returns exactly the (key, value) pairs THIS stage's own invocation wrote — captured at write

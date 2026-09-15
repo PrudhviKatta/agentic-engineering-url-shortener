@@ -768,14 +768,19 @@ public class WorkflowEngine {
         boolean succeeded = false;
         SafeStopReason failureReason = SafeStopReason.RETRY_EXHAUSTED;
         Throwable failureCause = null;
-        // 5th independent-review finding (Section 18 follow-up review): resets THIS stage's own
-        // writesByStage bucket at the start of EVERY attempt (including the first), before the
-        // real handler runs — so an attempt that throws after writing mandatory-policy evidence
-        // can never have that evidence survive into a LATER, successful attempt's own evaluation.
-        // Deliberately per-stage isolation via WorkflowContext.beginAttempt (clearing only this
-        // stage's own bucket in the shared writesByStage map), not a separate per-attempt context
-        // object or clearing keys in the shared `artifacts` map itself — concurrent siblings may
-        // legitimately write the SAME artifact key, and this must not touch their contributions.
+        // 6th/7th independent-review findings (Section 18 follow-up review, two rounds): resets
+        // THIS stage's own writesByStage bucket at the start of EVERY attempt (including the
+        // first), before the real handler runs, via WorkflowContext.beginAttempt — this call
+        // happens INSIDE TimeoutExecutor's own dedicated per-attempt worker thread (it's the first
+        // thing that thread does), not before that thread exists. An attempt that throws after
+        // writing mandatory-policy evidence can never have that evidence survive into a LATER,
+        // successful attempt's own evaluation, and (round 2, closing the gaps Codex's own review of
+        // round 1 found) a straggler attempt whose worker thread keeps running past a timeout can
+        // never have a write land in a newer attempt's bucket either — WorkflowContext makes the
+        // generation-check-and-write atomic per stage and never lets a stage-attributed write touch
+        // the shared `artifacts` map directly at all (see WorkflowContext's own comments). Scoped
+        // per-stage throughout — concurrent siblings legitimately writing the same artifact key are
+        // never touched by any of this.
         StageHandler perAttemptIsolated = attemptCtx -> {
             attemptCtx.beginAttempt(stage.name());
             return stage.handler().run(attemptCtx);
@@ -820,6 +825,17 @@ public class WorkflowEngine {
                 failureCause = e;
             }
         } finally {
+            // 7th independent-review finding (Section 18 follow-up review, round 2): seals this
+            // stage's attempt bookkeeping the instant the retry loop as a whole concludes — success
+            // or final exhaustion, doesn't matter which. Without this, the LAST attempt's
+            // generation stays "open" forever (nothing ever calls beginAttempt again for this
+            // stage), so a straggler from that final attempt could write into writesByStage at any
+            // point in the future, including after writtenBy(stage.name()) below has already been
+            // read for policy evaluation, or after the batch-level mergeTrustworthyArtifacts reads
+            // it again later for persistence. Called before endStageAttribution (order between the
+            // two doesn't matter — they touch disjoint state — but sealing first means a stray call
+            // racing the very end of this finally block sees the stage already closed either way).
+            ctx.sealAttempt(stage.name());
             ctx.endStageAttribution();
         }
 

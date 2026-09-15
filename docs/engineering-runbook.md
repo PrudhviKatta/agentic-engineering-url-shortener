@@ -4787,7 +4787,18 @@ public final class RequirementIngestionStage {
         // captures a write's value by reference, not a deep copy (disclosed Section 18 limitation),
         // so holding onto or writing back into this same nested Map would bypass attribution.
         String requirementText = requirement == null ? null : (String) requirement.get("text");
-        ctx.addArtifact("requirementText", requirementText);
+        // 2026-09-15 correction, round 2 (Codex Section 18 follow-up review): addArtifact's backing
+        // maps are ConcurrentHashMap-based throughout WorkflowContext, which rejects a null VALUE
+        // outright (NullPointerException) — calling addArtifact("requirementText", null) here would
+        // crash every workflow submitted without requirementText (e.g. WorkflowRecoveryBootTest's
+        // synthetic smoke workflow, Step 8 below, which intentionally omits it). Fail-closed but
+        // non-crashing: omit the artifact entirely when there is nothing to record, rather than
+        // writing a null or substituting a fabricated placeholder string. Downstream readers
+        // (RequirementNormalizationStage) already treat a missing "requirementText" the same as an
+        // empty one (`raw == null ? "" : ...`), so this is consistent with existing behavior there.
+        if (requirementText != null) {
+            ctx.addArtifact("requirementText", requirementText);
+        }
         ctx.recordDecision("agent", "requirement_ingested",
                 requirementText == null
                         ? "no requirement text was submitted with this workflow"

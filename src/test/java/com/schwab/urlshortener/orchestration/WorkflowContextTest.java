@@ -1,7 +1,11 @@
 package com.schwab.urlshortener.orchestration;
 
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -83,5 +87,177 @@ class WorkflowContextTest {
         assertThat(ctx.artifacts()).doesNotContainKey("urlSchemeAllowlistEnforced");
 
         ctx.endStageAttribution();
+    }
+
+    // 7th independent-review finding (Section 18 follow-up review, round 2 — Codex's direct review
+    // of the 6th finding's fix), gap (b): a generation-equality check against a monotonic counter
+    // that only ever increases never actually CLOSES — the FINAL attempt of a runStage call has no
+    // later attempt to invalidate it, so its generation stays "current" forever unless something
+    // explicitly seals it. WorkflowEngine.runStage now calls sealAttempt(stageName) the instant its
+    // retry loop concludes (success or exhaustion), before writtenBy(stageName) is read anywhere.
+    // This test proves a straggler released strictly AFTER sealAttempt — with no newer attempt ever
+    // having begun — is still dropped, closing the case the original generation-only check missed.
+    @Test
+    void lateWriteAfterSealIsDroppedEvenWithNoNewerAttemptHavingEverBegun() throws InterruptedException {
+        WorkflowContext ctx = new WorkflowContext("run-1");
+        ctx.beginStageAttribution("implementation");
+        ctx.beginAttempt("implementation"); // the ONLY attempt (generation 1)
+
+        CountDownLatch releaseStaleWrite = new CountDownLatch(1);
+        CountDownLatch staleWriteAttempted = new CountDownLatch(1);
+        Thread strayWorker = new Thread(() -> {
+            try {
+                releaseStaleWrite.await();
+                ctx.addArtifact("ssrfGuardEnforced", true);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            } finally {
+                staleWriteAttempted.countDown();
+            }
+        });
+        strayWorker.start();
+
+        // WorkflowEngine.runStage's own finally block: the retry loop has concluded, so this
+        // stage's attempt bookkeeping is sealed — no newer beginAttempt is ever coming.
+        ctx.sealAttempt("implementation");
+        releaseStaleWrite.countDown();
+        staleWriteAttempted.await();
+        strayWorker.join();
+
+        assertThat(ctx.writtenBy("implementation")).isEmpty();
+        assertThat(ctx.artifacts()).doesNotContainKey("ssrfGuardEnforced");
+
+        ctx.endStageAttribution();
+    }
+
+    // 7th independent-review finding, gap (c): attribution isolation is not the same as attempt
+    // isolation. A validated write used to land in the shared `artifacts` map immediately, so even
+    // though policy evaluation and persistence correctly ignored it (both read writtenBy(stage),
+    // never artifacts()), a LATER attempt's own handler code reading ctx.artifacts() directly could
+    // still observe an earlier, since-superseded attempt's value. addArtifact no longer writes
+    // stage-attributed values into the shared map at all — only WorkflowEngine's existing
+    // mergeTrustworthyArtifacts/resetArtifactsTo mechanism does that, at the batch boundary, once a
+    // stage's own status proves it completed trustworthily. This test proves attempt 2 cannot
+    // observe attempt 1's write via ctx.artifacts() at any point, not even while attempt 2 itself is
+    // still running.
+    @Test
+    void aNewerAttemptNeverObservesAnEarlierAttemptsWriteViaTheSharedArtifactsMap() {
+        WorkflowContext ctx = new WorkflowContext("run-1");
+        ctx.beginStageAttribution("implementation");
+
+        ctx.beginAttempt("implementation"); // attempt 1
+        ctx.addArtifact("urlSchemeAllowlistEnforced", true);
+        assertThat(ctx.writtenBy("implementation")).containsEntry("urlSchemeAllowlistEnforced", true);
+        // Not visible in the shared map even for the attempt that legitimately wrote it — only
+        // WorkflowEngine's batch-boundary merge publishes into artifacts(), never addArtifact itself.
+        assertThat(ctx.artifacts()).doesNotContainKey("urlSchemeAllowlistEnforced");
+
+        ctx.beginAttempt("implementation"); // attempt 2 — supersedes attempt 1
+        assertThat(ctx.writtenBy("implementation")).isEmpty(); // attempt 1's write is gone
+        assertThat(ctx.artifacts()).doesNotContainKey("urlSchemeAllowlistEnforced"); // still absent
+
+        ctx.sealAttempt("implementation");
+        ctx.endStageAttribution();
+    }
+
+    // 7th independent-review finding, gap (a): the ORIGINAL fix's "read generation, then write"
+    // was two separate, unsynchronized steps — a thread could pass the check, be preempted, let a
+    // newer attempt begin, then resume and write anyway. beginAttempt/sealAttempt/addArtifact now
+    // all synchronize on the same per-stage lock, making the check-and-write atomic, so this
+    // interleaving is no longer merely unlikely — it is structurally impossible. This is a stress
+    // test, not a single deterministic reproduction (a true TOCTOU window no longer exists to land
+    // a latch-released write inside): a single driver thread advances through many attempts
+    // sequentially — exactly how RetryExecutor actually drives beginAttempt for one stage, one
+    // thread, one attempt at a time, never two beginAttempt calls for the same stage running
+    // concurrently with each other — while a fresh straggler thread per attempt races to write
+    // concurrently with everything the driver does afterward, exactly like an abandoned
+    // TimeoutExecutor worker would. Kept the invariant strictly checkable, deliberately did NOT
+    // drive beginAttempt itself from multiple concurrent threads: nothing in the production code
+    // ever calls beginAttempt for the same stage from more than one thread at a time, so racing it
+    // that way would test a scenario that cannot occur and — as an earlier version of this test
+    // demonstrated by flaking on its own unsynchronized bookkeeping variable — has no well-defined
+    // expected outcome to assert against.
+    @RepeatedTest(20)
+    void concurrentBeginAttemptAndAddArtifactNeverProduceATornOrStaleView() throws InterruptedException {
+        WorkflowContext ctx = new WorkflowContext("run-1");
+        ctx.beginStageAttribution("implementation");
+        int attempts = 50;
+        List<Thread> stragglers = new CopyOnWriteArrayList<>();
+        for (int generation = 1; generation <= attempts; generation++) {
+            ctx.beginAttempt("implementation"); // sequential — the real RetryExecutor loop's shape
+            int myGeneration = generation;
+            // Simulates an abandoned attempt's straggler worker thread: inherits this generation's
+            // marker (a real straggler would via InheritableThreadLocal; captured explicitly here
+            // for the same effect) and races to write it at some uncontrolled later point —
+            // possibly during a LATER generation's own window, possibly after sealAttempt.
+            Thread straggler = new Thread(() -> ctx.addArtifact("urlSchemeAllowlistEnforced", myGeneration));
+            straggler.start();
+            stragglers.add(straggler);
+            // The attempt's OWN legitimate write, made inline while it is unambiguously still the
+            // open generation (nothing else on this thread can have advanced `open` in between its
+            // own beginAttempt call just above and this call) — deterministically guaranteed to
+            // succeed, exactly like a handler's own addArtifact call during its own live attempt.
+            ctx.addArtifact("urlSchemeAllowlistEnforced", myGeneration);
+        }
+        ctx.sealAttempt("implementation");
+        for (Thread t : stragglers) {
+            t.join();
+        }
+
+        // The final attempt's own inline write is guaranteed present (nothing ever supersedes it
+        // before sealAttempt runs) and is the ONLY value that can legally survive — no earlier
+        // generation's straggler, however it interleaved, could ever still be the one recorded, and
+        // no torn/mixed state (more than the one key/value pair) can exist either.
+        Map<String, Object> finalWrites = ctx.writtenBy("implementation");
+        assertThat(finalWrites).hasSize(1);
+        assertThat(finalWrites.get("urlSchemeAllowlistEnforced")).isEqualTo(attempts);
+
+        ctx.endStageAttribution();
+    }
+
+    // Codex's Section 18 follow-up round 2 explicitly asked this be re-proven at the WorkflowContext
+    // level (not only via the higher-level WorkflowEngineReliabilityIntegrationTest): the per-stage
+    // lock added to close gaps (a)/(b) above must not turn into a GLOBAL lock that serializes
+    // unrelated stages, and beginAttempt/addArtifact for one stage must never delete or overwrite a
+    // completely different stage's own writesByStage entry, even when both are hammered
+    // concurrently and legitimately share an artifact key name.
+    @Test
+    void concurrentSiblingStagesWritingTheSameKeyNameRemainFullyIsolated() throws InterruptedException {
+        WorkflowContext ctx = new WorkflowContext("run-1");
+        List<String> stageNames = List.of("impact_components", "impact_interfaces", "impact_tests");
+        Map<String, Object> expected = new ConcurrentHashMap<>();
+        List<Thread> workers = new CopyOnWriteArrayList<>();
+        CountDownLatch ready = new CountDownLatch(stageNames.size());
+        CountDownLatch go = new CountDownLatch(1);
+
+        for (String stage : stageNames) {
+            Thread t = new Thread(() -> {
+                WorkflowContext threadCtx = ctx; // same shared context, distinct stage attribution
+                threadCtx.beginStageAttribution(stage);
+                threadCtx.beginAttempt(stage);
+                ready.countDown();
+                try {
+                    go.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                Object value = "value-from-" + stage;
+                threadCtx.addArtifact("sharedKeyName", value);
+                expected.put(stage, value);
+                threadCtx.sealAttempt(stage);
+                threadCtx.endStageAttribution();
+            });
+            workers.add(t);
+            t.start();
+        }
+        ready.await();
+        go.countDown();
+        for (Thread t : workers) {
+            t.join();
+        }
+
+        for (String stage : stageNames) {
+            assertThat(ctx.writtenBy(stage)).containsEntry("sharedKeyName", expected.get(stage));
+        }
     }
 }

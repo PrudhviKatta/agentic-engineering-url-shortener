@@ -904,7 +904,16 @@ class WorkflowEngineReliabilityIntegrationTest {
                 .orElseThrow();
         assertThat(step.getStatus()).isEqualTo(StepStatus.SAFE_STOPPED);
         assertThat(step.getSafeStopReason()).isEqualTo(SafeStopReason.POLICY_BLOCKED);
-        assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
-                .isEqualTo(WorkflowStatus.SAFE_STOPPED);
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.SAFE_STOPPED);
+
+        // Codex's Section 18 follow-up round 2 finding: the narrative claimed persisted context
+        // excludes attempt 1's stale evidence but nothing here actually asserted it — added now.
+        // attempt 2 never re-wrote either key, so ctx.writtenBy("implementation") is empty and
+        // mergeTrustworthyArtifacts/resetArtifactsTo persist exactly that (no attempt 1 leak-through
+        // regardless of which review round's fix is in effect for the specific race being closed).
+        @SuppressWarnings("unchecked")
+        Map<String, Object> persistedArtifacts = (Map<String, Object>) instance.getContextJson().get("artifacts");
+        assertThat(persistedArtifacts).doesNotContainKeys("urlSchemeAllowlistEnforced", "ssrfGuardEnforced");
     }
 }

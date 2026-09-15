@@ -9,6 +9,7 @@ import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class WorkflowContextTest {
 
@@ -31,6 +32,27 @@ class WorkflowContextTest {
         @SuppressWarnings("unchecked")
         Map<String, Object> stored = (Map<String, Object>) ctx.artifacts().get("normalizedRequirement");
         assertThat(stored.get("text")).isEqualTo("...");
+    }
+
+    // Codex round 3 hardening (carried forward from Section 21): a handler must go through
+    // addArtifact to contribute a value, never by mutating the map artifacts() returns directly.
+    @Test
+    void artifactsReturnsAReadOnlyViewThatStillReflectsLiveUpdates() {
+        WorkflowContext ctx = new WorkflowContext("run-1");
+        ctx.addArtifact("a", 1);
+
+        Map<String, Object> view = ctx.artifacts();
+        assertThatThrownBy(() -> view.put("b", 2)).isInstanceOf(UnsupportedOperationException.class);
+        assertThatThrownBy(() -> view.remove("a")).isInstanceOf(UnsupportedOperationException.class);
+        assertThatThrownBy(view::clear).isInstanceOf(UnsupportedOperationException.class);
+
+        // Still a live VIEW, not a stale copy — a legitimate addArtifact call after the view was
+        // obtained is reflected through it, and resetArtifactsTo (the internal mechanism) keeps
+        // working since it mutates the backing map directly, never through this accessor.
+        ctx.addArtifact("c", 3);
+        assertThat(view).containsEntry("c", 3);
+        ctx.resetArtifactsTo(Map.of("only", "this"));
+        assertThat(view).containsExactly(Map.entry("only", "this"));
     }
 
     // 6th independent-review finding (Section 18 follow-up review, straggler-write race):

@@ -233,5 +233,16 @@ public class WorkflowContext {
 
     public String correlationId() { return correlationId; }
     public List<Map<String, Object>> decisions() { return decisions; }
-    public Map<String, Object> artifacts() { return artifacts; }
+
+    // Read-only view (Codex round 3 hardening, carried forward from Section 21): a handler must go
+    // through addArtifact — with its attempt-generation check and per-stage attribution — to
+    // contribute a value; it must never be able to bypass that by mutating the map this accessor
+    // returns directly. Collections.unmodifiableMap wraps the SAME backing map (not a copy), so
+    // resetArtifactsTo/addArtifact — which mutate the `artifacts` field directly, never through this
+    // accessor — keep working exactly as before, and every caller reading through artifacts() still
+    // sees live updates. The disclosed nested-mutation limitation (a caller reaching into a VALUE
+    // that is itself a mutable Map/List and mutating it in place still bypasses attribution) is
+    // unchanged by this — it is a different, deeper problem (deep immutability of arbitrary artifact
+    // values) that this does not attempt to solve.
+    public Map<String, Object> artifacts() { return Collections.unmodifiableMap(artifacts); }
 }

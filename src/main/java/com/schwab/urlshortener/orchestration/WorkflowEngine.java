@@ -283,9 +283,16 @@ public class WorkflowEngine {
                     // NEVER leak in, regardless of what else in the batch succeeded. COMPENSATED
                     // remains excluded: compensation acts on the stage's RESULT, not on `ctx`, and a
                     // compensated stage's own handler never actually succeeded either.
+                    // 3rd independent-review finding (Section 17 follow-up review, D-NEW-1): merge
+                    // the VALUES ctx.writtenBy(...) itself captured — never re-read a key's current
+                    // value from the live, still-mutable ctx.artifacts() map here. A prior version
+                    // of this loop filtered by key but then did exactly that re-read, so a
+                    // concurrent untrustworthy sibling that happened to overwrite the SAME key
+                    // after the trustworthy stage wrote it could still leak its own value through,
+                    // reopening D1.
                     Map<String, Object> safeArtifacts = new LinkedHashMap<>(batchStartArtifacts);
                     for (StageDefinition sibling : batch) {
-                        Set<String> written = ctx.writtenBy(sibling.name());
+                        Map<String, Object> written = ctx.writtenBy(sibling.name());
                         if (written.isEmpty()) {
                             continue; // this stage's handler never ran, or wrote nothing new
                         }
@@ -295,9 +302,7 @@ public class WorkflowEngine {
                                     && requireStep(workflowId, planVersion, sibling.name()).getSafeStopReason()
                                             == SafeStopReason.POLICY_BLOCKED);
                         if (trustworthy) {
-                            for (String key : written) {
-                                safeArtifacts.put(key, ctx.artifacts().get(key));
-                            }
+                            safeArtifacts.putAll(written);
                         }
                     }
                     applyInstanceUpdate(workflowId, i -> {
@@ -857,7 +862,19 @@ public class WorkflowEngine {
             // Skipped entirely when no PolicyEngine is configured (the shared production bean
             // today).
             if (policyEngine != null) {
-                List<PolicyCheckResult> policyResults = policyEngine.evaluate(stage.name(), ctx.artifacts());
+                // 3rd independent-review finding (Section 17 follow-up review, D-NEW-2): evaluating
+                // against the live, shared ctx.artifacts() let a MANDATORY policy for THIS stage
+                // pass on evidence a DIFFERENT, concurrently-running sibling in the SAME batch had
+                // written — including a sibling that goes on to fail moments later — with no
+                // dependency relationship between them at all (that's WHY they're in the same
+                // batch). inputsSnapshot is this batch's own pre-batch baseline (everything already
+                // trustworthy from fully-completed earlier batches); merging in only THIS stage's
+                // own attributed writes (ctx.writtenBy) is the same trust boundary the safe-stop
+                // merge above uses, applied here too so a sibling's in-flight, not-yet-validated
+                // writes can never leak into this stage's own policy check.
+                Map<String, Object> evaluationArtifacts = new HashMap<>(inputsSnapshot);
+                evaluationArtifacts.putAll(ctx.writtenBy(stage.name()));
+                List<PolicyCheckResult> policyResults = policyEngine.evaluate(stage.name(), evaluationArtifacts);
                 boolean mandatoryFail = false;
                 for (PolicyCheckResult pr : policyResults) {
                     PolicyEvaluationEntity evaluation = new PolicyEvaluationEntity();

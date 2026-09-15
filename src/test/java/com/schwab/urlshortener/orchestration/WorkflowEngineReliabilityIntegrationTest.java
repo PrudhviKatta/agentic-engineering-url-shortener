@@ -9,6 +9,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
@@ -702,5 +704,91 @@ class WorkflowEngineReliabilityIntegrationTest {
         assertThat(step.getStatus()).isEqualTo(StepStatus.COMPENSATED);
         assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
                 .isEqualTo(WorkflowStatus.COMPLETED);
+    }
+
+    // --- 3rd independent-review finding (Section 17 follow-up review, D-NEW-1): a key-level
+    // attribution filter proves WHO touched a key but is worthless if the VALUE is re-read from
+    // the live shared map afterward — an untrustworthy sibling overwriting the SAME key a
+    // trustworthy sibling already wrote must not have its value survive into the persisted
+    // safe-stop context ---
+
+    @Test
+    void anUntrustworthySiblingsOverwriteOfATrustworthySiblingsKeyDoesNotSurvive() {
+        CountDownLatch scanWrote = new CountDownLatch(1);
+        StageHandler securityScan = ctx -> {
+            // The real, accurate finding: the guard is NOT enforced.
+            ctx.addArtifact("ssrfGuardEnforced", false);
+            scanWrote.countDown();
+            return Map.of();
+        };
+        StageHandler implementation = ctx -> {
+            try {
+                assertThat(scanWrote.await(5, TimeUnit.SECONDS)).isTrue();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            // Optimistically (and wrongly) claims the guard IS enforced, then fails — this
+            // sibling's own value must never survive, even though it overwrote the same key
+            // AFTER the trustworthy sibling already wrote the accurate one.
+            ctx.addArtifact("ssrfGuardEnforced", true);
+            throw new TransientStageException("simulated failure after overwriting the key");
+        };
+        List<StageDefinition> stages = List.of(
+                StageDefinition.of("security_scan", List.of(), securityScan),
+                new StageDefinition("implementation", List.of(), implementation, false, false, 0, 5, null, null, null));
+        PolicyEngine policyEngine = new PolicyEngine("policies/v1.yaml");
+        WorkflowEngine engine = engineWithPolicy(policyEngine);
+
+        String workflowId = engine.submit("demo", stages, "run-33t");
+
+        assertThat(stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "security_scan")
+                .orElseThrow().getStatus()).isEqualTo(StepStatus.SUCCEEDED);
+        assertThat(stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "implementation")
+                .orElseThrow().getSafeStopReason()).isEqualTo(SafeStopReason.RETRY_EXHAUSTED);
+
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> persistedArtifacts =
+                (Map<String, Object>) instance.getContextJson().getOrDefault("artifacts", Map.of());
+        // The trustworthy sibling's accurate value survives — NOT the untrustworthy sibling's
+        // later, optimistic overwrite of the same key.
+        assertThat(persistedArtifacts).containsEntry("ssrfGuardEnforced", false);
+    }
+
+    // --- 3rd independent-review finding (Section 17 follow-up review, D-NEW-2): a stage's OWN
+    // mandatory policy check must never evaluate against a DIFFERENT, concurrently-running
+    // sibling's evidence — reachable within a single run, no retry/persistence involved ---
+
+    @Test
+    void aStagesMandatoryPolicyDoesNotEvaluateAgainstAConcurrentSiblingsEvidence() {
+        CountDownLatch doomedWrote = new CountDownLatch(1);
+        StageHandler doomed = ctx -> {
+            ctx.addArtifact("urlSchemeAllowlistEnforced", true);
+            ctx.addArtifact("ssrfGuardEnforced", true);
+            doomedWrote.countDown();
+            throw new TransientStageException("simulated failure after writing evidence");
+        };
+        StageHandler implementation = ctx -> {
+            try {
+                assertThat(doomedWrote.await(5, TimeUnit.SECONDS)).isTrue();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return Map.of(); // supplies NO evidence of its own
+        };
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("doomed", List.of(), doomed, false, false, 0, 5, null, null, null),
+                StageDefinition.of("implementation", List.of(), implementation));
+        PolicyEngine policyEngine = new PolicyEngine("policies/v1.yaml");
+        WorkflowEngine engine = engineWithPolicy(policyEngine);
+
+        String workflowId = engine.submit("demo", stages, "run-33u");
+
+        // "implementation" supplied no evidence of its own — its mandatory policy must FAIL
+        // (fail-closed), not PASS on "doomed"'s concurrently-written, never-validated evidence.
+        WorkflowStepEntity implStep = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "implementation")
+                .orElseThrow();
+        assertThat(implStep.getStatus()).isEqualTo(StepStatus.SAFE_STOPPED);
+        assertThat(implStep.getSafeStopReason()).isEqualTo(SafeStopReason.POLICY_BLOCKED);
     }
 }

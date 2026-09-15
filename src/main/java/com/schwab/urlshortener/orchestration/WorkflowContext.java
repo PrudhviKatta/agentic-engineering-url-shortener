@@ -19,7 +19,17 @@ public class WorkflowContext {
     // Attributing at the exact moment of the write instead — via a per-thread "which stage is
     // currently running on me" marker, since exactly one stage's handler ever runs on a given
     // worker thread at a time — is race-free by construction: no diffing, no window to race in.
-    private final Map<String, Set<String>> writesByStage = new java.util.concurrent.ConcurrentHashMap<>();
+    // 3rd independent-review finding (Section 17 follow-up review, D-NEW-1): the FIRST version of
+    // this field only recorded WHICH keys a stage wrote (Map<String, Set<String>>), and the caller
+    // (runFrom's safe-stop merge) re-read the VALUE for each surviving key from the live shared
+    // `artifacts` map at merge time — which, by then, could have been overwritten by a DIFFERENT,
+    // untrustworthy sibling writing the SAME key concurrently. The key-level filter correctly
+    // proved "a trusted stage touched this key," then threw that proof away by reading whatever
+    // value happened to be sitting in the shared map, trusted or not — reopening the exact
+    // fail-open D1 was raised for. Recording the VALUE at the moment of the write (not just the
+    // key) closes it: the caller now merges the values THIS map itself captured, never re-reading
+    // the shared `artifacts` map for a value it wants to trust.
+    private final Map<String, Map<String, Object>> writesByStage = new java.util.concurrent.ConcurrentHashMap<>();
     // InheritableThreadLocal, not ThreadLocal: TimeoutExecutor.withTimeout runs the ACTUAL handler
     // on its own dedicated per-attempt worker thread (a fresh single-thread executor per attempt),
     // not on the thread runStage itself calls beginStageAttribution from. A plain ThreadLocal set
@@ -61,7 +71,7 @@ public class WorkflowContext {
         artifacts.put(name, value);
         String stage = currentStage.get();
         if (stage != null) {
-            writesByStage.computeIfAbsent(stage, k -> java.util.concurrent.ConcurrentHashMap.newKeySet()).add(name);
+            writesByStage.computeIfAbsent(stage, k -> new java.util.concurrent.ConcurrentHashMap<>()).put(name, value);
         }
     }
 
@@ -72,8 +82,13 @@ public class WorkflowContext {
     public void beginStageAttribution(String stageName) { currentStage.set(stageName); }
     public void endStageAttribution() { currentStage.remove(); }
 
-    public Set<String> writtenBy(String stageName) {
-        return writesByStage.getOrDefault(stageName, Set.of());
+    // Returns exactly the (key, value) pairs THIS stage's own invocation wrote — captured at write
+    // time, not re-read from the live `artifacts` map. A caller merging a trustworthy stage's
+    // contribution into a persisted snapshot must use these values directly (e.g. via putAll), not
+    // look the keys up in `artifacts()` afterward, or a concurrent untrustworthy sibling's later
+    // overwrite of the same key would leak through the lookup.
+    public Map<String, Object> writtenBy(String stageName) {
+        return writesByStage.getOrDefault(stageName, Map.of());
     }
 
     public String correlationId() { return correlationId; }

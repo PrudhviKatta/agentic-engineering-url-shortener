@@ -1233,8 +1233,14 @@ no code exists yet, so there is nothing gained by building the placeholder first
   table above).
 - **Files**: Create
   `orchestration/stages/{RequirementIngestionStage,RequirementNormalizationStage,AmbiguityDetectionStage,HumanClarificationStage,DecompositionStage,DesignStage,ImplementationStage,TestingStage,DocumentationStage,SecurityStage,ReleaseReadinessStage,FinalSummaryStage}.java`;
-  Modify `orchestration/WorkflowEngine.java` (one line in `runFrom`: seed
-  `ctx.artifacts().putIfAbsent("feature", instance.getFeature())`); Modify `scenarios/ScenarioRunner.java`
+  no `orchestration/WorkflowEngine.java` change (2026-09-15 correction, Codex Section 18 follow-up
+  review: this bullet previously specified seeding `ctx.artifacts().putIfAbsent("feature",
+  instance.getFeature())` in `runFrom` — wrong on two counts, `feature` is a short slug never the
+  submitted requirement text, and `submit()`/`buildContext` already seed and restore the real
+  requirement verbatim under a nested `requirement` artifact — `requirement.text` — with no engine
+  change needed; `RequirementIngestionStage` reads that directly, using immutable/defensive
+  extraction per the disclosed nested-mutation limitation in `CODEX-REVIEW-BRIEFING.md` Section 18);
+  Modify `scenarios/ScenarioRunner.java`
   (replace T025's placeholder graph with a `StageCatalog`-backed 12-stage graph); Test
   `scenarios/GreenfieldScenarioTest.java`; Create `docs/scenarios/greenfield.md`.
 - **Prerequisites**: T020b (`StageCatalog`), T038 (latest `ScenarioRunner.java` state), T026

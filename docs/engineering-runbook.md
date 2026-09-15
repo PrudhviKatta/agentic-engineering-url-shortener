@@ -4610,6 +4610,22 @@ it is the first task that creates `RequirementIngestionStage`, `RequirementNorma
 `AmbiguityDetectionStage`, `HumanClarificationStage`, and `FinalSummaryStage`, so nothing here is
 forward-referencing a not-yet-created file.
 
+**Correction (2026-09-15, Codex Section 18 follow-up review):** every sample below through this
+task's original writing read the submitted requirement text off the `feature` artifact — a leftover
+from an early draft of `WorkflowEngine.submit()` that predates the 4-arg overload
+(`submit(feature, stages, correlationId, requirementText)`) actually shipped in Section 17/18.
+`feature` is a short slug (`"add-expiration-endpoint"`); the real, free-text requirement a caller
+submits is already persisted, verbatim, under a nested `requirement` artifact —
+`ctx.artifacts().get("requirement")` → a `Map` with `text`/`submittedAt`/`submittedVia` keys — seeded
+directly by `submit()` before `runFrom` ever runs a stage, and restored on every resume by
+`buildContext`. No `WorkflowEngine` change is needed for `RequirementIngestionStage` to read it; the
+`putIfAbsent("feature", ...)` line this section originally specified is deleted below, and every
+`RequirementIngestionStage`/scenario-test sample in this task (and reused verbatim by Tasks 40/41) is
+corrected to read `requirement.text`, not `feature`. Because `WorkflowContext.writtenBy(...)` captures
+a write's value by reference, not a deep copy (Section 18's disclosed nested-mutation limitation),
+`RequirementIngestionStage` extracts the immutable `text` String once and never retains or mutates the
+`requirement` map itself — the corrected sample below does this.
+
 The 12 nodes: `requirement_ingestion`, `requirement_normalization`, `ambiguity_detection`,
 `human_clarification` (present in every run's stage list, `SKIPPED` here since this requirement is
 unambiguous), `decomposition`, `design`, `implementation`, `testing`, `security`, `documentation`,
@@ -4620,9 +4636,12 @@ unambiguous), `decomposition`, `design`, `implementation`, `testing`, `security`
   (this task writes all twelve stage classes in their final form; `DecompositionStage`'s
   clarification-reading logic, specified fully in Task 51, is included here directly since it is
   needed for this task's own catalog to compile and this task creates the file)
-- Modify: `src/main/java/com/schwab/urlshortener/orchestration/WorkflowEngine.java` (adds one line to
-  `runFrom`, per Task 50: seed `ctx.artifacts().putIfAbsent("feature", instance.getFeature())` so
-  `RequirementIngestionStage` can read the originally-submitted requirement text)
+- No `WorkflowEngine.java` change: `submit()` already seeds the nested `requirement` artifact
+  (`text`/`submittedAt`/`submittedVia`) whenever a caller supplies `requirementText`, and
+  `buildContext` already restores it into `ctx.artifacts()` on every run/resume —
+  `RequirementIngestionStage` reads `ctx.artifacts().get("requirement")` directly (2026-09-15
+  correction; see above — this bullet previously specified a `runFrom` change that both duplicated
+  existing behavior and pointed `RequirementIngestionStage` at the wrong artifact)
 - Modify: `src/main/java/com/schwab/urlshortener/scenarios/ScenarioRunner.java` (wire the real
   12-stage `greenfield` scenario via a `StageCatalog`, replacing the trivial 2-stage placeholder
   from Task 25)
@@ -4720,10 +4739,13 @@ class GreenfieldScenarioTest {
     void wellDefinedRequirementCompletesWithoutClarificationGate() {
         WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository,
                 approvalRepository, null, null, null, null, greenfieldCatalog());
+        // feature is the short slug the real POST /workflows contract expects; the actual
+        // free-text ask goes through requirementText (2026-09-15 correction — see task header) so
+        // RequirementIngestionStage exercises the same "requirement" artifact a real submission uses.
         String workflowId = engine.submit(
+                "add-expiration-endpoint", greenfieldStages(), "scn-a-1",
                 "add optional expiresAt field to the create-link contract per req-014, "
-                        + "returning 400 for a past timestamp",
-                greenfieldStages(), "scn-a-1");
+                        + "returning 400 for a past timestamp");
         engine.approve(workflowId, "design", "approved", "human", "matches ADR-003/006");
         engine.approve(workflowId, "release_readiness", "approved", "human", "all checks green");
 
@@ -4753,9 +4775,23 @@ public final class RequirementIngestionStage {
     private RequirementIngestionStage() { }
 
     public static Map<String, Object> run(WorkflowContext ctx) {
-        String feature = (String) ctx.artifacts().get("feature");
-        ctx.addArtifact("requirementText", feature);
-        ctx.recordDecision("agent", "requirement_ingested", "captured the submitted requirement text verbatim");
+        // 2026-09-15 correction (Codex Section 18 follow-up review): the real submitted
+        // requirement lives under the nested "requirement" artifact WorkflowEngine.submit() seeds
+        // directly into contextJson (requirement.text) — "feature" is a short slug
+        // (e.g. "add-expiration-endpoint"), never the free-text ask itself. A workflow submitted
+        // without requirementText (e.g. a synthetic smoke test) has no "requirement" artifact at
+        // all; requirementText is then recorded as null rather than silently substituting feature.
+        @SuppressWarnings("unchecked")
+        Map<String, Object> requirement = (Map<String, Object>) ctx.artifacts().get("requirement");
+        // Extract the immutable String once and never retain/mutate the map itself — writtenBy(...)
+        // captures a write's value by reference, not a deep copy (disclosed Section 18 limitation),
+        // so holding onto or writing back into this same nested Map would bypass attribution.
+        String requirementText = requirement == null ? null : (String) requirement.get("text");
+        ctx.addArtifact("requirementText", requirementText);
+        ctx.recordDecision("agent", "requirement_ingested",
+                requirementText == null
+                        ? "no requirement text was submitted with this workflow"
+                        : "captured the submitted requirement text verbatim");
         return Map.of();
     }
 }
@@ -5321,9 +5357,12 @@ class BrownfieldScenarioTest {
     void sevenImpactBranchesRunInParallelAndJoinBeforeImplementation() {
         WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository,
                 approvalRepository, null, null, null, null, brownfieldCatalog());
+        // See the 2026-09-15 correction in Task 39's header: feature is the short slug, the actual
+        // requirement text goes through the 4-arg submit() so RequirementIngestionStage ingests it
+        // from the real "requirement" artifact, same as a genuine POST /workflows submission.
         String workflowId = engine.submit(
-                "harden the SSRF guard (req-015) to reject IPv6 unique local addresses fc00::/7",
-                brownfieldStages(), "scn-b-1");
+                "harden-ssrf-guard-ipv6-ula", brownfieldStages(), "scn-b-1",
+                "harden the SSRF guard (req-015) to reject IPv6 unique local addresses fc00::/7");
         engine.approve(workflowId, "design", "approved", "human", "matches brownfield impact analysis");
 
         List<WorkflowStepEntity> impactSteps = stepRepository.findByWorkflowIdAndPlanVersionAndNameIn(
@@ -5353,8 +5392,8 @@ class BrownfieldScenarioTest {
         WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository,
                 approvalRepository, null, null, null, null, brownfieldCatalog());
         String workflowId = engine.submit(
-                "harden the SSRF guard (req-015) to reject IPv6 unique local addresses fc00::/7",
-                brownfieldStages(), "scn-b-2");
+                "harden-ssrf-guard-ipv6-ula", brownfieldStages(), "scn-b-2",
+                "harden the SSRF guard (req-015) to reject IPv6 unique local addresses fc00::/7");
         engine.approve(workflowId, "design", "approved", "human", "matches brownfield impact analysis");
         engine.approve(workflowId, "change_impact_report", "rejected", "human", "regression risk too high");
 
@@ -5665,7 +5704,11 @@ class AmbiguousScenarioTest {
     void ambiguousRequirementSuspendsAtHumanClarificationThenDecompositionUsesTheResolution() {
         WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository,
                 approvalRepository, null, null, null, null, ambiguousCatalog());
-        String workflowId = engine.submit("add rate limiting", ambiguousStages(), "scn-c-1");
+        // See the 2026-09-15 correction in Task 39's header: the vague requirement text (no
+        // req-<digits> citation, no measurable criterion — deliberately, this scenario is
+        // demonstrating the ambiguity gate) goes through requirementText, not feature.
+        String workflowId = engine.submit(
+                "add-rate-limiting", ambiguousStages(), "scn-c-1", "add rate limiting");
 
         WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
         assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.PENDING_APPROVAL);
@@ -5693,7 +5736,8 @@ class AmbiguousScenarioTest {
     void humanCanReplanDecompositionWhileClarificationIsStillPending() {
         WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository,
                 approvalRepository, null, null, null, null, ambiguousCatalog());
-        String workflowId = engine.submit("add rate limiting", ambiguousStages(), "scn-c-2");
+        String workflowId = engine.submit(
+                "add-rate-limiting", ambiguousStages(), "scn-c-2", "add rate limiting");
 
         java.util.concurrent.atomic.AtomicBoolean ran = new java.util.concurrent.atomic.AtomicBoolean(false);
         StageHandler decompositionV2 = ctx -> {
@@ -6320,9 +6364,12 @@ public class WorkflowEngine {
         WorkflowContext ctx = new WorkflowContext(instance.getCorrelationId(),
                 new ArrayList<>((List<Map<String,Object>>) instance.getContextJson().getOrDefault("decisions", List.of())),
                 new HashMap<>((Map<String,Object>) instance.getContextJson().getOrDefault("artifacts", Map.of())));
-        // Seeds the originally-submitted requirement text so stage handlers (e.g.
-        // RequirementIngestionStage, Task 39) can read it without a caller-supplied ctx.
-        ctx.artifacts().putIfAbsent("feature", instance.getFeature());
+        // 2026-09-15 correction (Codex Section 18 follow-up review): no putIfAbsent("feature", ...)
+        // here — the line this draft originally had. The nested "requirement" artifact
+        // (requirement.text) is already part of instance.getContextJson().get("artifacts") by the
+        // time this constructor runs (submit() seeds it directly), so the HashMap copy above
+        // already carries it forward; RequirementIngestionStage (Task 39) reads that, never
+        // "feature", which is only ever a short slug.
 
         boolean resuming = rows.stream().anyMatch(r -> r.getStartedAt() != null);
         if (resuming) {

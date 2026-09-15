@@ -45,4 +45,16 @@ public interface WorkflowStepJpaRepository extends JpaRepository<WorkflowStepEnt
     // Task 49: full-graph reconstruction for StageCatalog-based restart-safe resumption — no
     // ordering guarantee needed here (callers reconstruct the dependency graph from depends_on).
     List<WorkflowStepEntity> findByWorkflowIdAndPlanVersion(String workflowId, int planVersion);
+
+    // Task 35 remediation (Codex round 6): pessimistic row lock addressed by the row's own durable
+    // identity (its primary key), not by (workflowId, name, status). A name-based lookup is
+    // ambiguous the instant a replan() has invalidated one row and inserted a fresh one under the
+    // SAME name: "the current non-invalidated row named X" can silently resolve to a DIFFERENT
+    // logical stage than the one a caller already resolved moments earlier from a (possibly stale)
+    // in-memory StageDefinition. WorkflowEngine.claimStage() locks and claims the EXACT row a
+    // batch's own snapshot already identified — never re-derives "whichever row currently has this
+    // name" a second time — so a same-named replacement row a concurrent replan() introduces can
+    // never be claimed and executed against the wrong (stale) StageDefinition's handler.
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    Optional<WorkflowStepEntity> findWithLockById(Long id);
 }

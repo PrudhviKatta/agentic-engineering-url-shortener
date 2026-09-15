@@ -490,6 +490,265 @@ class WorkflowEngineReplanningTest {
                 .isEqualTo(WorkflowStatus.COMPLETED);
     }
 
+    // Task 35 remediation (Codex round 7): the SAME-NAME variant of the test above. The prior
+    // version proved the DB-authoritative completion check stops a stale runFrom from marking the
+    // workflow COMPLETED while a same-named-but-different replacement sits PENDING — but it used
+    // DIFFERENT names ("impl" -> "impl_v2"), which sidesteps the sharper defect an independent
+    // review found: when the replacement REUSES the exact name "impl", a stale runFrom's by-name
+    // resolution finds the NEW (plan_version 2) row on its very first lookup and would pair it with
+    // the OLD (plan_version 1) StageDefinition's handler — the DB-authoritative check alone cannot
+    // catch this, because by the time it runs the wrong handler may have ALREADY executed and made
+    // the replacement row terminal. oldImplRan/newImplRan are deliberately DISTINGUISHABLE (this is
+    // the whole point: proving WHICH handler ran, not just whether the workflow completed).
+    // resolveIfCurrentGeneration is what is actually under test here: the stale call's own
+    // registration tags "impl" at plan_version 1; the row this call's first (and only) by-name
+    // lookup finds is plan_version 2 the instant the concurrent replan has committed; the mismatch
+    // must make that row unresolvable to the stale call, exactly like "no active row exists," never
+    // a silent substitution.
+    @Test
+    void aConcurrentApproveDuringReplansCommitToPublishGapNeverExecutesTheStaleHandlerAgainstASameNamedReplacementRow()
+            throws Exception {
+        AtomicBoolean oldImplRan = new AtomicBoolean(false);
+        AtomicBoolean newImplRan = new AtomicBoolean(false);
+        StageHandler blockerHandler = ctx -> Map.of();
+        StageHandler oldImpl = ctx -> { oldImplRan.set(true); return Map.of(); };
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("blocker", List.of(), blockerHandler, true, false, 0, 30, null, null, null),
+                StageDefinition.of("impl", List.of(), oldImpl));
+
+        AtomicBoolean pauseArmed = new AtomicBoolean(false);
+        CountDownLatch committedButNotYetPublished = new CountDownLatch(1);
+        CountDownLatch releaseCommit = new CountDownLatch(1);
+        PlatformTransactionManager pausingAfterCommit = new PlatformTransactionManager() {
+            @Override
+            public TransactionStatus getTransaction(TransactionDefinition definition) throws TransactionException {
+                return transactionManager.getTransaction(definition);
+            }
+
+            @Override
+            public void commit(TransactionStatus status) throws TransactionException {
+                transactionManager.commit(status);
+                if (pauseArmed.compareAndSet(true, false)) {
+                    committedButNotYetPublished.countDown();
+                    try {
+                        assertThat(releaseCommit.await(5, TimeUnit.SECONDS)).isTrue();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            }
+
+            @Override
+            public void rollback(TransactionStatus status) throws TransactionException {
+                transactionManager.rollback(status);
+            }
+        };
+        WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository,
+                approvalRepository, pausingAfterCommit);
+        String workflowId = engine.submit("demo", stages, "run-35q");
+        assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
+                .isEqualTo(WorkflowStatus.PENDING_APPROVAL);
+        WorkflowStepEntity oldImplRow = stepRepository
+                .findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "impl").orElseThrow();
+        assertThat(oldImplRow.getStatus()).isEqualTo(StepStatus.PENDING);
+
+        // Same name, distinguishable handler: proves the exact defect the prior test's "impl_v2"
+        // wording could not reach.
+        StageHandler newImpl = ctx -> { newImplRan.set(true); return Map.of(); };
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        pauseArmed.set(true);
+        Future<?> replanFuture = pool.submit(() -> engine.replan(workflowId, "impl",
+                List.of(StageDefinition.of("impl", List.of(), newImpl)), "human", "swap implementation, same name"));
+
+        assertThat(committedButNotYetPublished.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "impl")
+                .orElseThrow().getStatus()).isEqualTo(StepStatus.INVALIDATED);
+        WorkflowStepEntity newImplRow = stepRepository
+                .findByWorkflowIdAndPlanVersionAndName(workflowId, 2, "impl").orElseThrow();
+        assertThat(newImplRow.getStatus()).isEqualTo(StepStatus.PENDING);
+        assertThat(newImplRow.getId()).isNotEqualTo(oldImplRow.getId());
+
+        // "blocker"'s own approve() drives a runFrom() from the STALE (pre-replan) registration,
+        // which still tags "impl" at plan_version 1. Under the pre-round-7 code, its by-name lookup
+        // would find the plan_version-2 row (already committed) and pair it with THIS registration's
+        // oldImpl handler — claiming and running it against the wrong row. Under the fix, the
+        // plan_version mismatch makes that row unresolvable to this call.
+        Future<?> approveFuture = pool.submit(() -> {
+            engine.approve(workflowId, "blocker", "approved", "human", "resume concurrently");
+            return null;
+        });
+        approveFuture.get(10, TimeUnit.SECONDS);
+
+        // The defect under test: oldImpl must NEVER run, regardless of what the completion status
+        // ends up being — running it at all against the replacement row is the bug, independent of
+        // whether the DB-authoritative check happens to also catch the resulting COMPLETED write.
+        assertThat(oldImplRan.get()).isFalse();
+        assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
+                .isNotEqualTo(WorkflowStatus.COMPLETED);
+        assertThat(newImplRan.get()).isFalse(); // replan() itself hasn't resumed yet
+
+        releaseCommit.countDown();
+        replanFuture.get(10, TimeUnit.SECONDS);
+        pool.shutdown();
+
+        // replan()'s own resume is what actually runs the replacement — under its OWN, freshly
+        // published registration, which correctly tags "impl" at plan_version 2.
+        assertThat(newImplRan.get()).isTrue();
+        assertThat(oldImplRan.get()).isFalse();
+        assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
+                .isEqualTo(WorkflowStatus.COMPLETED);
+    }
+
+    // Task 35 remediation (Codex round 7): the "claim old row first" safe interleaving explicitly
+    // called out alongside the test above — a stage already RUNNING must make replan() reject the
+    // WHOLE request atomically (REQ-018), even when the proposed replacement reuses the exact same
+    // name. This is really the existing REQ-018 RUNNING check (see
+    // replanRejectsARunningReachableStageWithoutMutatingAnything below), re-asserted specifically
+    // for the same-name case: nothing about name reuse should ever let a RUNNING stage be replanned
+    // out from under its own in-flight execution.
+    @Test
+    void replanRejectsAStageAlreadyRunningEvenWhenTheReplacementReusesTheExactSameName() throws Exception {
+        CountDownLatch handlerStarted = new CountDownLatch(1);
+        CountDownLatch releaseHandler = new CountDownLatch(1);
+        AtomicBoolean oldImplRan = new AtomicBoolean(false);
+        StageHandler slowOldImpl = ctx -> {
+            oldImplRan.set(true);
+            handlerStarted.countDown();
+            try {
+                assertThat(releaseHandler.await(5, TimeUnit.SECONDS)).isTrue();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return Map.of();
+        };
+        List<StageDefinition> stages = List.of(StageDefinition.of("impl", List.of(), slowOldImpl));
+
+        WorkflowEngine engine = engine();
+        ExecutorService pool = Executors.newFixedThreadPool(1);
+        Future<String> submitFuture = pool.submit(() -> engine.submit("demo", stages, "run-35r"));
+        assertThat(handlerStarted.await(5, TimeUnit.SECONDS)).isTrue();
+
+        // submitFuture is still blocked inside slowOldImpl (handler hasn't returned), so submit()
+        // itself has not returned yet — recover the workflow id via correlationId instead of
+        // blocking on the future.
+        String workflowId = instanceRepository.findAll().stream()
+                .filter(i -> "run-35r".equals(i.getCorrelationId())).findFirst().orElseThrow().getId();
+        assertThat(stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "impl")
+                .orElseThrow().getStatus()).isEqualTo(StepStatus.RUNNING);
+
+        StageHandler newImpl = ctx -> Map.of();
+        assertThatThrownBy(() -> engine.replan(workflowId, "impl",
+                List.of(StageDefinition.of("impl", List.of(), newImpl)), "human", "swap while running, same name"))
+                .isInstanceOf(IllegalStateException.class);
+
+        // Nothing mutated: still plan version 1, "impl" still RUNNING (the SAME row, same id), no
+        // replacement row was ever inserted under plan_version 2.
+        WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
+        assertThat(instance.getPlanVersion()).isEqualTo(1);
+        assertThat(stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "impl")
+                .orElseThrow().getStatus()).isEqualTo(StepStatus.RUNNING);
+        assertThat(stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 2, "impl")).isEmpty();
+        assertThat(eventRepository.findByWorkflowIdOrderById(workflowId).stream()
+                .noneMatch(e -> "replanned".equals(e.getAction()))).isTrue();
+
+        releaseHandler.countDown();
+        submitFuture.get(5, TimeUnit.SECONDS);
+        pool.shutdown();
+        assertThat(oldImplRan.get()).isTrue();
+        assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
+                .isEqualTo(WorkflowStatus.COMPLETED);
+    }
+
+    // Task 35 remediation (Codex round 7): the "replan invalidates old row first" safe interleaving.
+    // A runFrom call that already bound its BatchMember to the OLD row's exact id (while it was
+    // still the current generation, still PENDING) can be overtaken by a concurrent replan() that
+    // invalidates that exact row before this call's own claimStage transaction runs. claimStage's
+    // findWithLockById + status==PENDING re-check (Codex round 6) is what makes this safe: the
+    // stale call attempts the EXACT old row by id, sees INVALIDATED, and silently declines the
+    // claim — it never falls back to re-resolving "impl" by name (which would find the new row and
+    // reintroduce the same defect from a different angle). isStaleThread scopes the pause to only
+    // the thread running the stale submit()->runFrom()->claimStage call, so replan() (run
+    // synchronously on the main thread, in between) is never itself delayed.
+    @Test
+    void aRunFromThatAlreadyBoundTheOldRowSkipsItWithoutRunningWhenAConcurrentReplanInvalidatesItFirst()
+            throws Exception {
+        AtomicBoolean oldImplRan = new AtomicBoolean(false);
+        AtomicBoolean newImplRan = new AtomicBoolean(false);
+        StageHandler oldImpl = ctx -> { oldImplRan.set(true); return Map.of(); };
+        List<StageDefinition> stages = List.of(StageDefinition.of("impl", List.of(), oldImpl));
+
+        ThreadLocal<Boolean> isStaleThread = ThreadLocal.withInitial(() -> false);
+        AtomicBoolean pauseArmed = new AtomicBoolean(true);
+        CountDownLatch aboutToClaim = new CountDownLatch(1);
+        CountDownLatch releaseClaim = new CountDownLatch(1);
+        PlatformTransactionManager pausingBeforeClaim = new PlatformTransactionManager() {
+            @Override
+            public TransactionStatus getTransaction(TransactionDefinition definition) throws TransactionException {
+                if (isStaleThread.get() && pauseArmed.compareAndSet(true, false)) {
+                    aboutToClaim.countDown();
+                    try {
+                        assertThat(releaseClaim.await(5, TimeUnit.SECONDS)).isTrue();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+                return transactionManager.getTransaction(definition);
+            }
+
+            @Override
+            public void commit(TransactionStatus status) throws TransactionException {
+                transactionManager.commit(status);
+            }
+
+            @Override
+            public void rollback(TransactionStatus status) throws TransactionException {
+                transactionManager.rollback(status);
+            }
+        };
+        WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository,
+                approvalRepository, pausingBeforeClaim);
+
+        ExecutorService pool = Executors.newFixedThreadPool(1);
+        Future<String> submitFuture = pool.submit(() -> {
+            isStaleThread.set(true);
+            return engine.submit("demo", stages, "run-35s");
+        });
+
+        assertThat(aboutToClaim.await(5, TimeUnit.SECONDS)).isTrue();
+        String workflowId = instanceRepository.findAll().stream()
+                .filter(i -> "run-35s".equals(i.getCorrelationId())).findFirst().orElseThrow().getId();
+        // The stale call's own BatchMember was bound to this exact row while it was still PENDING —
+        // still true right now, since claimStage's own transaction is paused before it can flip it.
+        WorkflowStepEntity oldImplRow = stepRepository
+                .findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "impl").orElseThrow();
+        assertThat(oldImplRow.getStatus()).isEqualTo(StepStatus.PENDING);
+
+        // Reuse the exact same name — this thread's replan() is not on the stale-thread ThreadLocal,
+        // so it proceeds without pausing.
+        StageHandler newImpl = ctx -> { newImplRan.set(true); return Map.of(); };
+        engine.replan(workflowId, "impl", List.of(StageDefinition.of("impl", List.of(), newImpl)),
+                "human", "reuse name while a stale run is paused before its own claim");
+
+        // replan()'s own trailing runFrom() already ran the replacement to completion.
+        assertThat(newImplRan.get()).isTrue();
+        assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
+                .isEqualTo(WorkflowStatus.COMPLETED);
+        assertThat(stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "impl")
+                .orElseThrow().getStatus()).isEqualTo(StepStatus.INVALIDATED);
+
+        // Release the stale call's paused claim attempt: it targets the EXACT old row (by id, bound
+        // before this test ever called replan()), now INVALIDATED — claimStage must decline the
+        // claim and the stale call must return normally, without ever running oldImpl and without
+        // disturbing the already-COMPLETED workflow.
+        releaseClaim.countDown();
+        submitFuture.get(5, TimeUnit.SECONDS);
+        pool.shutdown();
+
+        assertThat(oldImplRan.get()).isFalse();
+        assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
+                .isEqualTo(WorkflowStatus.COMPLETED);
+    }
+
     // TDD requirement called out explicitly in tasks.md T035: a decision made against one plan
     // version must never be (mis)read as governing a different plan version's reintroduced gate of
     // the same step name. Constructed on a stage that is genuinely eligible under REQ-018: an

@@ -178,6 +178,15 @@ public class WorkflowEngine {
     // write itself atomic-and-checked is what actually closes the race without breaking that.
     private void runFrom(String workflowId) {
         StageRegistration registration = registry.get(workflowId);
+        // Independent-review finding (2nd Section 17 follow-up review, D5): the in-memory
+        // registry is empty for a workflow id after a process restart, the same pre-existing
+        // fragility N1 fixed for retrySafeStopped's own lookup — runFrom itself had no equivalent
+        // guard, and every caller of runFrom (submit/approve/retrySafeStopped) would see a raw NPE
+        // instead of a clear, typed error.
+        if (registration == null) {
+            throw new IllegalStateException("workflow " + workflowId + " has no in-memory stage "
+                    + "registration (process restarted?) — cannot resume it");
+        }
         WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
 
         // Cheap early exit: a concurrent decision may have already driven this workflow to a
@@ -247,41 +256,50 @@ public class WorkflowEngine {
                     // (decisions/artifacts) is persisted here so a mixed batch's OTHER
                     // (already-succeeded) siblings' evidence is not discarded just because a
                     // DIFFERENT sibling's SafeStopException happened to be the one that propagated
-                    // (Codex REQUEST AMENDMENTS follow-up, Section 17 review) — but NOT
-                    // unconditionally: a stage safe-stopped for RETRY_EXHAUSTED/
-                    // COMPENSATION_FAILED/UNEXPECTED_FAILURE never actually completed its handler,
-                    // so `ctx`'s current state may include THAT stage's own partial, pre-failure
-                    // artifact writes (ctx is one shared mutable map, not attributed per-stage).
-                    // Independent-review finding (Section 17 follow-up review, N2): persisting
-                    // those unconditionally let a mandatory policy PASS on its OWN resume against
-                    // stale evidence a failed attempt happened to write before throwing — a
-                    // fail-OPEN regression on exactly the audit-integrity axis this fix was meant
-                    // to protect. anySiblingHandlerGenuinelyCompleted below is true only if at
-                    // least one stage in the FULL batch reached a state that could only happen
-                    // after its own handler ran to completion (SUCCEEDED, WAITING_APPROVAL — an
-                    // exit gate is reached only after the handler returns — or SAFE_STOPPED with
-                    // POLICY_BLOCKED, since a policy block happens strictly after handler success).
-                    // COMPENSATED is deliberately excluded: compensation runs on the stage's
-                    // RESULT, not on `ctx`, and the compensated stage's own handler never actually
-                    // succeeded either. When nothing in the batch qualifies, persisting
-                    // batchStartArtifacts (the snapshot taken before ANY handler in this batch
-                    // ran) instead of the polluted `ctx.artifacts()` is the safe fallback — for the
-                    // overwhelmingly common single-stage-batch case this exactly restores the
-                    // original disclosed (safe) behavior, while a batch with a genuinely
-                    // successful sibling still gets that sibling's real evidence preserved.
-                    boolean anySiblingHandlerGenuinelyCompleted = batch.stream().anyMatch(s -> {
-                        StepStatus st = stepStatus(workflowId, planVersion, s.name());
-                        if (st == StepStatus.SUCCEEDED || st == StepStatus.WAITING_APPROVAL) {
-                            return true;
+                    // (Codex REQUEST AMENDMENTS follow-up, Section 17 review).
+                    //
+                    // 2nd independent-review finding (Section 17 follow-up review, D1): an EARLIER
+                    // version of this fix decided this batch-wide, all-or-nothing — "if ANY sibling
+                    // looks trustworthy, persist the WHOLE shared artifacts map." Since `ctx` has no
+                    // per-stage attribution, that let a genuinely successful sibling's presence
+                    // excuse persisting a COMPLETELY DIFFERENT, untrustworthy sibling's own stale
+                    // pre-failure evidence too. A SECOND attempt at per-stage attribution (diffing
+                    // ctx.artifacts() before/after each stage's own runStage call) was ALSO wrong —
+                    // that diff races against a CONCURRENT sibling writing the same shared map in
+                    // the same window, misattributing the sibling's write to this stage. The fix
+                    // that's actually race-free: WorkflowContext.writtenBy(stageName) attributes
+                    // every addArtifact call AT THE MOMENT IT HAPPENS, via a per-worker-thread
+                    // marker runStage sets before invoking a stage's handler (see
+                    // WorkflowContext.beginStageAttribution) — no shared-state diffing, no window to
+                    // race in. An entry only exists for a stage whose handler actually ran (an
+                    // entry-gated stage intercepted before ever reaching runStage has none, closing
+                    // the D3 sub-finding: WAITING_APPROVAL alone never implied the handler ran).
+                    // Starting from batchStartArtifacts (the pre-batch baseline) and merging in ONLY
+                    // the keys written by stages whose FINAL status proves their own handler
+                    // completed (SUCCEEDED; WAITING_APPROVAL — now safe to trust because
+                    // ctx.writtenBy already guarantees the handler ran, an exit gate is reached only
+                    // after that; or SAFE_STOPPED/POLICY_BLOCKED, since a policy block happens
+                    // strictly after handler success) means an untrustworthy sibling's own keys can
+                    // NEVER leak in, regardless of what else in the batch succeeded. COMPENSATED
+                    // remains excluded: compensation acts on the stage's RESULT, not on `ctx`, and a
+                    // compensated stage's own handler never actually succeeded either.
+                    Map<String, Object> safeArtifacts = new LinkedHashMap<>(batchStartArtifacts);
+                    for (StageDefinition sibling : batch) {
+                        Set<String> written = ctx.writtenBy(sibling.name());
+                        if (written.isEmpty()) {
+                            continue; // this stage's handler never ran, or wrote nothing new
                         }
-                        if (st == StepStatus.SAFE_STOPPED) {
-                            WorkflowStepEntity sibling = requireStep(workflowId, planVersion, s.name());
-                            return sibling.getSafeStopReason() == SafeStopReason.POLICY_BLOCKED;
+                        StepStatus st = stepStatus(workflowId, planVersion, sibling.name());
+                        boolean trustworthy = st == StepStatus.SUCCEEDED || st == StepStatus.WAITING_APPROVAL
+                                || (st == StepStatus.SAFE_STOPPED
+                                    && requireStep(workflowId, planVersion, sibling.name()).getSafeStopReason()
+                                            == SafeStopReason.POLICY_BLOCKED);
+                        if (trustworthy) {
+                            for (String key : written) {
+                                safeArtifacts.put(key, ctx.artifacts().get(key));
+                            }
                         }
-                        return false;
-                    });
-                    Map<String, Object> safeArtifacts =
-                            anySiblingHandlerGenuinelyCompleted ? ctx.artifacts() : batchStartArtifacts;
+                    }
                     applyInstanceUpdate(workflowId, i -> {
                         i.setStatus(WorkflowStatus.SAFE_STOPPED);
                         i.setContextJson(Map.of("decisions", ctx.decisions(), "artifacts", safeArtifacts));
@@ -713,31 +731,41 @@ public class WorkflowEngine {
                     step.setRetryCount(step.getRetryCount() + 1);
                     stepRepository.save(step);
                 });
+        // Independent-review finding (2nd Section 17 follow-up review, D1 fix-of-a-fix):
+        // attributes every ctx.addArtifact call this stage's handler makes (across all of its own
+        // internal retry attempts — RetryExecutor runs them all on THIS thread, never a new one)
+        // to this stage's name, via WorkflowContext's per-thread marker. Cleared in a finally so
+        // it never leaks onto whatever this pool thread does next. See WorkflowContext's own
+        // comment for why this replaces an earlier, racy before/after diff of the shared map.
+        ctx.beginStageAttribution(stage.name());
         try {
-            result = retryable.run(ctx);
-            succeeded = true;
-        } catch (PermanentStageException e) {
-            // never retried; falls through to the exhaustion/compensation path below
-            failureCause = e;
-        } catch (TransientStageException e) {
-            // retries exhausted (a plain transient failure or a StageTimeoutException — now the
-            // same catch clause since StageTimeoutException extends TransientStageException)
-            failureCause = e;
-        } catch (RuntimeException e) {
-            // Codex REQUEST AMENDMENTS follow-up (Section 17 review): neither RetryExecutor nor
-            // TimeoutExecutor catches anything outside the Permanent/TransientStageException
-            // hierarchy — an unexpected handler bug (NPE, IllegalStateException, etc.) previously
-            // propagated straight out of runStage uncaught, leaving the step at RUNNING (set by
-            // claimStage before the handler ran) and the workflow instance untouched forever: no
-            // terminal write, no SafeStopException for runFrom's catch to react to. Fail-closed:
-            // this falls into the same exhaustion path below a genuinely exhausted retry takes
-            // (minus a compensation attempt — see below), tagged with its own reason so the audit
-            // trail and retrySafeStopped's resume logic (which already treats every
-            // non-POLICY_BLOCKED reason identically — reset and genuinely re-run) can tell an
-            // unexpected bug apart from ordinary exhaustion without any further branching needed
-            // there.
-            failureReason = SafeStopReason.UNEXPECTED_FAILURE;
-            failureCause = e;
+            try {
+                result = retryable.run(ctx);
+                succeeded = true;
+            } catch (PermanentStageException e) {
+                // never retried; falls through to the exhaustion/compensation path below
+                failureCause = e;
+            } catch (TransientStageException e) {
+                // retries exhausted (a plain transient failure or a StageTimeoutException — now
+                // the same catch clause since StageTimeoutException extends TransientStageException)
+                failureCause = e;
+            } catch (RuntimeException e) {
+                // Codex REQUEST AMENDMENTS follow-up (Section 17 review): neither RetryExecutor
+                // nor TimeoutExecutor catches anything outside the Permanent/TransientStageException
+                // hierarchy — an unexpected handler bug (NPE, IllegalStateException, etc.)
+                // previously propagated straight out of runStage uncaught, leaving the step at
+                // RUNNING (set by claimStage before the handler ran) and the workflow instance
+                // untouched forever: no terminal write, no SafeStopException for runFrom's catch to
+                // react to. Fail-closed: this falls into the same exhaustion path below a genuinely
+                // exhausted retry takes, tagged with its own reason so the audit trail and
+                // retrySafeStopped's resume logic (which already treats every non-POLICY_BLOCKED
+                // reason identically — reset and genuinely re-run) can tell an unexpected bug apart
+                // from ordinary exhaustion without any further branching needed there.
+                failureReason = SafeStopReason.UNEXPECTED_FAILURE;
+                failureCause = e;
+            }
+        } finally {
+            ctx.endStageAttribution();
         }
 
         // Independent-review finding (Section 17 follow-up review, N3): everything from here to
@@ -760,8 +788,20 @@ public class WorkflowEngine {
                 // was handled," a controlled saga-style continuation, not a block. Only an
                 // UNCOMPENSATED exhaustion, or the compensation itself failing, throws
                 // SafeStopException, matching Task 28's policy-failure path.
+                // 2nd independent-review finding (Section 17 follow-up review, D2): an EARLIER
+                // version of this fix also skipped compensation whenever failureReason was
+                // UNEXPECTED_FAILURE, on the theory that compensation shouldn't run for "a bug in
+                // the engine's own bookkeeping." But failureReason is ONLY ever UNEXPECTED_FAILURE
+                // here as a result of the HANDLER-INVOCATION catch above — i.e. exactly the
+                // genuine-handler-failure case compensation exists for (a real, possibly
+                // side-effecting handler threw something other than a StageException). The
+                // engine-bug case that rationale actually describes is handled entirely by the
+                // OUTER catch below, which never calls compensationRegistry at all — so the
+                // condition here only ever fired for handler bugs, silently leaving a REAL side
+                // effect un-compensated. Removed: compensation now runs for every !succeeded cause
+                // uniformly, as it did before this reason code existed.
                 boolean compensated = false;
-                if (compensationRegistry != null && failureReason != SafeStopReason.UNEXPECTED_FAILURE) {
+                if (compensationRegistry != null) {
                     try {
                         compensated = compensationRegistry.run(stage.name(), result != null ? result : Map.of());
                     } catch (RuntimeException compensationFailure) {

@@ -621,4 +621,86 @@ class WorkflowEngineReliabilityIntegrationTest {
         assertThat(safeStopEvent.getReason()).contains("very specific bug detail");
         assertThat(safeStopEvent.getReason()).contains("IllegalStateException");
     }
+
+    // --- 2nd independent-review finding (Section 17 follow-up review, D1): a batch-wide
+    // "does ANY sibling look trustworthy" check let a genuinely successful sibling's presence
+    // excuse persisting a COMPLETELY DIFFERENT, untrustworthy sibling's own stale evidence too.
+    // Per-stage artifact attribution must exclude exactly the failing sibling's own writes while
+    // still preserving the successful sibling's real evidence — the original Codex complaint. ---
+
+    @Test
+    void aSuccessfulSiblingsEvidenceSurvivesWhileTheFailingSiblingsOwnStaleEvidenceDoesNot() {
+        AtomicInteger implInvocations = new AtomicInteger(0);
+        StageHandler impl = ctx -> {
+            if (implInvocations.incrementAndGet() == 1) {
+                ctx.addArtifact("urlSchemeAllowlistEnforced", true);
+                ctx.addArtifact("ssrfGuardEnforced", true);
+                throw new TransientStageException("simulated failure after writing evidence");
+            }
+            return Map.of(); // second attempt succeeds but does not re-supply the evidence
+        };
+        StageHandler sibling = ctx -> {
+            ctx.addArtifact("siblingEvidence", "real");
+            return Map.of();
+        };
+        // Two independent root stages — same topological batch, no dependency between them.
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("implementation", List.of(), impl, false, false, 0, 5, null, null, null),
+                StageDefinition.of("sibling", List.of(), sibling));
+        PolicyEngine policyEngine = new PolicyEngine("policies/v1.yaml");
+        WorkflowEngine engine = engineWithPolicy(policyEngine);
+
+        String workflowId = engine.submit("demo", stages, "run-33r");
+        assertThat(implInvocations.get()).isEqualTo(1);
+        assertThat(stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "sibling")
+                .orElseThrow().getStatus()).isEqualTo(StepStatus.SUCCEEDED);
+        assertThat(stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "implementation")
+                .orElseThrow().getSafeStopReason()).isEqualTo(SafeStopReason.RETRY_EXHAUSTED);
+
+        // The successful sibling's real evidence is preserved; the failing stage's own stale
+        // pre-failure evidence is NOT — even though they safe-stopped in the very same batch.
+        WorkflowInstanceEntity afterFirstFailure = instanceRepository.findById(workflowId).orElseThrow();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> persistedArtifacts =
+                (Map<String, Object>) afterFirstFailure.getContextJson().getOrDefault("artifacts", Map.of());
+        assertThat(persistedArtifacts).containsEntry("siblingEvidence", "real");
+        assertThat(persistedArtifacts).doesNotContainKey("ssrfGuardEnforced");
+        assertThat(persistedArtifacts).doesNotContainKey("urlSchemeAllowlistEnforced");
+
+        engine.retrySafeStopped(workflowId);
+        assertThat(implInvocations.get()).isEqualTo(2);
+
+        // Fail-closed still holds: the mandatory policy must NOT pass on the earlier attempt's
+        // stale evidence just because a sibling in the same original batch happened to succeed.
+        WorkflowStepEntity retried = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "implementation")
+                .orElseThrow();
+        assertThat(retried.getStatus()).isEqualTo(StepStatus.SAFE_STOPPED);
+        assertThat(retried.getSafeStopReason()).isEqualTo(SafeStopReason.POLICY_BLOCKED);
+        assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
+                .isEqualTo(WorkflowStatus.SAFE_STOPPED);
+    }
+
+    // --- 2nd independent-review finding (Section 17 follow-up review, D2): a registered
+    // compensation must still run for a genuine (unexpected) handler exception — that is exactly
+    // the case compensation exists for, a real handler that may have already had a side effect ---
+
+    @Test
+    void registeredCompensationStillRunsForAnUnexpectedHandlerException() {
+        StageHandler buggy = ctx -> { throw new IllegalStateException("real bug, real side effect"); };
+        List<StageDefinition> stages = List.of(StageDefinition.of("risky", List.of(), buggy));
+
+        CompensationRegistry registry = new CompensationRegistry();
+        AtomicBoolean compensationRan = new AtomicBoolean(false);
+        registry.register("risky", result -> compensationRan.set(true));
+        WorkflowEngine engine = engineWithCompensation(registry);
+
+        String workflowId = engine.submit("demo", stages, "run-33s");
+
+        assertThat(compensationRan.get()).isTrue();
+        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "risky")
+                .orElseThrow();
+        assertThat(step.getStatus()).isEqualTo(StepStatus.COMPENSATED);
+        assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
+                .isEqualTo(WorkflowStatus.COMPLETED);
+    }
 }

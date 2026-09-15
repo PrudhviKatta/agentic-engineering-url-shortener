@@ -14,6 +14,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.TransactionException;
+import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -364,6 +367,125 @@ class WorkflowEngineReplanningTest {
         // the workflow without ever running it.
         engine.approve(workflowId, "gate", "approved", "human", "proceed on the original plan");
         assertThat(implRan.get()).isTrue();
+        assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
+                .isEqualTo(WorkflowStatus.COMPLETED);
+    }
+
+    // Codex round 5 finding: publishing the replacement registry strictly after commit (round 4)
+    // narrows the unsafe window but does not close it — a concurrent runFrom() (via approve() on a
+    // SURVIVING gate) could still run in the gap between "the database has durably committed the
+    // replan" and "the in-memory registry reflects it." This test forces exactly that gap open,
+    // deterministically, using a PlatformTransactionManager that delegates to the real one but
+    // pauses AFTER delegate.commit(status) has already succeeded — so the database is genuinely,
+    // durably updated — and BEFORE its own commit() call returns to replan()'s caller, which is
+    // the only thing standing between "committed" and "published."
+    //
+    // "blocker" is deliberately INDEPENDENT of "impl"/"impl_v2" (no dependency relationship, and
+    // its own gate has nothing to do with the replan target): this is what makes the race land
+    // reliably rather than merely plausibly. Approving it triggers a runFrom() whose OWN stale
+    // (pre-replan) graph batch contains only "blocker" (trivial, instant handler) and "impl"
+    // (already invalidated in the database by the time this call runs, so activeStepStatus's
+    // null-tolerant resolution correctly skips it) — nothing in that stale view requires any real
+    // dispatch or wait, so this call reaches its own "should I complete" decision almost
+    // immediately. replan()'s OWN post-pause work is unavoidably slower (publish, then actually
+    // dispatch and wait for impl_v2's real handler through the executor pool), so the fast,
+    // stale-graph call reliably reaches the completion decision FIRST — precisely the ordering
+    // needed to prove the fix, not merely hope for it.
+    @Test
+    void aConcurrentApproveDuringReplansCommitToPublishGapNeverCompletesWithAPersistedStepStillPending()
+            throws Exception {
+        AtomicBoolean implV2Ran = new AtomicBoolean(false);
+        StageHandler blockerHandler = ctx -> Map.of();
+        StageHandler oldImpl = ctx -> Map.of();
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("blocker", List.of(), blockerHandler, true, false, 0, 30, null, null, null),
+                StageDefinition.of("impl", List.of(), oldImpl));
+
+        AtomicBoolean pauseArmed = new AtomicBoolean(false);
+        CountDownLatch committedButNotYetPublished = new CountDownLatch(1);
+        CountDownLatch releaseCommit = new CountDownLatch(1);
+        PlatformTransactionManager pausingAfterCommit = new PlatformTransactionManager() {
+            @Override
+            public TransactionStatus getTransaction(TransactionDefinition definition) throws TransactionException {
+                return transactionManager.getTransaction(definition);
+            }
+
+            @Override
+            public void commit(TransactionStatus status) throws TransactionException {
+                transactionManager.commit(status); // the database transaction is now durably committed
+                if (pauseArmed.compareAndSet(true, false)) {
+                    committedButNotYetPublished.countDown();
+                    try {
+                        assertThat(releaseCommit.await(5, TimeUnit.SECONDS)).isTrue();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            }
+
+            @Override
+            public void rollback(TransactionStatus status) throws TransactionException {
+                transactionManager.rollback(status);
+            }
+        };
+        WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository,
+                approvalRepository, pausingAfterCommit);
+        String workflowId = engine.submit("demo", stages, "run-35p");
+        // "blocker"'s own entry gate halts the workflow before "impl" is ever touched — both are
+        // PENDING/WAITING_APPROVAL, neither has started.
+        assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
+                .isEqualTo(WorkflowStatus.PENDING_APPROVAL);
+        assertThat(stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "impl")
+                .orElseThrow().getStatus()).isEqualTo(StepStatus.PENDING);
+
+        StageHandler implV2 = ctx -> { implV2Ran.set(true); return Map.of(); };
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        pauseArmed.set(true);
+        Future<?> replanFuture = pool.submit(() -> engine.replan(workflowId, "impl",
+                List.of(StageDefinition.of("impl_v2", List.of(), implV2)), "human", "swap implementation"));
+
+        assertThat(committedButNotYetPublished.await(5, TimeUnit.SECONDS)).isTrue();
+        // The database has ALREADY durably committed the replan — "impl" invalidated, "impl_v2"
+        // PENDING at plan_version 2 — while replan()'s own call is still paused before its registry
+        // publish. This is the exact gap round 4's fix left open.
+        assertThat(stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "impl")
+                .orElseThrow().getStatus()).isEqualTo(StepStatus.INVALIDATED);
+        assertThat(stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 2, "impl_v2")
+                .orElseThrow().getStatus()).isEqualTo(StepStatus.PENDING);
+
+        // Concurrently approve "blocker" (a survivor totally unrelated to the replan target) on a
+        // DIFFERENT thread, and let it run to FULL completion — decision transaction AND its own
+        // runFrom() call — while replan() is STILL parked mid-commit-to-publish. This is what
+        // actually makes the ordering deterministic rather than merely likely: approve()'s own
+        // decision-recording transaction is several real DB round trips (nowhere near as fast as
+        // replan()'s own resume, which is just one in-memory registry.put() away from publishing),
+        // so racing the two and hoping approve() reaches its own registry read first is unreliable
+        // — instead, replan() is kept paused for approve()'s entire lifetime, guaranteeing its
+        // runFrom() reads the registry while it is provably still the pre-replan one. Under the
+        // pre-round-5 implementation, this call's own (stale) registry never learns "impl_v2"
+        // exists at all and marks the workflow COMPLETED with it still PENDING; under the fix, it
+        // must find "impl_v2" via the database directly and decline to complete.
+        Future<?> approveFuture = pool.submit(() -> {
+            engine.approve(workflowId, "blocker", "approved", "human", "resume concurrently");
+            return null;
+        });
+        approveFuture.get(10, TimeUnit.SECONDS);
+
+        // The concurrent approve() has now fully completed while replan() was still paused. It
+        // must NOT have marked the workflow COMPLETED — "impl_v2" was already committed and PENDING
+        // in the database the whole time, even though approve()'s own (stale) in-memory graph never
+        // knew it existed.
+        assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
+                .isNotEqualTo(WorkflowStatus.COMPLETED);
+        assertThat(implV2Ran.get()).isFalse(); // not yet — replan() itself hasn't resumed
+
+        releaseCommit.countDown();
+        replanFuture.get(10, TimeUnit.SECONDS);
+        pool.shutdown();
+
+        // replan()'s own resume (publish, then dispatch impl_v2) is what actually finishes the
+        // workflow.
+        assertThat(implV2Ran.get()).isTrue();
         assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
                 .isEqualTo(WorkflowStatus.COMPLETED);
     }

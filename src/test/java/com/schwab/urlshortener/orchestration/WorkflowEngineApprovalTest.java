@@ -308,6 +308,29 @@ class WorkflowEngineApprovalTest {
         assertThat(approvalRepository.existsByStepInstanceId(step.getId())).isFalse();
     }
 
+    // Codex round 5 finding: the boundary itself must actually work end-to-end, not just reject
+    // one character over it — ApprovalEntity.reason previously had no explicit @Column length at
+    // all (Hibernate default 255), so a 1024-character reason would have been silently truncated
+    // or rejected by the database despite passing WorkflowEngine's own validation.
+    @Test
+    void exactly1024CharacterReasonPersistsSuccessfully() {
+        List<StageDefinition> stages = List.of(
+                new StageDefinition("risky", List.of(), ctx -> Map.of(), true, false, 0, 30, null, null, null));
+        WorkflowEngine engine = engine();
+        String workflowId = engine.submit("demo", stages, "run-6k");
+
+        String exactlyMax = "x".repeat(1024);
+        engine.approve(workflowId, "risky", "approved", "human", exactlyMax);
+
+        // entryApproval: nothing else blocks it, so approve() dispatches it to completion in the
+        // same call — its own trivial handler runs immediately.
+        WorkflowStepEntity step = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "risky").orElseThrow();
+        assertThat(step.getStatus()).isEqualTo(StepStatus.SUCCEEDED);
+        ApprovalEntity approval = approvalRepository.findByStepInstanceIdAndDecision(step.getId(), "approved")
+                .stream().findFirst().orElseThrow();
+        assertThat(approval.getReason()).hasSize(1024).isEqualTo(exactlyMax);
+    }
+
     // --- Round-6c regression test (item 1: atomic, one-shot decision recording) ---
 
     @Test

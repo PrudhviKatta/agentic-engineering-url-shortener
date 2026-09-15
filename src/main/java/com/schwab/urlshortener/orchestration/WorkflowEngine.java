@@ -35,6 +35,39 @@ public class WorkflowEngine {
     private static final int REASON_MAX_LENGTH = 1024;
 
     private final Map<String, StageRegistration> registry = new ConcurrentHashMap<>();
+    // Task 35 remediation, round 5 (Codex round 5 finding): moving replan()'s registry.put(...) to
+    // strictly after its transaction commits (round 4) narrowed the unsafe window but did not close
+    // it — a concurrent runFrom() (via approve() on a SURVIVING gate) could still run, in that
+    // window, against the STALE registry, which is not merely "behind" but genuinely blind to any
+    // brand-new replacement stage (e.g. "impl_v2") the old graph never listed at all.
+    //
+    // One monitor object per workflow id. Two things hold it:
+    //   1. replan()'s own critical section (its transaction through its registry publish) — so a
+    //      SECOND, concurrent replan() for the same workflow cannot commit-and-publish its own
+    //      (later) registry in between, which would let publish ordering disagree with commit
+    //      ordering.
+    //   2. Nothing else. An earlier version of this fix also held this same monitor across
+    //      runFrom()'s ENTIRE execution (registry read through batch dispatch to completion), on
+    //      the theory that only full mutual exclusion between runFrom() and replan() could close
+    //      the race. That serializes replan() against runFrom() for however long a genuinely
+    //      slow-running handler takes to finish — REQ-018's own near-instant rejection of an
+    //      already-RUNNING stage would then block behind a completely unrelated stage's slow
+    //      execution, a real usability regression. The actual defect only ever mattered for ONE
+    //      irreversible decision inside runFrom — marking the workflow COMPLETED — because every
+    //      OTHER decision it makes from a stale graph is provably harmless (a stage the stale graph
+    //      lists that the database has since invalidated is already handled safely by
+    //      activeStepOrNull/activeStepStatus's null-tolerant resolution; a stage the stale graph
+    //      never lists at all is simply left for the replan's own resume to pick up). Closing that
+    //      one decision needs no lock at all — see runFrom's own comment on the DB-authoritative
+    //      check it performs immediately before that specific write, which is correct regardless of
+    //      timing (transactional atomicity), not merely a narrower window.
+    // Java's `synchronized` is reentrant for the owning thread; different workflow ids never share
+    // a monitor, so this adds no cross-workflow serialization.
+    private final Map<String, Object> workflowLocks = new ConcurrentHashMap<>();
+
+    private Object lockFor(String workflowId) {
+        return workflowLocks.computeIfAbsent(workflowId, k -> new Object());
+    }
 
     private final WorkflowInstanceJpaRepository instanceRepository;
     private final WorkflowStepJpaRepository stepRepository;
@@ -232,125 +265,130 @@ public class WorkflowEngine {
             }
         }
 
-        // Codex round 4 finding: `registry` is a plain in-memory ConcurrentHashMap, entirely
-        // outside the JDBC transaction below — a write to it is visible to every other thread the
-        // instant it happens, regardless of whether the surrounding transaction later commits or
-        // rolls back. Publishing the new StageRegistration INSIDE the transaction (an earlier
-        // version of this method did) meant a commit-time failure (e.g. a genuine DB constraint
-        // violation on one of the new rows) rolled the DATABASE back to the pre-replan state while
-        // the REGISTRY stayed on the replacement graph — permanently diverged, not just briefly:
-        // nothing re-publishes the old graph afterward. A later approve()/runFrom() call reading
-        // that stale-but-different registry could walk straight past an original, still-PENDING
-        // persisted step the (rolled-back) replacement graph no longer even lists, potentially
-        // completing the workflow without ever running it. Restoring the registry in a catch block
-        // does not close this: another thread can observe the bad intermediate graph in the window
-        // between the diverging write and the restore, however small. The only race-free fix is to
-        // never publish until the transaction has ALREADY committed — `transactionTemplate.execute`
-        // only returns (rather than throwing) once that has happened, so capturing the replacement
-        // registration as this call's return value and publishing it strictly AFTER the call
-        // returns means no thread can ever observe a registry state the database doesn't already
-        // durably agree with. A thread that reads the OLD registry in the narrow window between
-        // commit and this publish sees a graph consistent with the OLD (but still currently
-        // correct-for-that-graph) persisted state — activeStepOrNull/activeStepStatus's
-        // null-tolerant resolution (see their own comments) already treats a stage the old graph
-        // still lists but the DB no longer has as active as simply "not currently pending," never a
-        // crash — so that window is stale, not corrupt, and self-heals the moment this line runs.
-        StageRegistration published = transactionTemplate.execute(status -> {
-            WorkflowInstanceEntity instance = instanceRepository.findWithLockById(workflowId)
-                    .orElseThrow(() -> new IllegalStateException("unknown workflow: " + workflowId));
-            if (instance.getStatus() == WorkflowStatus.FAILED || instance.getStatus() == WorkflowStatus.COMPLETED) {
-                throw new IllegalStateException(
-                        "workflow " + workflowId + " is already terminal (" + instance.getStatus() + ")");
-            }
-            StageRegistration registration = registry.get(workflowId);
-            if (registration == null) {
-                throw new IllegalStateException("workflow " + workflowId + " has no in-memory stage "
-                        + "registration (process restarted?) — cannot replan it");
-            }
-            List<StageDefinition> currentStages = registration.stages();
-            if (currentStages.stream().noneMatch(s -> s.name().equals(fromStage))) {
-                throw new IllegalArgumentException("unknown stage: " + fromStage);
-            }
-
-            Set<String> reachable = reachableFrom(fromStage, currentStages); // includes fromStage
-            List<StageDefinition> survivors = currentStages.stream()
-                    .filter(s -> !reachable.contains(s.name())).toList();
-            for (StageDefinition survivor : survivors) {
-                if (newNames.contains(survivor.name())) {
-                    throw new IllegalArgumentException(
-                            "newStages reintroduces a surviving stage's own name: " + survivor.name());
+        // Codex round 5 finding: publishing the replacement registry strictly after the
+        // transaction commits (round 4) closes "commit rolls back, registry doesn't" but not the
+        // remaining window between that commit and this line — a concurrent runFrom() (e.g. via
+        // approve() on a SURVIVING gate) could still run in that window against the STALE registry.
+        // That registry is not merely behind, it is genuinely blind to any brand-new replacement
+        // stage the old graph never listed at all (unlike a stage the old graph lists that the DB
+        // has since invalidated, which activeStepOrNull/activeStepStatus already treat safely as
+        // "not currently pending") — so a concurrent runFrom's own batch loop could reach its
+        // end-of-loop instance-COMPLETED write with the new stage sitting PENDING forever,
+        // unexamined. That specific decision is what runFrom's own DB-authoritative check (see its
+        // comment) closes, regardless of timing — it needs no lock from this method at all. What
+        // THIS monitor is for is narrower: serializing this workflow's own transaction-through-
+        // publish against a SECOND, concurrent replan() for the SAME workflow, so publish ordering
+        // can never disagree with commit ordering. It intentionally does NOT extend to this
+        // method's own trailing runFrom() call below — see workflowLocks' field comment for why a
+        // version that also serialized against runFrom()'s entire execution was tried and reverted.
+        synchronized (lockFor(workflowId)) {
+            StageRegistration published = transactionTemplate.execute(status -> {
+                WorkflowInstanceEntity instance = instanceRepository.findWithLockById(workflowId)
+                        .orElseThrow(() -> new IllegalStateException("unknown workflow: " + workflowId));
+                if (instance.getStatus() == WorkflowStatus.FAILED || instance.getStatus() == WorkflowStatus.COMPLETED) {
+                    throw new IllegalStateException(
+                            "workflow " + workflowId + " is already terminal (" + instance.getStatus() + ")");
                 }
-            }
-
-            // Validate the proposed graph BEFORE touching any row: an invalid replan (cycle,
-            // unknown dependency) must leave every table completely unchanged, not merely leave
-            // the instance stuck in a transitional status. Nothing has been mutated yet at this
-            // point (only read-only checks so far), so a thrown exception here rolls the whole
-            // transaction back to a no-op.
-            List<StageDefinition> updatedStages = new ArrayList<>(survivors);
-            updatedStages.addAll(newStages);
-            DependencyGraph updatedGraph = new DependencyGraph(updatedStages);
-            updatedGraph.validate();
-
-            // REQ-018 eligibility, rechecked under a row lock per reachable stage (not the plain
-            // read an earlier version of this method used) so a concurrent claimStage()/approve()
-            // targeting the SAME row cannot race this decision — whichever side acquires the row's
-            // lock first is serialized against the other, which then re-reads the now-committed
-            // state rather than a stale snapshot. Locked in a fixed order (stage name, stable
-            // across calls) to avoid a lock-ordering deadlock against another concurrent replan.
-            Map<String, WorkflowStepEntity> reachableRows = new LinkedHashMap<>();
-            for (String name : reachable.stream().sorted().toList()) {
-                WorkflowStepEntity row = stepRepository
-                        .findWithLockByWorkflowIdAndNameAndStatusNot(workflowId, name, StepStatus.INVALIDATED)
-                        .orElseThrow(() -> new IllegalArgumentException("unknown stage: " + name));
-                boolean notYetStarted = row.getStatus() == StepStatus.PENDING
-                        || (row.getStatus() == StepStatus.WAITING_APPROVAL
-                            && row.getPreGateStatus() == StepStatus.PENDING);
-                if (!notYetStarted) {
-                    throw new IllegalStateException("stage " + name + " has already started (status: "
-                            + row.getStatus() + ") — replan may only alter not-yet-started work (REQ-018)");
+                StageRegistration registration = registry.get(workflowId);
+                if (registration == null) {
+                    throw new IllegalStateException("workflow " + workflowId + " has no in-memory stage "
+                            + "registration (process restarted?) — cannot replan it");
                 }
-                reachableRows.put(name, row);
-            }
+                List<StageDefinition> currentStages = registration.stages();
+                if (currentStages.stream().noneMatch(s -> s.name().equals(fromStage))) {
+                    throw new IllegalArgumentException("unknown stage: " + fromStage);
+                }
 
-            // Every precondition holds — mutate, atomically, still under the instance lock (and
-            // every reachable row's own lock) acquired above.
-            int oldPlanVersion = instance.getPlanVersion();
-            int newPlanVersion = oldPlanVersion + 1;
+                Set<String> reachable = reachableFrom(fromStage, currentStages); // includes fromStage
+                List<StageDefinition> survivors = currentStages.stream()
+                        .filter(s -> !reachable.contains(s.name())).toList();
+                for (StageDefinition survivor : survivors) {
+                    if (newNames.contains(survivor.name())) {
+                        throw new IllegalArgumentException(
+                                "newStages reintroduces a surviving stage's own name: " + survivor.name());
+                    }
+                }
 
-            for (WorkflowStepEntity row : reachableRows.values()) {
-                row.setStatus(StepStatus.INVALIDATED);
-                stepRepository.save(row);
-            }
+                // Validate the proposed graph BEFORE touching any row: an invalid replan (cycle,
+                // unknown dependency) must leave every table completely unchanged, not merely leave
+                // the instance stuck in a transitional status. Nothing has been mutated yet at this
+                // point (only read-only checks so far), so a thrown exception here rolls the whole
+                // transaction back to a no-op.
+                List<StageDefinition> updatedStages = new ArrayList<>(survivors);
+                updatedStages.addAll(newStages);
+                DependencyGraph updatedGraph = new DependencyGraph(updatedStages);
+                updatedGraph.validate();
 
-            List<WorkflowStepEntity> activeSteps =
-                    stepRepository.findByWorkflowIdAndStatusNotOrderBySequence(workflowId, StepStatus.INVALIDATED);
-            int nextSequence = activeSteps.stream().mapToInt(WorkflowStepEntity::getSequence).max().orElse(-1) + 1;
-            for (StageDefinition stage : newStages) {
-                WorkflowStepEntity step = new WorkflowStepEntity();
-                step.setWorkflowId(workflowId);
-                step.setName(stage.name());
-                step.setStatus(StepStatus.PENDING);
-                step.setSequence(nextSequence++);
-                step.setDependsOn(stage.dependsOn());
-                step.setPlanVersion(newPlanVersion);
-                stepRepository.save(step);
-            }
+                // REQ-018 eligibility, rechecked under a row lock per reachable stage (not the
+                // plain read an earlier version of this method used) so a concurrent
+                // claimStage()/approve() targeting the SAME row cannot race this decision —
+                // whichever side acquires the row's lock first is serialized against the other,
+                // which then re-reads the now-committed state rather than a stale snapshot. Locked
+                // in a fixed order (stage name, stable across calls) to avoid a lock-ordering
+                // deadlock against another concurrent replan.
+                Map<String, WorkflowStepEntity> reachableRows = new LinkedHashMap<>();
+                for (String name : reachable.stream().sorted().toList()) {
+                    WorkflowStepEntity row = stepRepository
+                            .findWithLockByWorkflowIdAndNameAndStatusNot(workflowId, name, StepStatus.INVALIDATED)
+                            .orElseThrow(() -> new IllegalArgumentException("unknown stage: " + name));
+                    boolean notYetStarted = row.getStatus() == StepStatus.PENDING
+                            || (row.getStatus() == StepStatus.WAITING_APPROVAL
+                                && row.getPreGateStatus() == StepStatus.PENDING);
+                    if (!notYetStarted) {
+                        throw new IllegalStateException("stage " + name + " has already started (status: "
+                                + row.getStatus() + ") — replan may only alter not-yet-started work (REQ-018)");
+                    }
+                    reachableRows.put(name, row);
+                }
 
-            instance.setStatus(WorkflowStatus.REPLANNING);
-            instance.setPlanVersion(newPlanVersion);
-            instanceRepository.save(instance);
+                // Every precondition holds — mutate, atomically, still under the instance lock (and
+                // every reachable row's own lock) acquired above.
+                int oldPlanVersion = instance.getPlanVersion();
+                int newPlanVersion = oldPlanVersion + 1;
 
-            recordEvent(workflowId, "human", actor, "replanned", fromStage, "OK", reason,
-                    Map.of("fromVersion", oldPlanVersion, "toVersion", newPlanVersion, "fromStage", fromStage));
-            return new StageRegistration(updatedStages, updatedGraph);
-        });
+                for (WorkflowStepEntity row : reachableRows.values()) {
+                    row.setStatus(StepStatus.INVALIDATED);
+                    stepRepository.save(row);
+                }
 
-        // Only reached if the transaction above committed successfully — see this method's own
-        // comment on why publishing here, and never inside the transaction, is what makes this
-        // race-free rather than merely "restored on failure."
-        registry.put(workflowId, published);
+                List<WorkflowStepEntity> activeSteps =
+                        stepRepository.findByWorkflowIdAndStatusNotOrderBySequence(workflowId, StepStatus.INVALIDATED);
+                int nextSequence = activeSteps.stream().mapToInt(WorkflowStepEntity::getSequence).max().orElse(-1) + 1;
+                for (StageDefinition stage : newStages) {
+                    WorkflowStepEntity step = new WorkflowStepEntity();
+                    step.setWorkflowId(workflowId);
+                    step.setName(stage.name());
+                    step.setStatus(StepStatus.PENDING);
+                    step.setSequence(nextSequence++);
+                    step.setDependsOn(stage.dependsOn());
+                    step.setPlanVersion(newPlanVersion);
+                    stepRepository.save(step);
+                }
 
+                instance.setStatus(WorkflowStatus.REPLANNING);
+                instance.setPlanVersion(newPlanVersion);
+                instanceRepository.save(instance);
+
+                recordEvent(workflowId, "human", actor, "replanned", fromStage, "OK", reason,
+                        Map.of("fromVersion", oldPlanVersion, "toVersion", newPlanVersion, "fromStage", fromStage));
+                return new StageRegistration(updatedStages, updatedGraph);
+            });
+
+            // Only reached if the transaction above committed successfully — see this method's own
+            // comment on why publishing here, and never inside the transaction, is what makes this
+            // race-free rather than merely "restored on failure." Still inside this workflow's own
+            // monitor: a second, concurrent replan() for the SAME workflow must not be able to
+            // commit and publish its OWN (later) registry in between this commit and this publish,
+            // which would otherwise let publish ordering disagree with commit ordering.
+            registry.put(workflowId, published);
+        }
+
+        // Deliberately OUTSIDE the synchronized block above: runFrom() no longer needs (or takes)
+        // this workflow's monitor for its own execution (see runFrom's own comment on why a lock
+        // spanning its whole body — including waiting on a genuinely slow-running handler — was
+        // tried and reverted). Calling it unlocked here means a replan() that only needed to
+        // invalidate/insert a few rows returns to resuming the workflow promptly rather than
+        // holding this monitor for however long the actual handler execution takes.
         runFrom(workflowId);
     }
 
@@ -388,6 +426,23 @@ public class WorkflowEngine {
     // re-queries once an entity is already loaded. Keeping each read of workflow_steps its own
     // independent, uncached round trip (as it always was) while making ONLY the workflow_instances
     // write itself atomic-and-checked is what actually closes the race without breaking that.
+    // Codex round 5 finding, resolved WITHOUT holding a lock across this method's whole body: an
+    // earlier attempt did exactly that (see the field comment on `workflowLocks`/`lockFor` for why
+    // it was tried) but that serializes this method against replan() for its ENTIRE duration,
+    // including the time spent waiting on a genuinely slow-running handler — a replan() call
+    // targeting a COMPLETELY UNRELATED stage would then block behind that wait too, which is a real
+    // usability regression, not just a performance one (REQ-018's own rejection of an
+    // already-RUNNING stage should be near-instant; it does not need to wait for that stage to
+    // finish). The actual defect was narrower than "this method's whole execution must be
+    // serialized against replan()": a stale (pre-replan) in-memory `registration` is completely
+    // harmless for every decision this method makes EXCEPT the one irreversible one — marking the
+    // workflow COMPLETED — because a brand-new replacement stage a concurrent replan() has already
+    // committed is invisible to a stale graph that never listed it. Closing exactly that decision
+    // needs no lock at all, only a fresh, DB-authoritative check immediately before that specific
+    // write; see the comment at the COMPLETED write below for why that closes the race regardless
+    // of timing, not merely narrows it (transactional atomicity: any reader who can see ONE effect
+    // of replan()'s commit — an invalidated stage — can already see ALL of them, including the
+    // replacement stage's own row).
     private void runFrom(String workflowId) {
         StageRegistration registration = registry.get(workflowId);
         // Independent-review finding (2nd Section 17 follow-up review, D5): the in-memory
@@ -652,6 +707,31 @@ public class WorkflowEngine {
                 applyInstanceUpdate(workflowId, i -> i.setStatus(WorkflowStatus.PENDING_APPROVAL));
                 return; // halt either way; handlers already ran and are WAITING_APPROVAL; approve() resumes
             }
+        }
+
+        // Codex round 5 finding: the batch loop above is driven entirely by `registration`, an
+        // in-memory snapshot that can be stale relative to a concurrent replan() that has ALREADY
+        // committed a brand-new replacement stage this call never knew existed (unlike a stage the
+        // stale graph lists that the DB has since invalidated — activeStepOrNull/activeStepStatus
+        // already treat that safely as "not currently pending" throughout the loop above). Checked
+        // directly against the database, not the registry, right before the one truly irreversible
+        // decision this method makes: transactional atomicity means any reader who can already see
+        // ONE effect of a concurrent replan()'s commit (an invalidated stage, which is how this
+        // call's own batch loop above would have skipped it) can see EVERY other effect of that
+        // same commit too, including the replacement stage's own freshly-inserted row — so this
+        // check is correct regardless of the relative timing between that commit and this line,
+        // not merely a narrower window to race in.
+        boolean concurrentReplanLeftWorkThisCallNeverSaw = stepRepository
+                .findByWorkflowIdAndStatusNotOrderBySequence(workflowId, StepStatus.INVALIDATED).stream()
+                .anyMatch(s -> s.getStatus() == StepStatus.PENDING || s.getStatus() == StepStatus.RUNNING
+                        || s.getStatus() == StepStatus.WAITING_APPROVAL || s.getStatus() == StepStatus.RETRYING
+                        || s.getStatus() == StepStatus.SAFE_STOPPED);
+        if (concurrentReplanLeftWorkThisCallNeverSaw) {
+            // Leave the instance exactly as it is (not COMPLETED) — a replan() that introduced
+            // this work always resumes it via its own trailing runFrom() call once it publishes;
+            // an operator can also always trigger a fresh resume for the same reason submit()'s
+            // own restart-recovery story already relies on repeated runFrom() calls being safe.
+            return;
         }
 
         // Codex REQUEST AMENDMENTS item 7: this is the write the concurrency test targets most
@@ -1390,7 +1470,11 @@ public class WorkflowEngine {
             // current plan_version — a survivor from an earlier replan keeps its own original
             // plan_version forever (it is never re-stamped), so filtering by the instance's current
             // plan_version alone would silently skip a SAFE_STOPPED survivor untouched by any later
-            // replan.
+            // replan. A SAFE_STOPPED step's own StageDefinition is never affected by a concurrent
+            // replan() either way — REQ-018 forbids invalidating an already-started (SAFE_STOPPED
+            // counts) stage, and a surviving stage's StageDefinition object is carried forward
+            // unchanged by identity — so no additional synchronization is needed reading
+            // `registration` here.
             List<WorkflowStepEntity> steps =
                     stepRepository.findByWorkflowIdAndStatusNotOrderBySequence(workflowId, StepStatus.INVALIDATED);
 

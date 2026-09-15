@@ -290,21 +290,9 @@ public class WorkflowEngine {
                     // concurrent untrustworthy sibling that happened to overwrite the SAME key
                     // after the trustworthy stage wrote it could still leak its own value through,
                     // reopening D1.
-                    Map<String, Object> safeArtifacts = new LinkedHashMap<>(batchStartArtifacts);
-                    for (StageDefinition sibling : batch) {
-                        Map<String, Object> written = ctx.writtenBy(sibling.name());
-                        if (written.isEmpty()) {
-                            continue; // this stage's handler never ran, or wrote nothing new
-                        }
-                        StepStatus st = stepStatus(workflowId, planVersion, sibling.name());
-                        boolean trustworthy = st == StepStatus.SUCCEEDED || st == StepStatus.WAITING_APPROVAL
-                                || (st == StepStatus.SAFE_STOPPED
-                                    && requireStep(workflowId, planVersion, sibling.name()).getSafeStopReason()
-                                            == SafeStopReason.POLICY_BLOCKED);
-                        if (trustworthy) {
-                            safeArtifacts.putAll(written);
-                        }
-                    }
+                    Map<String, Object> safeArtifacts =
+                            mergeTrustworthyArtifacts(workflowId, planVersion, batch, ctx, batchStartArtifacts);
+                    ctx.resetArtifactsTo(safeArtifacts);
                     applyInstanceUpdate(workflowId, i -> {
                         i.setStatus(WorkflowStatus.SAFE_STOPPED);
                         i.setContextJson(Map.of("decisions", ctx.decisions(), "artifacts", safeArtifacts));
@@ -314,8 +302,26 @@ public class WorkflowEngine {
                     return;
                 }
 
+                // 4th independent-review finding (Section 17 follow-up review, Finding A): this
+                // success-path persist (reached when runBatch returns WITHOUT throwing — every
+                // dispatched stage either SUCCEEDED, is WAITING_APPROVAL-bound, or got COMPENSATED)
+                // used to persist the raw, unfiltered ctx.artifacts() unconditionally. A COMPENSATED
+                // stage's own handler never actually succeeded — compensation is a fallback ACTION,
+                // not evidence its pre-failure writes were ever validated — yet those writes stayed
+                // in ctx.artifacts() and flowed straight into this persist, then into the NEXT
+                // batch's batchStartArtifacts, directly contradicting the same "COMPENSATED remains
+                // excluded" rule the safe-stop merge above already enforces. Using the SAME
+                // mergeTrustworthyArtifacts helper here closes that gap consistently on both paths.
+                // resetArtifactsTo is what actually closes the WITHIN-ONE-CALL half of the gap: a
+                // multi-batch runFrom call takes its NEXT batch's baseline from THIS live ctx
+                // object (Map.copyOf(ctx.artifacts()) a few lines below, next loop iteration), not
+                // from what was just persisted — so filtering only the persisted row would still
+                // let the excluded stage's writes flow into the very next batch via the live map.
+                Map<String, Object> safeArtifacts =
+                        mergeTrustworthyArtifacts(workflowId, planVersion, batch, ctx, batchStartArtifacts);
+                ctx.resetArtifactsTo(safeArtifacts);
                 if (!applyInstanceUpdate(workflowId,
-                        i -> i.setContextJson(Map.of("decisions", ctx.decisions(), "artifacts", ctx.artifacts())))) {
+                        i -> i.setContextJson(Map.of("decisions", ctx.decisions(), "artifacts", safeArtifacts)))) {
                     return; // a concurrent decision already resolved this workflow terminally
                 }
             }
@@ -431,6 +437,38 @@ public class WorkflowEngine {
             return Boolean.TRUE;
         });
         return Boolean.TRUE.equals(applied);
+    }
+
+    // Starting from batchStartArtifacts (the pre-batch baseline) and merging in ONLY the (key,
+    // value) writes captured by ctx.writtenBy(...) for stages whose FINAL status proves their own
+    // handler completed (SUCCEEDED, WAITING_APPROVAL, or SAFE_STOPPED/POLICY_BLOCKED) — never
+    // COMPENSATED (its handler never actually succeeded; compensation acts on the stage's RESULT,
+    // not on ctx) and never re-reading a value from the live, still-mutable ctx.artifacts() map.
+    // Shared by BOTH runFrom call sites that persist a batch's artifacts: the SafeStopException
+    // catch (a sibling failed) and the success-path persist (every dispatched stage succeeded or
+    // was compensated) — 4th independent-review finding (Section 17 follow-up review, Finding A):
+    // these two paths previously used different logic, and the success path persisted the raw,
+    // unfiltered map, letting a COMPENSATED stage's own pre-failure writes flow forward into the
+    // NEXT batch's baseline even though the exact same rule already excluded them on the
+    // safe-stop path.
+    private Map<String, Object> mergeTrustworthyArtifacts(String workflowId, int planVersion,
+            List<StageDefinition> batch, WorkflowContext ctx, Map<String, Object> batchStartArtifacts) {
+        Map<String, Object> safeArtifacts = new LinkedHashMap<>(batchStartArtifacts);
+        for (StageDefinition sibling : batch) {
+            Map<String, Object> written = ctx.writtenBy(sibling.name());
+            if (written.isEmpty()) {
+                continue; // this stage's handler never ran, or wrote nothing new
+            }
+            StepStatus st = stepStatus(workflowId, planVersion, sibling.name());
+            boolean trustworthy = st == StepStatus.SUCCEEDED || st == StepStatus.WAITING_APPROVAL
+                    || (st == StepStatus.SAFE_STOPPED
+                        && requireStep(workflowId, planVersion, sibling.name()).getSafeStopReason()
+                                == SafeStopReason.POLICY_BLOCKED);
+            if (trustworthy) {
+                safeArtifacts.putAll(written);
+            }
+        }
+        return safeArtifacts;
     }
 
     // Independent-review finding (post-item-7 follow-up): two concurrent runFrom() calls — e.g.
@@ -902,6 +940,15 @@ public class WorkflowEngine {
                     step.setSafeStopReason(SafeStopReason.POLICY_BLOCKED);
                     step.setEndedAt(Instant.now());
                     step.setResult(result != null ? result : Map.of());
+                    // 4th independent-review finding (Section 17 follow-up review, Finding B):
+                    // persist the EXACT evaluationArtifacts view that produced this block, so
+                    // reevaluatePolicyBoundary can re-run the SAME check later against the SAME
+                    // evidence — never the live WorkflowContext, which by resume time may have a
+                    // trustworthy SIBLING's evidence merged in for legitimate forward propagation
+                    // to other, dependent stages. That evidence is real and correctly trusted for
+                    // THOSE stages; it was never produced by THIS stage and must not clear THIS
+                    // stage's own boundary.
+                    step.setPolicyEvidenceSnapshot(evaluationArtifacts);
                     stepRepository.save(step);
                     throw new SafeStopException("mandatory policy failure at stage " + stage.name(),
                             SafeStopReason.POLICY_BLOCKED);
@@ -1059,18 +1106,17 @@ public class WorkflowEngine {
             // Codex REQUEST AMENDMENTS item 6: a POLICY_BLOCKED step's handler already ran to
             // completion once — re-running it would risk double-executing whatever real side
             // effect it had. Resolve ONLY the policy boundary against the persisted (post-handler)
-            // context, never touching stage.handler() again. A RETRY_EXHAUSTED,
+            // evidence, never touching stage.handler() again. A RETRY_EXHAUSTED,
             // COMPENSATION_FAILED, or UNEXPECTED_FAILURE step never actually completed, so it
             // genuinely needs to run again — reset to PENDING as before, letting runFrom's normal
             // machinery re-execute it.
-            WorkflowContext ctx = buildContext(instance);
             boolean anyProgress = false;
             for (WorkflowStepEntity step : steps) {
                 if (step.getStatus() != StepStatus.SAFE_STOPPED) continue;
                 if (step.getSafeStopReason() == SafeStopReason.POLICY_BLOCKED) {
                     StageDefinition stage = registration.stages().stream()
                             .filter(s -> s.name().equals(step.getName())).findFirst().orElseThrow();
-                    if (reevaluatePolicyBoundary(workflowId, step, stage, ctx)) {
+                    if (reevaluatePolicyBoundary(workflowId, step, stage)) {
                         anyProgress = true;
                     }
                 } else if (resetSafeStoppedStepToPending(workflowId, planVersion, step.getName())) {
@@ -1152,9 +1198,18 @@ public class WorkflowEngine {
     // stage.handler() again. Returns whether the boundary actually cleared (the step transitioned
     // to SUCCEEDED); if still blocked, the step is left exactly as it was (SAFE_STOPPED,
     // POLICY_BLOCKED) and this returns false.
-    private boolean reevaluatePolicyBoundary(String workflowId, WorkflowStepEntity step, StageDefinition stage,
-                                              WorkflowContext ctx) {
-        List<PolicyCheckResult> policyResults = policyEngine.evaluate(stage.name(), ctx.artifacts());
+    private boolean reevaluatePolicyBoundary(String workflowId, WorkflowStepEntity step, StageDefinition stage) {
+        // 4th independent-review finding (Section 17 follow-up review, Finding B): evaluate
+        // against THIS step's own persisted policyEvidenceSnapshot — captured at the moment it
+        // originally blocked, from exactly the same batchStartArtifacts + own-writes view runStage
+        // itself used — never the live WorkflowContext's artifacts(). By resume time that live map
+        // may legitimately include a TRUSTWORTHY SIBLING's evidence, merged in on purpose so LATER,
+        // DEPENDENT stages can see it — but that evidence was never produced by THIS stage, and
+        // must not be able to clear THIS stage's own boundary with no new evidence and no granted
+        // exception.
+        Map<String, Object> evaluationArtifacts =
+                step.getPolicyEvidenceSnapshot() != null ? step.getPolicyEvidenceSnapshot() : Map.of();
+        List<PolicyCheckResult> policyResults = policyEngine.evaluate(stage.name(), evaluationArtifacts);
         boolean mandatoryFail = false;
         for (PolicyCheckResult pr : policyResults) {
             PolicyEvaluationEntity evaluation = new PolicyEvaluationEntity();

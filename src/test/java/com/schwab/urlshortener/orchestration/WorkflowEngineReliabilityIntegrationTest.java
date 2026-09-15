@@ -791,4 +791,82 @@ class WorkflowEngineReliabilityIntegrationTest {
         assertThat(implStep.getStatus()).isEqualTo(StepStatus.SAFE_STOPPED);
         assertThat(implStep.getSafeStopReason()).isEqualTo(SafeStopReason.POLICY_BLOCKED);
     }
+
+    // --- 4th independent-review finding (Section 17 follow-up review, Finding A): a COMPENSATED
+    // stage's own pre-failure evidence must not flow forward into the NEXT batch's baseline — its
+    // handler never actually succeeded, compensation is a fallback ACTION on the stage's RESULT,
+    // not proof its evidence was ever valid ---
+
+    @Test
+    void aCompensatedStagesOwnEvidenceDoesNotFlowForwardIntoTheNextBatch() {
+        StageHandler securityScan = ctx -> {
+            ctx.addArtifact("urlSchemeAllowlistEnforced", true);
+            ctx.addArtifact("ssrfGuardEnforced", true);
+            throw new PermanentStageException("boom");
+        };
+        StageHandler implementation = ctx -> Map.of(); // supplies no evidence of its own
+
+        List<StageDefinition> stages = List.of(
+                StageDefinition.of("security_scan", List.of(), securityScan),
+                StageDefinition.of("implementation", List.of("security_scan"), implementation));
+        PolicyEngine policyEngine = new PolicyEngine("policies/v1.yaml");
+        CompensationRegistry registry = new CompensationRegistry();
+        registry.register("security_scan", result -> { });
+        WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository,
+                approvalRepository, transactionManager, policyEvaluationRepository, policyEngine,
+                policyExceptionRepository, registry);
+
+        String workflowId = engine.submit("demo", stages, "run-33v");
+
+        assertThat(stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "security_scan")
+                .orElseThrow().getStatus()).isEqualTo(StepStatus.COMPENSATED);
+
+        // "implementation" supplied no evidence itself, and the compensated stage's own
+        // (pre-failure) evidence must not have flowed into its baseline — fail-closed.
+        WorkflowStepEntity implStep = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "implementation")
+                .orElseThrow();
+        assertThat(implStep.getStatus()).isEqualTo(StepStatus.SAFE_STOPPED);
+        assertThat(implStep.getSafeStopReason()).isEqualTo(SafeStopReason.POLICY_BLOCKED);
+    }
+
+    // --- 4th independent-review finding (Section 17 follow-up review, Finding B): retrySafeStopped
+    // re-evaluating a POLICY_BLOCKED step's boundary must use THAT step's own persisted evidence,
+    // never a trustworthy SIBLING's evidence merged into the live context for forward propagation
+    // to other, dependent stages ---
+
+    @Test
+    void reevaluatingAPolicyBoundaryDoesNotClearOnASiblingsEvidence() {
+        StageHandler helper = ctx -> {
+            ctx.addArtifact("ssrfGuardEnforced", true);
+            return Map.of();
+        };
+        StageHandler implementation = ctx -> {
+            ctx.addArtifact("urlSchemeAllowlistEnforced", true); // its own evidence is incomplete
+            return Map.of();
+        };
+        // Two independent root stages, same batch — "helper" supplies SEC-002's evidence,
+        // "implementation" does not, and neither depends on the other.
+        List<StageDefinition> stages = List.of(
+                StageDefinition.of("helper", List.of(), helper),
+                StageDefinition.of("implementation", List.of(), implementation));
+        PolicyEngine policyEngine = new PolicyEngine("policies/v1.yaml");
+        WorkflowEngine engine = engineWithPolicy(policyEngine);
+
+        String workflowId = engine.submit("demo", stages, "run-33w");
+        assertThat(stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "helper")
+                .orElseThrow().getStatus()).isEqualTo(StepStatus.SUCCEEDED);
+        assertThat(stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "implementation")
+                .orElseThrow().getSafeStopReason()).isEqualTo(SafeStopReason.POLICY_BLOCKED);
+
+        // Retrying without granting any exception: "implementation" must stay blocked. Its own
+        // persisted evidence never included "helper"'s ssrfGuardEnforced, and no new evidence or
+        // exception has been supplied.
+        engine.retrySafeStopped(workflowId);
+        WorkflowStepEntity implStep = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "implementation")
+                .orElseThrow();
+        assertThat(implStep.getStatus()).isEqualTo(StepStatus.SAFE_STOPPED);
+        assertThat(implStep.getSafeStopReason()).isEqualTo(SafeStopReason.POLICY_BLOCKED);
+        assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
+                .isEqualTo(WorkflowStatus.SAFE_STOPPED);
+    }
 }

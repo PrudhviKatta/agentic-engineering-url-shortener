@@ -74,6 +74,20 @@ public class WorkflowStepEntity {
     @Column(name = "safe_stop_reason")
     private SafeStopReason safeStopReason;
 
+    // 4th independent-review finding (Section 17 follow-up review, Finding B): the exact
+    // evaluationArtifacts view (this stage's batch-start baseline merged with ONLY its own
+    // attributed writes — never a sibling's) that produced a POLICY_BLOCKED safe-stop, captured at
+    // that moment so retrySafeStopped's reevaluatePolicyBoundary can re-run the SAME check later
+    // against the SAME evidence. Before this field existed, reevaluatePolicyBoundary read the
+    // live WorkflowContext's artifacts() instead — which, by resume time, could include a
+    // TRUSTWORTHY SIBLING's evidence merged in for legitimate forward propagation to later,
+    // dependent stages — incorrectly letting THIS stage's own boundary clear on a sibling's
+    // evidence it never itself produced, with no new evidence and no granted exception. Null for
+    // every other status.
+    @Convert(converter = JsonMapAttributeConverter.class)
+    @Column(name = "policy_evidence_snapshot", columnDefinition = "CLOB")
+    private Map<String, Object> policyEvidenceSnapshot;
+
     // Codex REQUEST AMENDMENTS item 8: this step's status immediately before an exit-approval gate
     // overwrote it with WAITING_APPROVAL. approve() restores this (rather than hardcoding
     // SUCCEEDED) so a COMPENSATED step that passes through an exit gate is still COMPENSATED
@@ -112,6 +126,8 @@ public class WorkflowStepEntity {
     public void setInputsSnapshot(Map<String, Object> inputsSnapshot) { this.inputsSnapshot = inputsSnapshot; }
     public SafeStopReason getSafeStopReason() { return safeStopReason; }
     public void setSafeStopReason(SafeStopReason safeStopReason) { this.safeStopReason = safeStopReason; }
+    public Map<String, Object> getPolicyEvidenceSnapshot() { return policyEvidenceSnapshot; }
+    public void setPolicyEvidenceSnapshot(Map<String, Object> policyEvidenceSnapshot) { this.policyEvidenceSnapshot = policyEvidenceSnapshot; }
     public StepStatus getPreGateStatus() { return preGateStatus; }
     public void setPreGateStatus(StepStatus preGateStatus) { this.preGateStatus = preGateStatus; }
 }

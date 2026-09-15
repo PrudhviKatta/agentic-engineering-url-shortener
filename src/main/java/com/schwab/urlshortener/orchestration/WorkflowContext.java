@@ -91,6 +91,21 @@ public class WorkflowContext {
         return writesByStage.getOrDefault(stageName, Map.of());
     }
 
+    // 4th independent-review finding (Section 17 follow-up review, Finding A): WorkflowEngine.
+    // runFrom's next-batch baseline (batchStartArtifacts) is a snapshot of THIS live map, not of
+    // whatever gets persisted to contextJson — so filtering only what's PERSISTED (excluding an
+    // untrustworthy stage's writes) was not enough on its own: within ONE runFrom call spanning
+    // multiple batches, the live map still carried the untrustworthy stage's writes forward into
+    // the very next batch's baseline, even though the persisted DB row was correctly filtered.
+    // runFrom calls this right after computing a batch's filtered/trustworthy view, resetting the
+    // live map to match it — so both the persisted state AND every later batch's own baseline in
+    // this same run agree on what's trustworthy, not just the DB row a separate later resume
+    // would eventually read.
+    public void resetArtifactsTo(Map<String, Object> values) {
+        artifacts.clear();
+        artifacts.putAll(values);
+    }
+
     public String correlationId() { return correlationId; }
     public List<Map<String, Object>> decisions() { return decisions; }
     public Map<String, Object> artifacts() { return artifacts; }

@@ -506,7 +506,7 @@ version number, per the pre-ratification-revisions rule this section originally 
 | Version | Date | Change | Author | Human Approver |
 |---|---|---|---|---|
 | 1.0.0 (draft) | 2026-09-12 | Initial constitution drafted from the Section 6 governance prompt: Principles I–XI, governance rules (4.1–4.7), version history established. Pending Human Gate 1. | Agent (SpecKit `/speckit.constitution` stage) | *(pending — not yet approved)* |
-| 1.0.0 (ratified) | 2026-09-13 | Human Gate 1 completed: all eleven principles and the governance section (4.1–4.7) confirmed as written, no amendments required as a condition of approval. | — | Prudhvidhar Reddy Katta (human candidate) |
+| 1.0.0 (ratified) | 2026-09-13 | Human Gate 1 completed: all eleven principles and the governance section (4.1–4.7) confirmed as written, no amendments required as a condition of approval. | — | Human candidate |
 
 Future amendments are appended as new rows, never by editing a prior row's "Change" content —
 the version history is itself subject to Principle X (repository integrity): it is a record, not
@@ -524,6 +524,6 @@ constitution) only once a human reviewer completes Human Gate 1:
 - [x] Records approval — name, date, and any amendments required as a condition of approval — as
   a new row in Section 5's version history.
 
-**Ratified 2026-09-13 by Prudhvidhar Reddy Katta (human candidate). No amendments required as a
+**Ratified 2026-09-13 by the human candidate. No amendments required as a
 condition of approval.** This constitution is in effect for the purposes of Principle I as of this
 date; see Section 5 for the recorded approval row.

@@ -5,7 +5,10 @@
 REQ-029, Principle IV's red-green-refactor discipline.
 **Constitution principles:** IV (Test-Driven Engineering) — non-waivable — and XI (Evidence-Based
 Completion).
-**Status:** All items UNVERIFIED/PENDING — no tests or implementation exist yet.
+**Status:** Final review: **PASS WITH EVIDENCE LIMITATION**. The complete multi-level suite and
+task-level red/green records exist, but Git history alone does not prove an observed-red run for
+every historical behavior. See `docs/assessment/tdd_execution_evidence.md` and
+`docs/assessment/final_checklist_status.md`.
 
 ## How to read this checklist
 - **[MANDATORY]** blocks release readiness if failed/unverified. **[OPTIONAL]** does not, but must

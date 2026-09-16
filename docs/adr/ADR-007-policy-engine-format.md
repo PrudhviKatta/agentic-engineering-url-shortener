@@ -4,7 +4,7 @@
 
 **Accepted** — drafted 2026-09-13 at Task 7, formalizing the position `plan.md` Section 12 and
 `research.md` D7 already recorded as "Proposed for ADR at Task 7." Reviewed and accepted by the
-human candidate (Prudhvidhar Reddy Katta) on 2026-09-13.
+human candidate on 2026-09-13.
 
 ## Context
 
@@ -139,7 +139,7 @@ codebase.
   `PolicyEngine` unit level.
 
 **Governance:**
-- **Accepted** by the human candidate (Prudhvidhar Reddy Katta) on 2026-09-13 — see
+- **Accepted** by the human candidate on 2026-09-13 — see
   `docs/governance/human-gates-log.md`. Because policy format directly implements a constitutional
   principle (VI), its acceptance carried the same governance weight as the other seven ADRs — no
   exemption for being "just a file format." **Corrected by the Task 10 corrective batch**

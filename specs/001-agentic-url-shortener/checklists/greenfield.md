@@ -4,7 +4,8 @@
 **Applies to:** `spec.md` Section 4 (SCN-A), `plan.md` Section 11.1, `GreenfieldScenarioTest`,
 `docs/scenarios/greenfield.md`.
 **Constitution principles:** I, II, III, VIII, IX, X.
-**Status:** All items UNVERIFIED/PENDING — SCN-A has not been executed.
+**Status:** Final review: **PASS**. SCN-A execution and current run evidence are recorded in
+`docs/scenarios/greenfield.md` and `docs/assessment/final_checklist_status.md`.
 
 ## How to read this checklist
 - **[MANDATORY]** blocks release readiness if failed/unverified. **[OPTIONAL]** does not, but must

@@ -5,9 +5,9 @@
 submission.
 **Constitution principles:** X (Traceability and Repository Integrity — commit-coherence rules),
 XI (Evidence-Based Completion).
-**Status:** All items are checkable NOW against existing history and MUST be re-checked at every
-future commit. This project has one disclosed, real precedent (see CHK-GH-001) that these items are
-written specifically to catch.
+**Status:** Final review: **PASS WITH DISCLOSED INCIDENT**. Commit `12f1353` remains a truthful,
+unrewritten process nonconformance; hosted CI is pending the first push. See
+`docs/assessment/final_checklist_status.md`.
 
 ## How to read this checklist
 - **[MANDATORY]** blocks release readiness if failed/unverified. **[OPTIONAL]** does not, but must

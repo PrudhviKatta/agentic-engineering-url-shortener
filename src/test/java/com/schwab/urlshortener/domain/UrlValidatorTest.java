@@ -27,6 +27,15 @@ class UrlValidatorTest {
     }
 
     @Test
+    void rejectsUrlsLongerThan2048Characters() {
+        String overLimit = "https://example.com/" + "a".repeat(2049 - "https://example.com/".length());
+
+        assertThatThrownBy(() -> UrlValidator.validate(overLimit))
+                .isInstanceOf(InvalidUrlException.class)
+                .hasMessage("url_too_long");
+    }
+
+    @Test
     void acceptsPublicIpv6Addresses() {
         assertThat(UrlValidator.validate("http://[2001:4860:4860::8888]/")).isEqualTo("http://[2001:4860:4860::8888]/");
     }

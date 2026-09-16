@@ -4,7 +4,7 @@
 
 **Accepted** — drafted 2026-09-13 at Task 7, formalizing the position `plan.md` Section 12 and
 `research.md` D9 already recorded as "Proposed for ADR at Task 7." Reviewed and accepted by the
-human candidate (Prudhvidhar Reddy Katta) on 2026-09-13.
+human candidate on 2026-09-13.
 
 ## Context
 
@@ -144,7 +144,7 @@ buried in a runtime decision tree.
   in-transaction effect for the rollback path.
 
 **Governance:**
-- **Accepted** by the human candidate (Prudhvidhar Reddy Katta) on 2026-09-13, per the same
+- **Accepted** by the human candidate on 2026-09-13, per the same
   governance standing as the other seven ADRs — see `docs/governance/human-gates-log.md`.
   **Corrected by the Task 10 corrective batch** (the pre-implementation external review Finding #12): this bullet
   previously read "is proposed pending... accept/reject at Task 7" after Task 7 had already run and

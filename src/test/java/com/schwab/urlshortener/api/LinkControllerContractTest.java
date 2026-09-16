@@ -16,7 +16,12 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(
+        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        properties = {
+                "spring.datasource.url=jdbc:h2:mem:link-contract;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=false",
+                "spring.jpa.hibernate.ddl-auto=create-drop"
+        })
 class LinkControllerContractTest {
 
     @LocalServerPort
@@ -45,6 +50,18 @@ class LinkControllerContractTest {
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
         Map<?, ?> error = (Map<?, ?>) resp.getBody().get("error");
         assertThat((String) error.get("reason")).startsWith("scheme_not_allowed");
+    }
+
+    @Test
+    void createLinkRejectsUrlsLongerThan2048Characters() {
+        String overlongUrl = "https://example.com/" + "a".repeat(2_029);
+
+        ResponseEntity<Map> resp = rest.postForEntity(
+                url("/links"), Map.of("longUrl", overlongUrl), Map.class);
+
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        Map<?, ?> error = (Map<?, ?>) resp.getBody().get("error");
+        assertThat(error.get("reason")).isEqualTo("url_too_long");
     }
 
     /**
@@ -81,6 +98,34 @@ class LinkControllerContractTest {
     }
 
     @Test
+    void metadataLookupReturnsExpiredLinkWithoutCountingARedirect() {
+        var past = Instant.now().minus(Duration.ofDays(1));
+        var created = rest.postForEntity(
+                url("/links"),
+                Map.of("longUrl", "https://example.com/metadata", "expiresAt", past.toString()),
+                Map.class);
+        String code = (String) created.getBody().get("code");
+
+        ResponseEntity<Map> metadata = rest.getForEntity(url("/links/" + code), Map.class);
+        ResponseEntity<Map> analytics = rest.getForEntity(url("/links/" + code + "/analytics"), Map.class);
+
+        assertThat(metadata.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(metadata.getBody().get("code")).isEqualTo(code);
+        assertThat(metadata.getBody().get("longUrl")).isEqualTo("https://example.com/metadata");
+        assertThat(metadata.getBody().get("expiresAt")).isNotNull();
+        assertThat(((Number) analytics.getBody().get("redirectCount")).intValue()).isZero();
+    }
+
+    @Test
+    void metadataLookupReturnsContractErrorForUnknownCode() {
+        ResponseEntity<Map> response = rest.getForEntity(url("/links/ZZZZZZZ"), Map.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        Map<?, ?> error = (Map<?, ?>) response.getBody().get("error");
+        assertThat(error.get("reason")).isEqualTo("short_code_not_found");
+    }
+
+    @Test
     void redirectExpiredCodeReturns410() {
         var past = Instant.now().minus(Duration.ofDays(1));
         var created = rest.postForEntity(url("/links"), Map.of("longUrl", "https://example.com/x", "expiresAt", past.toString()), Map.class);
@@ -99,5 +144,14 @@ class LinkControllerContractTest {
 
         ResponseEntity<Map> analytics = rest.getForEntity(url("/links/" + code + "/analytics"), Map.class);
         assertThat(((Number) analytics.getBody().get("redirectCount")).intValue()).isEqualTo(2);
+    }
+
+    @Test
+    void analyticsUnknownCodeReturnsContractError() {
+        ResponseEntity<Map> response = rest.getForEntity(url("/links/ZZZZZZZ/analytics"), Map.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        Map<?, ?> error = (Map<?, ?>) response.getBody().get("error");
+        assertThat(error.get("reason")).isEqualTo("short_code_not_found");
     }
 }

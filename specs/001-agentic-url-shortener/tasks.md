@@ -1486,9 +1486,8 @@ instead of an `exitApproval`-on-`requirement` workaround — the more faithful r
 - **Expected artifact**: `README.md` — 2–3 sentence objective, quickstart (`./mvnw
   spring-boot:run`, `./mvnw test`), link to the reviewer navigation guide for depth.
   `SECURITY.md` — URL scheme allow-list, SSRF guard, no-auth assumption (ADR-010, including the
-  approval-endpoint risk from T026), secrets policy (none stored/logged), a manual dependency-scan
-  recommendation (`mvn org.owasp:dependency-check-maven:check`, no CI configured — a disclosed
-  limitation, not a hidden gap).
+  approval-endpoint risk from T026), secrets policy (none stored/logged), the local dependency-scan
+  disposition, and the configured GitHub CI/Dependabot compensating controls.
 - **TDD**: no.
 - **Validation command**: n/a (documentation deliverable).
 - **Doc impact**: this task's entire output is documentation.

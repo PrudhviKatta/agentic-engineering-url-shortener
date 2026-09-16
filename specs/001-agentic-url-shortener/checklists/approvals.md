@@ -4,8 +4,8 @@
 **Applies to:** REQ-013, ADR-006 (Human Approval Mechanism), the
 `POST /workflows/{id}/approvals/{step}` endpoint, `PolicyExceptionEntity`'s approval fields.
 **Constitution principles:** III (Human Governance) — the primary principle this file enforces.
-**Status:** All items UNVERIFIED/PENDING — the approval endpoint and gate mechanics are not yet
-implemented.
+**Status:** Final review: **PASS WITH LIMITATION** (self-asserted, unauthenticated actor identity).
+See `docs/assessment/final_checklist_status.md`.
 
 ## How to read this checklist
 - **[MANDATORY]** blocks release readiness if failed/unverified. **[OPTIONAL]** does not, but must

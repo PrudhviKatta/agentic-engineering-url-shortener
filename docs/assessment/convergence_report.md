@@ -63,12 +63,12 @@ through ADR-010.
 
 The detailed 14-category comparison is in `docs/assessment/scenario_evidence_review.md`.
 
-- Greenfield CLI: workflow `e23de386-72b7-45d7-94b5-d778ac930b9c`; clarification was skipped;
+- Greenfield CLI: workflow `2f9c8a4d-dfe0-4432-9d30-37ec958d3154`; clarification was skipped;
   design and release approvals were recorded; final output was `COMPLETED`.
-- Brownfield CLI: workflow `72bf7a9c-ebfa-4226-a065-d4b77a67e088`; all seven named impact-stage
+- Brownfield CLI: workflow `84411566-7ca6-4619-8ffe-6b44a7487b57`; all seven named impact-stage
   success events preceded the joined impact report; three approvals were recorded; final output was
   `COMPLETED`.
-- Ambiguous CLI: workflow `47e66014-ee03-42e0-b6f8-3ac74d7797cd`; `replanned` preceded
+- Ambiguous CLI: workflow `2835b94d-d34c-463d-8bd2-7c2591c19109`; `replanned` preceded
   `approval_approved:human_clarification`; `decomposition_v2` ran; final output was `COMPLETED`.
 
 These are materially different paths: conditional skip, concurrent brownfield fan-out/join, and
@@ -79,12 +79,12 @@ ambiguity suspension with versioned replacement.
 Final unfiltered command:
 
 ```text
-$ DEBUG=false JAVA_HOME=/opt/homebrew/opt/openjdk@21 ./mvnw test \
+$ DEBUG=false JAVA_HOME=/opt/homebrew/opt/openjdk@21 ./mvnw --batch-mode verify \
   -Dspring.jpa.properties.hibernate.show_sql=false
-[INFO] Tests run: 231, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 241, Failures: 0, Errors: 0, Skipped: 0
 [INFO] BUILD SUCCESS
-[INFO] Total time: 10.800 s
-[INFO] Finished at: 2026-09-15T21:18:54-05:00
+[INFO] Total time: 13.102 s
+[INFO] Finished at: 2026-09-16T00:03:22-05:00
 ```
 
 The suite includes unit, JPA integration, HTTP contract, application-boot, orchestration transition,
@@ -94,7 +94,18 @@ the normal suite.
 Evidence integrity note: the preceding full run exposed one race failure (`REPLANNING` visible after
 both concurrent callers returned). The engine was corrected to compare-and-set the durable crash
 marker to `RUNNING` before resume; the focused class then passed 35 tests, including 20 race
-repetitions, before the final 231-test run above. The failed run is not presented as success.
+repetitions, before the earlier 231-test convergence run. The current 241-test run also includes
+the final URL-length, metadata, persistence-outage, redirect-latency, readiness-failure, and
+analytics-error corrections. The failed run is not presented as success.
+
+The binding demonstration performance target was measured independently of workflow duration:
+
+```text
+DEMONSTRATION_P95_REDIRECT_LATENCY_MS=0.833 SAMPLE_SIZE=100
+```
+
+The same submission tree was then reconstructed from `HEAD`, its tracked diff, and its intended
+untracked files in a new temporary directory; `./mvnw --batch-mode verify` passed there as well.
 
 ## 6 Actual CLI output
 
@@ -104,7 +115,7 @@ Greenfield terminal excerpt:
 {"result":"OK","action":"stage_skipped:human_clarification","actorType":"orchestrator"}
 {"result":"OK","action":"approval_approved:design","actorType":"human"}
 {"result":"OK","action":"approval_approved:release_readiness","actorType":"human"}
-{"workflowId":"e23de386-72b7-45d7-94b5-d778ac930b9c","status":"COMPLETED"}
+{"workflowId":"2f9c8a4d-dfe0-4432-9d30-37ec958d3154","status":"COMPLETED"}
 ```
 
 Brownfield terminal excerpt:
@@ -118,7 +129,7 @@ Brownfield terminal excerpt:
 {"result":"OK","action":"stage_succeeded:regression_risk","actorType":"agent"}
 {"result":"OK","action":"stage_succeeded:rollout_rollback","actorType":"agent"}
 {"result":"OK","action":"approval_approved:change_impact_report","actorType":"human"}
-{"workflowId":"72bf7a9c-ebfa-4226-a065-d4b77a67e088","status":"COMPLETED"}
+{"workflowId":"84411566-7ca6-4619-8ffe-6b44a7487b57","status":"COMPLETED"}
 ```
 
 Ambiguous terminal excerpt:
@@ -127,7 +138,7 @@ Ambiguous terminal excerpt:
 {"action":"replanned","result":"OK","actorType":"human"}
 {"action":"approval_approved:human_clarification","result":"OK","actorType":"human"}
 {"action":"stage_succeeded:decomposition_v2","result":"OK","actorType":"agent"}
-{"workflowId":"47e66014-ee03-42e0-b6f8-3ac74d7797cd","status":"COMPLETED"}
+{"workflowId":"2835b94d-d34c-463d-8bd2-7c2591c19109","status":"COMPLETED"}
 ```
 
 Final metrics output:
@@ -156,15 +167,20 @@ rationale, scope, expiry, compensating control, and authority. Brownfield code c
 seven impact analyses and the joined approval gate. Contract/status/metric changes were reflected in
 OpenAPI and regression tests.
 
-No policy exception is required for the three successful demonstration scenarios. Optional license
-evidence remains non-mandatory in v1 policy; production release would require a real dependency scan.
+No policy exception is required for the three successful demonstration scenarios. The advisory
+license inventory resolved 90 compile/runtime/test dependencies with no missing or unknown license
+metadata. The attempted dependency scan did not obtain vulnerability data; the human candidate
+approved a temporary assessment-only exception through 2026-09-22, with GitHub CI and Dependabot
+as compensating controls.
 
 ## 9 Security summary
 
 Implemented: HTTP(S) allow-list; DNS resolution; loopback, any-local, link-local, private/site-local,
-multicast, and IPv6 ULA rejection; bounded code collision handling; fail-closed policy/gate behavior;
-loopback binding. Residual: no authentication/authorization/TLS/rate limiting, validation-time-only
-DNS checks, no production secrets/log-redaction system, and no automated dependency scanning.
+multicast, and IPv6 ULA rejection; a 2,048-character input limit; bounded code collision handling;
+fail-closed policy/gate behavior; loopback binding. CI and Dependabot are configured. Residual: no
+authentication/authorization/TLS/rate limiting, validation-time-only DNS checks, and no production
+secrets/log-redaction system. The local OWASP scan is inconclusive because the NVD feed was
+unavailable without an API key; its temporary exception does not convert that result into a pass.
 
 ## 10 Reliability summary
 
@@ -183,7 +199,7 @@ MTTR populations with demonstration labeling.
 | File H2 and `ddl-auto:update` | Real schema boot test and ignored data files | Replace with managed production database/migrations |
 | Local process concurrency only | Row locks, claim checks, repeated race tests | Distributed workers require leases/fencing/idempotency design |
 | Metric population contamination | Demonstration label and population note | Use isolated telemetry store and defined reporting window |
-| Dependency vulnerability drift | Manual scan recommendation | Add CI scanning and remediation SLA |
+| Dependency vulnerability drift | Dependabot configured; OWASP scan attempted; temporary exception approved | Review hosted results before exception expiry; any actionable finding blocks readiness |
 | Mutable nested artifact values | Top-level map is read-only and attempt writes are attributed | Deep-copy/immutable artifact schema before untrusted handlers |
 
 ## 12 Known limitations and residual risks
@@ -214,14 +230,15 @@ actors, and accumulated demonstration metrics define the accepted prototype boun
 
 No generated test or scenario output is claimed without an executed command. Simulated approvals are
 identified by their actor. Demonstration metrics are labeled. The initial full-suite race failure and
-its correction are disclosed. The repository-wide branding scan returns no matches. Generated H2 and
-build output remain ignored/untracked. History is not rewritten.
+its correction are disclosed. The tracked working-tree branding scan returns no matches. Generated
+H2 and build output remain ignored/untracked. History is not rewritten.
 
 ## 16 Release-readiness decision
 
-**READY WITH ACCEPTED LIMITATIONS**
+**READY FOR PUBLIC ASSESSMENT SUBMISSION**
 
-This decision covers the local interview-assessment prototype only. The 31 requirements and three
-scenarios have evidence, all final tests and CLI modes pass, and no mandatory in-scope blocker remains.
-The security, persistence, distributed-execution, and operational limitations above prevent a
-production deployment claim.
+The implementation and three scenarios pass local validation, and human final sign-off was recorded
+on 2026-09-15 in `docs/governance/human-gates-log.md`. The dependency-vulnerability evidence gap
+remains covered by the documented temporary, assessment-only exception. This decision does not
+authorize production or untrusted-network exposure. Hosted CI and Dependabot results must be
+reviewed after push; any actionable finding reopens readiness.

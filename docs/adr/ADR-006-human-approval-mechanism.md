@@ -4,7 +4,7 @@
 
 **Accepted** — drafted 2026-09-13 at Task 7, formalizing the position `plan.md` Section 12 and
 `research.md` D6 already recorded as "Proposed for ADR at Task 7." Reviewed and accepted by the
-human candidate (Prudhvidhar Reddy Katta) on 2026-09-13.
+human candidate on 2026-09-13.
 
 ## Context
 
@@ -183,7 +183,7 @@ targeting a gated stage's downstream correctly reaches only the not-yet-started 
   resumption re-derives blocked status from persisted state rather than a cached flag.
 
 **Governance:**
-- **Accepted** by the human candidate (Prudhvidhar Reddy Katta) on 2026-09-13 — see
+- **Accepted** by the human candidate on 2026-09-13 — see
   `docs/governance/human-gates-log.md`. It directly operationalizes constitution Principle III's
   "approval is never inferred from silence" and REQ-013's negative criteria — a future rejection or
   amendment of this ADR would need to preserve those properties under whatever alternative

@@ -80,7 +80,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
               example:
-                error: { reason: "disallowed_scheme" }
+                error: { reason: "scheme_not_allowed:ftp" }
 
   /links/{code}:
     get:
@@ -267,7 +267,7 @@ paths:
         '204':
           description: Decision recorded; dependent branch released (approved) or blocked (rejected).
         '400':
-          description: Invalid decision value.
+          description: Invalid decision value, or missing/blank actor or reason.
           content:
             application/json:
               schema:
@@ -419,7 +419,7 @@ components:
           properties:
             reason:
               type: string
-              description: Machine-parseable rejection/failure reason, e.g. disallowed_scheme, url_too_long, ssrf_blocked_host, short_code_not_found, short_link_expired.
+              description: Machine-parseable rejection/failure reason, e.g. scheme_not_allowed:ftp, url_too_long, target_host_blocked, short_code_not_found, short_link_expired.
 
     CreateWorkflowRequest:
       type: object
@@ -512,7 +512,7 @@ components:
 
     ApprovalRequest:
       type: object
-      required: [decision, actor]
+      required: [decision, actor, reason]
       properties:
         decision: { type: string, enum: [approved, rejected] }
         actor: { type: string, description: "Self-asserted identity — no authentication enforced this iteration (CLR-10)." }

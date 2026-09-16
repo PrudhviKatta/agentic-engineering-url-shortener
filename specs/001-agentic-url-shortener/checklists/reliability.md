@@ -4,8 +4,8 @@
 **Applies to:** REQ-014..017, REQ-022, REQ-028, `plan.md` Section 6, ADR-008, ADR-009, CLR-12/13/14.
 **Constitution principles:** VIII (Reliability and Recovery) — the primary principle this file
 enforces.
-**Status:** All items UNVERIFIED/PENDING — `RetryExecutor`, `TimeoutExecutor`,
-`CompensationRegistry`, and safe-stop handling are not yet implemented.
+**Status:** Final review: **PASS WITH LIMITATION** (external-style compensation is simulated).
+See `docs/assessment/final_checklist_status.md`.
 
 ## How to read this checklist
 - **[MANDATORY]** blocks release readiness if failed/unverified. **[OPTIONAL]** does not, but must

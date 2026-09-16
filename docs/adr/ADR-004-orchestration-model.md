@@ -4,7 +4,7 @@
 
 **Accepted** — drafted 2026-09-13 at Task 7, formalizing the position `plan.md` Section 12 and
 `research.md` D4 already recorded as "Proposed for ADR at Task 7." Reviewed and accepted by the
-human candidate (Prudhvidhar Reddy Katta) on 2026-09-13.
+human candidate on 2026-09-13.
 
 ## Context
 
@@ -171,7 +171,7 @@ gate type; this ADR covers what the gate blocks and when.
   negative consequence creates.
 
 **Governance:**
-- **Accepted** by the human candidate (Prudhvidhar Reddy Katta) on 2026-09-13 — see
+- **Accepted** by the human candidate on 2026-09-13 — see
   `docs/governance/human-gates-log.md`. Because this is the architectural core of the project's own
   differentiator (Principle II), reversing it later would be substantial (see Reversibility) — the
   human candidate's review of this specific ADR carried more downstream weight than most of the

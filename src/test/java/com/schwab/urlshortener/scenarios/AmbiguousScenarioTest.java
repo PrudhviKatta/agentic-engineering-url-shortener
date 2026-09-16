@@ -28,7 +28,7 @@ class AmbiguousScenarioTest {
         assertWaitingForClarification(id);
         assertThat(active(id, "decomposition").getStartedAt()).isNull();
 
-        String clarification = "Limit the change to REQ-007 and verify 25-character URLs";
+        String clarification = "rate limit set to 100 requests per minute per IP";
         engine.approve(id, "human_clarification", "approved", "reviewer", clarification);
 
         assertThat(active(id, "decomposition").getResult()).containsEntry("clarifiedRequirement", clarification);
@@ -46,7 +46,7 @@ class AmbiguousScenarioTest {
                 "narrow the work after clarification to one versioned delivery scope");
         assertWaitingForClarification(id);
 
-        String clarification = "Apply only to REQ-007 and require 25-character test evidence";
+        String clarification = "rate limit set to 100 requests per minute per IP";
         engine.approve(id, "human_clarification", "approved", "reviewer", clarification);
         finishExitGates(engine, id);
 
@@ -72,7 +72,7 @@ class AmbiguousScenarioTest {
 
     private String submitAmbiguous(WorkflowEngine engine, String correlationId) {
         return engine.submit("ambiguous", BaselineWorkflowGraph.stages(), correlationId,
-                "Make the short-link workflow better");
+                "add rate limiting");
     }
 
     private void assertWaitingForClarification(String id) {

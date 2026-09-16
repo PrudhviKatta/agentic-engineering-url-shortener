@@ -7,17 +7,26 @@ replanning, audit evidence, and three materially different delivery scenarios.
 ## Quickstart
 
 ```bash
-export JAVA_HOME=/opt/homebrew/opt/openjdk@21
 ./mvnw spring-boot:run
 ```
 
-The service binds to `127.0.0.1:8080`. Useful endpoints include `POST /links`, `GET /r/{code}`,
-`GET /links/{code}/analytics`, `POST /workflows`, `GET /workflows/{id}`, and `GET /metrics`.
+Java 21 is required. The service binds to `127.0.0.1:8080`. Useful endpoints include `POST /links`,
+`GET /links/{code}`, `GET /r/{code}`, `GET /links/{code}/analytics`, `POST /workflows`,
+`GET /workflows/{id}`, and `GET /metrics`.
+
+Create and follow a short link:
+
+```bash
+curl -i -X POST 'http://127.0.0.1:8080/links' \
+  -H 'Content-Type: application/json' \
+  --data-raw '{"longUrl":"https://example.com"}'
+curl -i 'http://127.0.0.1:8080/r/{code}'
+```
 
 Run all tests:
 
 ```bash
-./mvnw test
+./mvnw verify
 ```
 
 Run a demonstration scenario or the metrics report:

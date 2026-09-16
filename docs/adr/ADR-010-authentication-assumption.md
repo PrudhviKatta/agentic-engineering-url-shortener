@@ -5,7 +5,7 @@
 **Accepted** — drafted 2026-09-13 at Task 7, formalizing the position `plan.md` Section 12 and
 `research.md` D10 already recorded as "Proposed for ADR at Task 7." **This ADR documents a residual
 security risk, not a closed, "fine as-is" matter** — see Risks and Mitigations and Consequences
-below. The human candidate (Prudhvidhar Reddy Katta) reviewed this specific risk — not a routine
+below. The human candidate reviewed this specific risk — not a routine
 technology choice under constitution Principle III — and explicitly accepted it on 2026-09-13: no
 authentication is enforced anywhere in this prototype, including the human-approval endpoint this
 ADR governs alongside ADR-006.
@@ -160,7 +160,7 @@ treated as closed.
   mechanism it targets exists.
 
 **Governance:**
-- **Accepted** by the human candidate (Prudhvidhar Reddy Katta) on 2026-09-13 — see
+- **Accepted** by the human candidate on 2026-09-13 — see
   `docs/governance/human-gates-log.md`. Because this decision touches a security-sensitive control
   (or the absence of one) over the system's own governance mechanism (the approval endpoint),
   constitution Principle III's "humans own security-sensitive decisions" applied to this ADR's

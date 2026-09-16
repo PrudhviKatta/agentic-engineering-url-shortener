@@ -4,8 +4,8 @@
 **Applies to:** `spec.md` Section 4 (SCN-B), `plan.md` Section 11.2, the `ImpactAnalysisStage`, the
 IPv6 ULA SSRF-guard fix, `BrownfieldScenarioTest`, `docs/scenarios/brownfield.md`.
 **Constitution principles:** I, III, VI, VIII, X.
-**Status:** All items UNVERIFIED/PENDING — SCN-B (the `UrlValidator` IPv6 ULA fix) has not been
-executed.
+**Status:** Final review: **PASS**. The seven-branch SCN-B execution and current run evidence are
+recorded in `docs/scenarios/brownfield.md` and `docs/assessment/final_checklist_status.md`.
 
 ## How to read this checklist
 - **[MANDATORY]** blocks release readiness if failed/unverified. **[OPTIONAL]** does not, but must

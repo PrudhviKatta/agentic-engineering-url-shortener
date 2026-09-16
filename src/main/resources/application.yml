@@ -1,10 +1,6 @@
 server:
   port: 8080
-  # Loopback-only binding (Task 10 corrective batch — plan.md Section 8 / pre-implementation external review
-  # Finding #7): narrows ADR-010's disclosed no-authentication surface to the local machine only.
-  # This does not reverse ADR-010's no-auth decision; it is a network-level containment measure on
-  # top of it, per plan.md Section 8's "approval-state enforcement with self-asserted actor
-  # identity" characterization of the approval endpoint's actual posture.
+  # This unauthenticated assessment service is intentionally reachable only from the local machine.
   address: 127.0.0.1
 
 spring:
@@ -17,20 +13,8 @@ spring:
     driver-class-name: org.h2.Driver
   jpa:
     hibernate:
-      # Prototype-only convenience: auto-evolves the schema from entities on
-      # every boot. Never use ddl-auto=update in production; a real deployment
-      # needs Flyway/Liquibase-managed migrations. Documented limitation, not
-      # an oversight — planned to be recorded in docs/assessment/final_engineering_summary.md
-      # (Task 47 deliverable; does not exist yet as of this corrective batch — see
-      # tasks.md T047). Corrected by the Task 10 corrective batch (pre-implementation external review
-      # Minor findings): this comment previously implied that file already existed.
+      # Prototype-only convenience. A production deployment needs managed schema migrations.
       ddl-auto: update
     show-sql: false
-    # LOAD-BEARING for WorkflowEngine's concurrency correctness (Independent review amendments item 7
-    # independent review, Minor 3) — do not set true. WorkflowEngine.runFrom/applyInstanceUpdate/
-    # claimStage rely on every repository call opening its OWN fresh EntityManager/transaction, so
-    # concurrent threads see each other's committed writes instead of a stale first-level-cache
-    # read. open-in-view=true binds one EntityManager across the whole HTTP request and silently
-    # reintroduces the stale-read bug documented at WorkflowEngine.java's runFrom Javadoc (the same
-    # failure mode that killed an earlier whole-transaction locking attempt in that method).
+    # Workflow execution requires fresh persistence contexts so parallel workers see committed state.
     open-in-view: false

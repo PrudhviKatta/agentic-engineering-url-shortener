@@ -11,6 +11,7 @@ operational secret management first.
 ## Implemented controls
 
 - Link targets permit only `http` and `https`.
+- Submitted URLs are limited to 2,048 characters.
 - The validator resolves host addresses before persistence and rejects loopback, any-local,
   link-local, site-local/private, multicast, and IPv6 Unique Local Address (`fc00::/7`) targets.
 - Malformed and unresolvable hosts fail closed.
@@ -23,6 +24,21 @@ DNS rebinding protection is limited to validation-time resolution; the service d
 revalidate an address at redirect time. That limitation, plus the unauthenticated approval surface,
 prevents production classification.
 
+## Abuse cases and remaining risks
+
+- **Short-code enumeration:** seven-character codes are identifiers, not access controls. Anyone who
+  can reach the service may probe codes and discover a valid redirect. Private links require an
+  authenticated access model that is outside this demonstration.
+- **Open-redirect or phishing relay:** the service intentionally redirects to caller-supplied public
+  HTTP(S) destinations. URL validation blocks local-network targets but cannot establish whether a
+  public destination is trustworthy. Production use needs abuse reporting, reputation controls, and
+  takedown operations.
+- **Mass creation and redirect traffic:** endpoints have no caller authentication, quotas, or rate
+  limits. Keep the application loopback-only; add authenticated quotas and edge rate limiting before
+  network exposure.
+- **DNS rebinding:** host resolution is checked when a link is created, not pinned and revalidated at
+  redirect time.
+
 ## Secrets and logging
 
 The project requires no application secrets and none should be committed. Do not place credentials,
@@ -31,15 +47,18 @@ not configure a production log-scrubbing pipeline.
 
 ## Dependency review
 
-No automated dependency scan is configured. Before any release candidate, run the full tests and a
-manual OWASP Dependency-Check review:
+GitHub Actions runs the Maven verification suite, and Dependabot is configured for Maven and workflow
+dependencies. Before a release candidate, also run OWASP Dependency-Check:
 
 ```bash
-mvn org.owasp:dependency-check-maven:check
+./mvnw org.owasp:dependency-check-maven:check -DnvdApiKeyEnvironmentVariable=NVD_API_KEY
 ```
 
-The dependency scan may require network access and a vulnerability-feed download. Review results;
-do not equate command completion with risk acceptance.
+The NVD key must be supplied through the local environment or a protected CI secret, never committed.
+The 2026-09-15 local attempt stopped before analysis because no NVD API key/data feed was available;
+therefore it is not a clean vulnerability result. A temporary, assessment-only exception through
+2026-09-22 relies on GitHub CI and Dependabot as compensating controls; see
+`docs/assessment/security_scan_report.md`.
 
 ## Reporting
 

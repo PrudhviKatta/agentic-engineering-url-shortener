@@ -1,9 +1,43 @@
 # Greenfield scenario
 
-SCN-A starts with a measurable requirement: `REQ-023: accept 20 concurrent link creations with zero duplicate short codes`.
+## Input and selected path
 
-The production twelve-stage graph ingests and normalizes that input, records that it contains both a requirement identifier and a measurable criterion, and persists `human_clarification` as `SKIPPED` with the `ambiguity_gate` reason. Decomposition and design then run; the design exit gate requires an explicit approval before implementation proceeds.
+SCN-A starts with the measurable requirement `REQ-023: accept 20 concurrent link creations with
+zero duplicate short codes`. The twelve-stage baseline graph persists the requirement, normalized
+text, dependencies, handler keys, activation key, gate configuration, retry limit, timeout, owner,
+status, input snapshot, result, and plan version for inspection.
 
-Implementation records the URL-scheme and SSRF controls. Documentation runs from the approved design while testing and security run from implementation evidence. Release readiness joins those results, checks policy, security, testing, documentation, audit, and fallback evidence, and requires a second explicit approval. The final engineering summary runs only after that approval.
+`ambiguity_detection` records a clear/measurable result. The conditional
+`human_clarification` row is therefore persisted as `SKIPPED` with the `ambiguity_gate` reason;
+decomposition begins without inventing a clarification.
 
-Executable evidence: `JAVA_HOME=/opt/homebrew/opt/openjdk@21 ./mvnw test -Dtest=GreenfieldScenarioTest`.
+## Decisions, artifacts, and gates
+
+The run produces requirement-ingestion, normalization, ambiguity, decomposition, design,
+implementation, testing, security, documentation, release-readiness, and final-summary results.
+Named context artifacts include `normalizedRequirement`, `design`, `testResults`,
+`securityResults`, `documentationEvidence`, and `releaseReadiness`.
+
+The design exit gate blocks implementation until the self-asserted demonstration reviewer records
+an explicit approval and rationale. Testing, security, and documentation then converge at release
+readiness. Its exit gate also requires an explicit approval; silence never releases either gate.
+
+## Executed evidence
+
+The current CLI run used isolated file-backed H2 storage and completed as workflow
+`2f9c8a4d-dfe0-4432-9d30-37ec958d3154`:
+
+```json
+{"action":"stage_skipped:human_clarification","actorType":"orchestrator","result":"OK"}
+{"action":"approval_approved:design","actorType":"human","result":"OK"}
+{"action":"approval_approved:release_readiness","actorType":"human","result":"OK"}
+{"status":"COMPLETED","workflowId":"2f9c8a4d-dfe0-4432-9d30-37ec958d3154"}
+```
+
+Reproduce the behavior and persisted assertions with:
+
+```bash
+JAVA_HOME=/opt/homebrew/opt/openjdk@21 ./mvnw test -Dtest=GreenfieldScenarioTest
+JAVA_HOME=/opt/homebrew/opt/openjdk@21 ./mvnw spring-boot:run \
+  -Dspring-boot.run.arguments=--scenario=greenfield
+```

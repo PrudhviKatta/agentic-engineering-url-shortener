@@ -37,10 +37,8 @@ class WorkflowControllerContractTest {
 
     @Test
     void workflowStateAndAuditEndpointsExposeRealPersistedState() {
-        // No generic "create workflow" HTTP endpoint exists (workflows are always
-        // created from a scenario's specific stage set — Phase 9); trigger one
-        // directly through the shared engine the same way ScenarioRunner does, then
-        // exercise the read-only HTTP surface against it.
+        // Build a narrow one-stage workflow directly so this test can focus on the
+        // state and audit response contracts. POST /workflows has separate tests below.
         List<StageDefinition> stages = List.of(StageDefinition.of("only", List.of(), ctx -> Map.of("ok", true)));
         String workflowId = engine(stages).submit("demo", stages, "contract-test");
 

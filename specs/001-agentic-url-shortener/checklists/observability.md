@@ -5,8 +5,8 @@
 `AuditRecorder`, `workflow_events`.
 **Constitution principles:** IX (Observability and Auditability) — the primary principle this file
 enforces.
-**Status:** All items UNVERIFIED/PENDING — `MetricsService`, `AuditRecorder`, and correlation-ID
-threading are not yet implemented.
+**Status:** Final review: **PASS WITH LIMITATION** (local audit/metrics, no production trace or log
+backend). See `docs/assessment/final_checklist_status.md`.
 
 ## How to read this checklist
 - **[MANDATORY]** blocks release readiness if failed/unverified. **[OPTIONAL]** does not, but must

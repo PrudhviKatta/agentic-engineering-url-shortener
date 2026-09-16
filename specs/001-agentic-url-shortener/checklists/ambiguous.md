@@ -4,7 +4,8 @@
 **Applies to:** `spec.md` Section 4 (SCN-C), `plan.md` Section 11.3, the `"add rate limiting"`
 example, `AmbiguousScenarioTest`, `docs/scenarios/ambiguous.md`.
 **Constitution principles:** I, II, III, VIII, X.
-**Status:** All items UNVERIFIED/PENDING — SCN-C has not been executed.
+**Status:** Final review: **PASS**. SCN-C execution and current run evidence are recorded in
+`docs/scenarios/ambiguous.md` and `docs/assessment/final_checklist_status.md`.
 
 ## How to read this checklist
 - **[MANDATORY]** blocks release readiness if failed/unverified. **[OPTIONAL]** does not, but must

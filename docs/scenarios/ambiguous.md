@@ -1,9 +1,45 @@
 # Ambiguous-requirement scenario
 
-SCN-C begins with “Make the short-link workflow better.” It has neither a requirement identifier nor a measurable acceptance criterion, so ambiguity detection records a high-impact clarification need and the always-present `human_clarification` step enters `WAITING_APPROVAL`. Decomposition has not started at that point.
+## Input and ambiguity decision
 
-The recorded decision supplies a concrete scope: apply the change only to `REQ-007` and require a 25-character validation criterion. That approval reason is persisted as `human_clarificationResolution`; the downstream decomposition result must contain the same text.
+SCN-C begins with `add rate limiting`. It supplies no threshold, caller scope, or measurable
+acceptance criterion. `ambiguity_detection` therefore records high-impact ambiguity and the
+always-present `human_clarification` step waits for approval. The original decomposition path
+cannot execute while that gate is unresolved.
 
-A second executable path calls `replan()` before approval. It invalidates the unstarted `decomposition` and all reachable downstream rows, increments the plan version, and inserts `decomposition_v2` plus its regenerated downstream graph. The audit order proves `replanned` precedes `approval_approved:human_clarification`. After approval, the replacement runs with `scopeVersion: 2`, both normal exit gates are approved, and the workflow completes.
+The recorded clarification is `rate limit set to 100 requests per minute per IP`. That rationale is
+persisted in the approval lineage and as `human_clarificationResolution`; downstream decomposition
+must include the same resolved scope.
 
-Executable evidence: `JAVA_HOME=/opt/homebrew/opt/openjdk@21 ./mvnw test -Dtest=AmbiguousScenarioTest`.
+## Replan and replacement graph
+
+Before approval, `replan()` marks the durable replan intent, invalidates the unstarted
+`decomposition` row and every reachable downstream row, increments `planVersion`, and persists
+`decomposition_v2` plus its regenerated downstream graph. Unaffected completed requirement stages
+retain their original lineage. The approval is then evaluated against the current plan, the
+replacement decomposition records `scopeVersion: 2`, and execution continues through the normal
+design and release gates.
+
+## Executed evidence
+
+The current CLI run completed as workflow `2835b94d-d34c-463d-8bd2-7c2591c19109`. Event ordering
+shows the replan before clarification approval and the replacement stage after approval:
+
+```json
+{"action":"replanned","actorType":"human","result":"OK"}
+{"action":"approval_approved:human_clarification","actorType":"human","result":"OK"}
+{"action":"stage_succeeded:human_clarification","actorType":"agent","result":"OK"}
+{"action":"stage_succeeded:decomposition_v2","actorType":"agent","result":"OK"}
+{"status":"COMPLETED","workflowId":"2835b94d-d34c-463d-8bd2-7c2591c19109"}
+```
+
+The scenario test also checks that the old downstream rows are `INVALIDATED`, the new rows carry
+plan version 2, and the clarification rationale reaches decomposition.
+
+Reproduce with:
+
+```bash
+JAVA_HOME=/opt/homebrew/opt/openjdk@21 ./mvnw test -Dtest=AmbiguousScenarioTest
+JAVA_HOME=/opt/homebrew/opt/openjdk@21 ./mvnw spring-boot:run \
+  -Dspring-boot.run.arguments=--scenario=ambiguous
+```

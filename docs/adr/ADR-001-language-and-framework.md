@@ -3,8 +3,7 @@
 ## Status
 
 **Accepted** — drafted 2026-09-13, ahead of the formal Task 7 ADR Generation Gate, at the human
-candidate's explicit direction (see Context). Accepted by the human candidate (Prudhvidhar Reddy
-Katta) on 2026-09-13, after review, per the project's own guardrail that only the human candidate
+candidate's explicit direction (see Context). Accepted by the human candidate on 2026-09-13, after review, per the project's own guardrail that only the human candidate
 may mark an ADR Accepted (guide Section 29, "Do Not Allow Claude to Approve Its Own Decisions").
 
 ## Context
@@ -154,3 +153,4 @@ request and a fresh impact analysis.
 Validated by demonstration, not by a separate test: Task 2's `./mvnw -q clean verify` exits 0 with
 a passing Spring context-load test (commit `d9e03a4`), confirming the toolchain and dependency set
 actually work end-to-end on this machine before any task built on top of it.
+undefined

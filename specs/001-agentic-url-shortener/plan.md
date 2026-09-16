@@ -4,7 +4,7 @@
 
 **Status: APPROVED — plan-approval gate closed 2026-09-13.** This document was authored by an
 agent acting under the project's SpecKit lifecycle, then reviewed and approved by the human
-candidate (Prudhvidhar Reddy Katta), in the same spirit as `spec.md`'s own Human Gate 2. **Historical
+candidate, in the same spirit as `spec.md`'s own Human Gate 2. **Historical
 note, corrected by the Task 10 corrective batch** (the pre-implementation external review Finding #12): at the time
 this plan was authored (Task 6), every technology/architecture choice beyond ADR-001/002 was
 phrased as "proposed for ADR at Task 7," since Task 7 had not yet run. Task 7 has since run: the
@@ -158,8 +158,8 @@ process is the actual subject of assessment).
   `workflow_instances`, `workflow_steps`, `workflow_events`, `approvals`,
   `policy_evaluations`, `policy_exceptions`), each with a full column/type/nullable/constraint
   table and a purpose paragraph tying it to the REQ IDs it satisfies.
-- **Two endpoints not yet present in the runbook's reference implementation, added here as
-  plan-level design decisions:** `GET /links/{code}` (metadata lookup, distinct from the
+- **Two endpoints added as plan-level design decisions and delivered in the final implementation:**
+  `GET /links/{code}` (metadata lookup, distinct from the
   redirect-performing `GET /r/{code}`) and `POST /workflows` (a generic HTTP workflow-creation
   path — the runbook currently only exercises creation via the `ScenarioRunner` CLI calling
   `WorkflowEngine.submit()` directly, which does not by itself satisfy REQ-011's "the system MUST
@@ -196,7 +196,7 @@ process is the actual subject of assessment).
 | Persistence | `ShortLinkJpaRepository`, `RedirectEventJpaRepository` | Spring Data JPA over H2 (ADR-002); no raw SQL. |
 | Analytics | `LinkController.analytics` (`GET /links/{code}/analytics`) | Reads `short_links.redirect_count`/`last_accessed_at` directly — eventually consistent (CLR-8/CLR-9), never blocks a redirect response on its own write completing. |
 | Expiration | `ShortLink.isExpired()` | Pure function of `expiresAt` vs. current instant; evaluated at resolution time, not at a background sweep — no scheduled job deletes or marks expired rows in this iteration (a link that never gets resolved again simply never re-evaluates its own expiry, which is sufficient since expiry is only ever observed at resolution time, per CLR-6/CLR-7). |
-| Health and readiness | `HealthController` (`/healthz`, `/readyz`) | `/readyz` performs a real `DataSource` reachability check via Spring's own connection-pool exception propagation — never a hardcoded `"ready"` (REQ-010 negative criterion). |
+| Health and readiness | `HealthController` (`/healthz`, `/readyz`) | `/readyz` performs a real `DataSource` reachability check and explicitly returns `503 {"status":"not_ready"}` when the connection fails or is invalid — never a hardcoded `"ready"` (REQ-010 negative criterion). |
 | Telemetry | `AuditRecorder`, `MetricsService` | Cross-cutting; see Section 7. |
 | Configuration | `application.yml` | `ddl-auto: update` (disclosed prototype-only convenience, ADR-002 Consequences), H2 file-mode connection string, no secrets present (Section 8). |
 
@@ -578,9 +578,9 @@ nothing has recovered yet" are different, non-interchangeable claims.
     and approved by the human candidate as a temporary assumption pending a real compliance-derived
     figure (`docs/governance/human-gates-log.md`).
   - **Approved dependencies** → not a `PolicyEngine` check in this iteration; covered instead by
-    the manual dependency-scan approach named in Section 8 above and formalized as a documented
-    task-level recommendation at T045 (`SECURITY.md`'s `mvn org.owasp:dependency-check-maven:check`
-    guidance, no CI configured — a disclosed limitation, not a hidden gap).
+    the dependency/security review named in Section 8 and formalized at T045. GitHub CI and
+    Dependabot are configured, the local vulnerability scan has a recorded temporary disposition,
+    and `docs/assessment/dependency_license_report.md` records the executed license inventory.
   - **Privacy** → not a `PolicyEngine` check in this iteration; this prototype's domain (a URL
     shortener with no user accounts, no PII fields, no authentication) has no personal data to
     govern beyond the long/short URL pair itself, so no dedicated privacy policy check applies —
@@ -679,10 +679,9 @@ test classes:
 | Release-readiness checks | A dedicated assertion (within `WorkflowEnginePolicyEnforcementTest` or a release-readiness-specific test) that a mandatory-`FAIL` run never reports "ready" | REQ-020, Section 9 |
 
 **Contract-test obligation created by Section 2's two plan-level API additions:** since
-`GET /links/{code}` and `POST /workflows` are specified here but not yet implemented in the
-runbook's reference code, `tasks.md` (Task 9) must add their contract tests as first-class tasks,
-not assume they are already covered by the existing `LinkControllerContractTest`/
-`WorkflowControllerContractTest` names above.
+`GET /links/{code}` and `POST /workflows` were implementation obligations created by Section 2.
+They are now delivered and covered by `LinkControllerContractTest` and
+`WorkflowControllerContractTest`; `tasks.md` retains T017a/T026a as their task records.
 
 ---
 
@@ -828,8 +827,8 @@ the precedent this plan follows) — and all eight were accepted without amendme
 
 Full chain per the source material: **Requirement → Scenario → Design → ADR → Task → Code → Test
 → Validation → Documentation → Evidence.** This plan seeds the middle links (Design/ADR/Task) that
-`spec.md` Section 11 could not yet populate; `tasks.md` (Task 9) will complete the Task→Code→Test
-columns with concrete task IDs once it exists.
+`spec.md` Section 11 could not populate at planning time. The completed Task→Code→Test→Evidence
+chain is maintained in `docs/traceability/matrix.md`.
 
 | Requirement(s) | Scenario(s) | Design (this plan) | ADR | Documentation | Evidence (planned) |
 |---|---|---|---|---|---|

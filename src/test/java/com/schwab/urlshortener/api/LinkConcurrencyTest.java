@@ -14,7 +14,12 @@ import org.springframework.http.ResponseEntity;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(
+        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        properties = {
+                "spring.datasource.url=jdbc:h2:mem:link-concurrency;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=false",
+                "spring.jpa.hibernate.ddl-auto=create-drop"
+        })
 class LinkConcurrencyTest {
 
     @LocalServerPort int port;
@@ -47,5 +52,29 @@ class LinkConcurrencyTest {
             assertThat(responses.get(i).getBody().longUrl())
                     .isEqualTo("https://example.com/concurrency-test-" + i);
         }
+    }
+
+    @Test
+    void concurrentOverlongSubmissionsAreAllRejected() throws Exception {
+        int concurrency = 20;
+        String overlongUrl = "https://example.com/" + "a".repeat(2_029);
+        ExecutorService pool = Executors.newFixedThreadPool(concurrency);
+        List<Callable<ResponseEntity<String>>> tasks = IntStream.range(0, concurrency)
+                .<Callable<ResponseEntity<String>>>mapToObj(i -> () -> rest.postForEntity(
+                        "http://localhost:" + port + "/links",
+                        new CreateLinkRequest(overlongUrl, null),
+                        String.class))
+                .toList();
+
+        List<Future<ResponseEntity<String>>> futures = pool.invokeAll(tasks);
+        pool.shutdown();
+
+        List<ResponseEntity<String>> responses = futures.stream()
+                .map(f -> { try { return f.get(); } catch (Exception e) { throw new RuntimeException(e); } })
+                .toList();
+        assertThat(responses).allMatch(response ->
+                response.getStatusCode().value() == 422
+                        && response.getBody() != null
+                        && response.getBody().contains("url_too_long"));
     }
 }

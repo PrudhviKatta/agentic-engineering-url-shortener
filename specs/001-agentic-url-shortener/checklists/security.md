@@ -3,7 +3,10 @@
 **Category 7 of 19 — `/speckit.checklist` (Task 8).**
 **Applies to:** REQ-002, REQ-021, `plan.md` Section 8, CLR-1/10/11, ADR-010.
 **Constitution principles:** V (Security and Privacy by Design).
-**Status:** All items UNVERIFIED/PENDING — no validation/security code exists yet.
+**Status:** Final review: **PASS WITH TEMPORARY EXCEPTION**. Application controls, abuse
+disclosures, and repository secret checks pass. The inconclusive local dependency scan has a
+human-approved, assessment-only exception through 2026-09-22, with GitHub CI and Dependabot as
+compensating controls. See `docs/assessment/security_scan_report.md`.
 
 ## How to read this checklist
 - **[MANDATORY]** blocks release readiness if failed/unverified. **[OPTIONAL]** does not, but must

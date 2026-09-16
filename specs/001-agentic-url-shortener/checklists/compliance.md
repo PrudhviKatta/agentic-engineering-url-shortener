@@ -5,7 +5,8 @@
 `src/main/resources/policies/v{N}.yaml`, `PolicyExceptionEntity`.
 **Constitution principles:** VI (Compliance and Change-Control Policy Enforcement) — the primary
 principle this file enforces.
-**Status:** All items UNVERIFIED/PENDING — `PolicyEngine` is not yet implemented.
+**Status:** Final review: **PASS WITH LIMITATION** (prototype policies, not certification against a
+named external regime). See `docs/assessment/final_checklist_status.md`.
 
 ## How to read this checklist
 - **[MANDATORY]** blocks release readiness if failed/unverified. **[OPTIONAL]** does not, but must

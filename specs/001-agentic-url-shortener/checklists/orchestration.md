@@ -5,8 +5,9 @@
 `plan.md` Sections 3–4, and REQ-011..018.
 **Constitution principles:** II (Explicit Agentic Orchestration) — the primary principle this file
 exists to enforce — plus IX (Observability/Auditability) and X (Traceability) for lineage checks.
-**Status:** All items UNVERIFIED/PENDING — the orchestration engine has not been implemented
-(runbook Tasks 20–41). This checklist is what those tasks' evidence must satisfy.
+**Status:** Final review: **PASS WITH LIMITATION**. All mandatory runtime mechanics have named
+executable evidence; generic persisted step metadata is narrower than the complete plan-level node
+contract. See `docs/assessment/final_checklist_status.md`.
 
 ## How to read this checklist
 - **[MANDATORY]** blocks release readiness if failed/unverified. **[OPTIONAL]** does not, but must

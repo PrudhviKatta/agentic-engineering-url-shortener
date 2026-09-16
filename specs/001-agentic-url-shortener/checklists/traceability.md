@@ -5,8 +5,9 @@
 → validation-evidence → documentation chain, per `spec.md` Section 11 and `plan.md` Section 13.
 **Constitution principles:** X (Traceability and Repository Integrity) — the primary principle this
 file enforces.
-**Status:** All items UNVERIFIED/PENDING — only the requirement/decision/design links exist so far;
-task/implementation/test/evidence links do not exist until Tasks 11+ run.
+**Status:** Final review: **PASS WITH LIMITATION**. All 31 rows are complete; the optional
+machine-generated traceability verifier is not implemented. See
+`docs/assessment/final_checklist_status.md`.
 
 ## How to read this checklist
 - **[MANDATORY]** blocks release readiness if failed/unverified. **[OPTIONAL]** does not, but must

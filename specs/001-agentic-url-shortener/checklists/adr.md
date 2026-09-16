@@ -4,9 +4,8 @@
 **Applies to:** `docs/adr/ADR-001..010*.md` (all 10, all currently Accepted) and any future ADR.
 **Constitution principles:** VII (Architecture and Maintainability), III (Human Governance), VI
 (Compliance and Change Control), X (Traceability).
-**Status:** All items UNVERIFIED/PENDING against future changes — the existing 10 ADRs can be
-spot-checked against these items now (they exist), but the checklist's ongoing job is to catch
-drift in ADRs written or amended after this point.
+**Status:** Final review: **PASS** for ADR-001 through ADR-010. See
+`docs/assessment/final_checklist_status.md`; this remains an ongoing drift check for future ADRs.
 
 ## How to read this checklist
 - **[MANDATORY]** blocks release readiness if failed/unverified. **[OPTIONAL]** does not, but must

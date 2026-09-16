@@ -6,7 +6,7 @@
 
 **Status**: **APPROVED — Human Gate 2 completed 2026-09-13.** This document was authored by an
 agent acting under the project's SpecKit lifecycle, then reviewed and approved by the human
-candidate (Prudhvidhar Reddy Katta) at Human Gate 2 (Section 12), following five rounds of
+candidate at Human Gate 2 (Section 12), following five rounds of
 delegated technical review (`docs/governance/human-gates-log.md`). Every requirement, scenario,
 assumption, and demonstration acceptance target in this document is now in effect for downstream
 artifacts (clarification records, plan, ADRs, tasks).
@@ -1043,12 +1043,12 @@ iteration's three required scenarios — not production SLAs, not open assumptio
 |---|---|---|---|
 | REQ-021 | Security | 4 named abuse classes in test suite; clean dependency/secret scans | Security test suite; dependency/secret scan reports |
 | REQ-022 | Reliability | 100% of fault-injection scenarios resolve to an enumerated terminal outcome (incl. `SUCCEEDED_WITH_FALLBACK`) | `FallbackTest`, retry/compensation/safe-stop test suite (runbook Tasks 30–34a, 50) |
-| REQ-023 | Scalability | Correctness holds for **at least 20 concurrent** creation/resolution requests: zero incorrect mappings, zero duplicate active short codes, zero silently-dropped requests | `LinkConcurrencyTest` (runbook Task 17, Step 6) — not yet implemented; no code exists yet |
+| REQ-023 | Scalability | Correctness holds for **at least 20 concurrent** creation/resolution requests: zero incorrect mappings, zero duplicate active short codes, zero silently-dropped requests | Implemented `LinkConcurrencyTest`: 20 concurrent creates, distinct-code/mapping assertions, and concurrent over-length rejection |
 | REQ-024 | Maintainability | Structural/dependency-direction check defined at plan/ADR stage; no numeric target | `plan.md` layering rules; architecture review |
 | REQ-025 | Observability | 100% of audit-relevant events carry the run/correlation ID | Correlation-ID completeness check against captured run logs |
 | REQ-026 | Auditability | 100% schema-complete audit records across all event types | Audit-trail schema-conformance test |
-| REQ-027 | Performance | p95 redirect-resolution latency ≤ 200 ms, demonstration environment only | Latency measurement from a load test, labeled demonstration-scale |
-| REQ-028 | Recoverability | A workflow interrupted mid-run resumes to its correct next state within **5 seconds** of process restart | `WorkflowEngineRestartTest` (runbook Task 50) — not yet implemented; no code exists yet |
+| REQ-027 | Performance | p95 redirect-resolution latency ≤ 200 ms, demonstration environment only | Implemented `RedirectLatencyTest`; current 100-request demonstration p95 is recorded in the convergence report |
+| REQ-028 | Recoverability | A workflow interrupted mid-run resumes to its correct next state within **5 seconds** of process restart | Implemented `WorkflowEngineRestartTest` and `WorkflowRecoveryBootTest` cover fresh-engine reconstruction and boot-triggered recovery |
 | REQ-029 | Testability | N/A — qualitative (all requirements carry acceptance criteria) | This document's own Section 6/7 acceptance criteria |
 | REQ-030 | Change safety | 100% of material post-approval changes have a recorded impact-analysis artifact | Change-log/impact-analysis records cross-referenced to affected artifacts |
 | REQ-031 | Controlled autonomy | 100% of agent actions attributable to a declared stage owner and exit-criteria-checked | Audit-trail review; `T036a` stage-boundary violation test |
@@ -1113,8 +1113,7 @@ ADRs) once the human reviewer completed Human Gate 2:
 - [x] Records approval, or requested amendments, before `/speckit.clarify` proceeds against this
       document.
 
-**Human decision (2026-09-13): APPROVED.** Recorded by the human candidate (Prudhvidhar Reddy
-Katta) in `docs/governance/human-gates-log.md`'s Gate Log, following five rounds of delegated
+**Human decision (2026-09-13): APPROVED.** Recorded by the human candidate in `docs/governance/human-gates-log.md`'s Gate Log, following five rounds of delegated
 technical review (independent review; not a human approver — see the same log's separate Delegated Technical
 Reviews table) that reconciled the safe-stop/`PENDING_APPROVAL` semantics conflict, restated
 REQ-007's post-CLR-2 behavior, closed ASM-2's eleven demonstration acceptance targets as binding
@@ -1466,3 +1465,4 @@ per constitution Principle I — none is force-resolved to appear closed.
 | CLR-15 (Link mutability) | AMB-6 | 1:1 (derived, not brief-verbatim) |
 | CLR-16 (release-readiness gate) | AMB-9 / ASM-4 | 1:1 |
 | CLR-17 (retention — approved temporary assumption) | AMB-7 | 1:1 (resolved 2026-09-13, after initial Human Gate 3 deferral) |
+undefined

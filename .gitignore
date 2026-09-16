@@ -1,6 +1,12 @@
 target/
 data/*.mv.db
 data/*.trace.db
+data/*.lock.db
+.env
+.env.*
+!.env.example
+.DS_Store
 .idea/
+.vscode/
 *.iml
 .mvn/wrapper/maven-wrapper.jar

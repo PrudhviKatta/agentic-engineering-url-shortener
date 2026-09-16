@@ -5,7 +5,8 @@
 eventual module/package structure of the Spring Boot codebase.
 **Constitution principles:** VII (Architecture and Maintainability), II (Explicit Agentic
 Orchestration, for the engine's own architecture), X (Traceability).
-**Status:** All items UNVERIFIED/PENDING — no code exists yet.
+**Status:** Final review: **PASS WITH LIMITATION** (no optional machine-enforced dependency rule).
+See `docs/assessment/final_checklist_status.md`.
 
 ## How to read this checklist
 - **[MANDATORY]** blocks release readiness if failed/unverified. **[OPTIONAL]** does not, but must

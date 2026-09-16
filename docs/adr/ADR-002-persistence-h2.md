@@ -3,7 +3,7 @@
 ## Status
 
 **Accepted** — drafted 2026-09-13, alongside ADR-001, ahead of the formal Task 7 ADR Generation
-Gate. Accepted by the human candidate (Prudhvidhar Reddy Katta) on 2026-09-13, after review.
+Gate. Accepted by the human candidate on 2026-09-13, after review.
 
 ## Context
 
@@ -95,8 +95,7 @@ first boot (Hibernate `ddl-auto: update` creates the schema from entities).
 **Testing:** `@DataJpaTest` slices get a real H2 instance per Spring Boot convention; no mocking of
 the persistence layer anywhere in the plan's test tasks.
 
-**Governance:** same standing as ADR-001 — **Accepted** by the human candidate (Prudhvidhar Reddy
-Katta) on 2026-09-13, not self-approved (corrected by the Task 10 corrective batch,
+**Governance:** same standing as ADR-001 — **Accepted** by the human candidate on 2026-09-13, not self-approved (corrected by the Task 10 corrective batch,
 the pre-implementation external review Finding #12 — this line previously read "proposed pending... accept/reject"
 after this ADR's own Status header had already moved to Accepted; see
 `docs/governance/human-gates-log.md` for the approval record).
@@ -129,3 +128,4 @@ Validated by demonstration: Task 2's context-load test boots the full Spring con
 H2 `DataSource`/Hibernate `EntityManagerFactory` and exits 0 (commit `d9e03a4`, independently
 re-verified by the controller with a fresh `./mvnw -q clean verify` run showing HikariCP and
 Hibernate initializing cleanly against `jdbc:h2:file:./data/app`).
+undefined

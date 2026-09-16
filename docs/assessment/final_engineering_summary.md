@@ -2,10 +2,13 @@
 
 ## 1 Executive engineering outcome and release-readiness status
 
-The project is **READY WITH ACCEPTED LIMITATIONS** for the local interview-assessment prototype.
-All 31 traced requirements and all three required scenarios have implementation and executable
-evidence. The final unfiltered local suite passes 231 tests. This is not a production-readiness
-claim; the explicit production blockers are listed in Sections 10, 19, and 21.
+The project implementation is complete for the local interview-assessment prototype, and the
+current repository decision is **READY FOR PUBLIC ASSESSMENT SUBMISSION**. Human final sign-off was
+recorded on 2026-09-15. The inconclusive local dependency scan has a recorded temporary,
+assessment-only exception. All 31 traced
+requirements and all three required scenarios have implementation and executable evidence. The
+final unfiltered local suite passes 241 tests. This is not a
+production-readiness claim; the explicit production blockers are listed in Sections 10, 19, and 21.
 
 ## 2 Project objective, scope, and 2–3-day timebox outcome
 
@@ -34,7 +37,8 @@ no-authentication prototype boundary. The custom engine favors inspectability ov
 
 ## 5 API contracts and schema deliverables
 
-`specs/001-agentic-url-shortener/contracts/openapi.yaml` defines link creation, redirect/analytics,
+`specs/001-agentic-url-shortener/contracts/openapi.yaml` defines link creation, metadata,
+redirect/analytics,
 workflow state/audit, approval, replan, and metrics contracts. JPA entities implement short links,
 redirect events, workflow instances/steps/events, approvals, policy evaluations, and exceptions.
 `specs/001-agentic-url-shortener/data-model.md` documents the field-level model. Controller contract
@@ -74,11 +78,15 @@ The successful demonstration scenarios require no active policy exception.
 
 ## 10 Security controls, findings, and residual risks
 
-`UrlValidator` accepts only HTTP(S), resolves the host, and rejects loopback, any-local, link-local,
-private/site-local, multicast, and IPv6 ULA addresses. Short-code uniqueness is enforced at the
+`UrlValidator` accepts only HTTP(S), enforces a 2,048-character limit, resolves the host, and rejects
+loopback, any-local, link-local, private/site-local, multicast, and IPv6 ULA addresses. Short-code uniqueness is enforced at the
 database boundary with bounded collision handling. Workflow gates and policy checks fail closed.
 Residual risks are material: no auth, TLS, rate limiting, redirect-time rebinding defense, production
-secrets/log-redaction platform, or continuous dependency scanning. `SECURITY.md` states this boundary.
+secrets/log-redaction platform, or continuous dependency scanning. `SECURITY.md` states this
+boundary. CI and Dependabot are configured, but the local OWASP scan is inconclusive because NVD
+vulnerability data was unavailable without an API key. The human candidate approved a temporary
+exception through 2026-09-22 for the initial assessment submission; any actionable hosted result
+blocks readiness until disposition.
 
 ## 11 Reliability, retry, fallback, rollback/compensation, and safe-stop
 
@@ -111,7 +119,7 @@ subsequent fix; failed evidence was not relabeled as success.
 requirement is clear, clarification is skipped. Design and release gates are explicitly approved,
 implementation/test/security/documentation stages execute, and the workflow ends `COMPLETED`.
 The executed CLI workflow ID recorded in `docs/assessment/convergence_report.md` is
-`e23de386-72b7-45d7-94b5-d778ac930b9c`.
+`2f9c8a4d-dfe0-4432-9d30-37ec958d3154`.
 
 ## 15 Brownfield scenario outcome
 
@@ -119,14 +127,14 @@ The executed CLI workflow ID recorded in `docs/assessment/convergence_report.md`
 as siblings: components, interfaces, data flows, tests, documentation, regression risk, and
 rollout/rollback. Persisted timestamps prove all seven end before the joined change-impact report
 starts. Approval then unblocks implementation and the workflow ends `COMPLETED`. The recorded CLI
-workflow ID is `72bf7a9c-ebfa-4226-a065-d4b77a67e088`.
+workflow ID is `84411566-7ca6-4619-8ffe-6b44a7487b57`.
 
 ## 16 Ambiguous-requirement scenario outcome
 
 `AmbiguousScenarioTest` and `docs/scenarios/ambiguous.md` show the unreadable requirement entering
 human clarification instead of being guessed. The reviewer decision precedes `replanned`; downstream
 version-one work is invalidated, `decomposition_v2` executes, and the workflow ends `COMPLETED` with
-lineage intact. The recorded CLI workflow ID is `47e66014-ee03-42e0-b6f8-3ac74d7797cd`.
+lineage intact. The recorded CLI workflow ID is `2835b94d-d34c-463d-8bd2-7c2591c19109`.
 
 ## 17 Test strategy, executed validation, and actual results
 
@@ -136,10 +144,16 @@ race conditions, and end-to-end scenarios. The approval/replan race is repeated 
 normal suite. Final command and result:
 
 ```text
-$ DEBUG=false JAVA_HOME=/opt/homebrew/opt/openjdk@21 ./mvnw test
-[INFO] Tests run: 231, Failures: 0, Errors: 0, Skipped: 0
+$ DEBUG=false JAVA_HOME=/opt/homebrew/opt/openjdk@21 ./mvnw --batch-mode verify
+[INFO] Tests run: 241, Failures: 0, Errors: 0, Skipped: 0
 [INFO] BUILD SUCCESS
 ```
+
+A temporary clean copy reconstructed from `HEAD`, the tracked diff, and the intended untracked files
+passed the same `verify` gate, confirming the result does not depend on ignored local files.
+
+`RedirectLatencyTest` also measured a demonstration-only p95 of 0.833 ms across 100 nominal
+redirect requests, below REQ-027's approved 200 ms demonstration target. This is not an SLA.
 
 Focused recovery verification also passed:
 
@@ -164,6 +178,11 @@ is large and compatibility constructors should be removed after callers converge
 leases/fencing, authenticated governance, immutable artifact schemas, production telemetry, and
 managed migrations are deferred enhancements.
 
+Repository-process limitation: commit `12f1353` unintentionally bundled already-planned scaffold
+deletions with a specification change because concurrent work shared one Git index. The deletions
+were valid and no data was lost or corrupted, but the commit attribution was not coherent. The
+recorded ruling is to disclose the incident and preserve truthful history rather than rewrite it.
+
 ## 20 Repository paths, reproducible commands, and reviewer verification points
 
 Start with `README.md`, then `docs/architecture/overview.md`,
@@ -185,9 +204,10 @@ The 25-point reviewer sequence, expected evidence, and requirement links are in 
 
 ## 21 Final engineering judgment, unresolved blockers, and recommended next actions
 
-There is no unresolved blocker for the local assessment submission. The implementation is coherent,
-the three paths are materially distinct, and final evidence is reproducible. Do not deploy it to an
-untrusted network. Before production consideration, add authenticated/authorized governance, TLS and
-abuse controls, redirect-time DNS protection, managed migrations, distributed execution semantics,
-production telemetry/SLOs, automated security scanning, and hosted CI. Then rerun the complete
-traceability and scenario verification against the production-like topology.
+The implementation is coherent, the three paths are materially distinct, and the 241-test suite and
+current scenario executions are reproducible. No public-assessment submission blocker remains;
+human final sign-off was recorded on 2026-09-15. Do not deploy the prototype to an untrusted
+network. Before production consideration, add
+authenticated/authorized governance, TLS and abuse controls, redirect-time DNS protection, managed
+migrations, distributed execution semantics, and production telemetry/SLOs. After the repository is
+pushed, confirm the configured hosted CI and Dependabot checks pass.

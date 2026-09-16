@@ -20,7 +20,11 @@
 
 **Tech Stack:** Java 21 (LTS), Spring Boot 3.3.x (Spring Web MVC — blocking/servlet style), Spring Data JPA + Hibernate, H2 embedded database (file-mode), Jackson (JSON) + `jackson-dataformat-yaml` (policy files), JUnit 5 + Mockito + Spring Boot Test (`@DataJpaTest`, `@SpringBootTest`) + `TestRestTemplate`, stdlib `java.util.concurrent` (`ExecutorService`/`Future`, parallel stage fan-out), stdlib `UUID`/`Instant` (correlation IDs, timestamps). Maven + Maven Wrapper (`./mvnw`) as the build tool. SpecKit (`specify-cli`) for the governance/lifecycle artifacts layer. No external orchestration infra (Temporal/Camunda/Activiti) — see ADR-005.
 
-**Spec:** `/Users/chintu/Downloads/Charles Schwab/Assignment Agentic-Proficient Software Engineer.pdf` (assignment) and `/Users/chintu/Downloads/Charles Schwab/AI Native SDLC - User Guide.docx` (controlled execution guide — SpecKit lifecycle, prompts, gates, guardrails). This plan is the Phase-2+ execution detail underneath that guide's Section 27 "Final Step-by-Step Execution Sequence."
+**Spec:** `Assignment Agentic-Proficient Software Engineer.pdf` (assignment source, maintained
+outside this repository) and `AI Native SDLC - User Guide.docx` (controlled execution guide,
+maintained outside this repository — SpecKit lifecycle, prompts, gates, guardrails). This plan is
+the Phase-2+ execution detail underneath that guide's Section 27 "Final Step-by-Step Execution
+Sequence."
 
 **Authority (added 2026-09-13, in response to external review):** this document is the controller's
 execution runbook for Claude Code's own Subagent-Driven Development process — a task-by-task,
@@ -5835,8 +5839,8 @@ class AmbiguousScenarioTest {
 
 **Files:** Create/modify: `README.md`, `SECURITY.md`, `CONTRIBUTING.md`
 
-- [ ] **Step 1:** `README.md`: project objective (2–3 sentences), quickstart (`JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home ./mvnw spring-boot:run`, `./mvnw test`), link to `docs/assessment/reviewer_navigation_guide.md` for everything else.
-- [ ] **Step 2:** `SECURITY.md`: URL scheme allow-list, SSRF guard, no-auth assumption, secrets policy (none stored; none logged), dependency scanning note (`mvn org.owasp:dependency-check-maven:check` recommended, run manually — no CI configured for this prototype, documented limitation).
+- [ ] **Step 1:** `README.md`: project objective (2–3 sentences), portable Java 21 quickstart (`./mvnw spring-boot:run`, `./mvnw verify`), link to `docs/assessment/reviewer_navigation_guide.md` for everything else.
+- [ ] **Step 2:** `SECURITY.md`: URL scheme allow-list, SSRF guard, no-auth assumption, secrets policy (none stored; none logged), local dependency-scan disposition, and the configured GitHub CI/Dependabot compensating controls.
 - [ ] **Step 3:** `git commit -m "docs: finalize setup instructions and security notes"`
 
 ---

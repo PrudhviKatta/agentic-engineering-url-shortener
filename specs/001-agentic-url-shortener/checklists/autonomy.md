@@ -4,7 +4,8 @@
 **Applies to:** every agent-executed stage handler in the orchestration engine; REQ-031.
 **Constitution principles:** II (closing paragraph: "Agent autonomy inside this graph is bounded by
 construction, not by good behavior"), III (Human Governance).
-**Status:** All items UNVERIFIED/PENDING — no stage handlers are implemented yet.
+**Status:** Final review: **PASS WITH LIMITATION** (deterministic demonstration handlers and no
+deep immutability for nested artifact values). See `docs/assessment/final_checklist_status.md`.
 
 ## How to read this checklist
 - **[MANDATORY]** blocks release readiness if failed/unverified. **[OPTIONAL]** does not, but must

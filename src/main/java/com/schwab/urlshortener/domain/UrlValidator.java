@@ -10,6 +10,7 @@ import java.util.Set;
 
 public final class UrlValidator {
 
+    private static final int MAX_URL_LENGTH = 2048;
     private static final Set<String> ALLOWED_SCHEMES = Set.of("http", "https");
 
     private UrlValidator() { }
@@ -17,6 +18,9 @@ public final class UrlValidator {
     public static String validate(String raw) {
         if (raw == null || raw.isBlank()) {
             throw new InvalidUrlException("empty_url");
+        }
+        if (raw.length() > MAX_URL_LENGTH) {
+            throw new InvalidUrlException("url_too_long");
         }
         URI uri;
         try {

@@ -4,7 +4,10 @@
 **Applies to:** REQ-020, `ReleaseReadinessStage` (Stage 11), constitution Section 4.6.
 **Constitution principles:** VI (Compliance and Change-Control), III (Human Governance — release
 readiness is human-owned sign-off), XI (Evidence-Based Completion).
-**Status:** All items UNVERIFIED/PENDING — `ReleaseReadinessStage` does not exist yet.
+**Status:** Final review: **PASS WITH TEMPORARY EXCEPTION**. `ReleaseReadinessStage` and its tests
+exist, the inconclusive local dependency scan carries an approved temporary exception, and human
+final sign-off was recorded on 2026-09-15. This status authorizes public assessment submission, not
+production or untrusted-network exposure. See `docs/assessment/final_checklist_status.md`.
 
 ## How to read this checklist
 - **[MANDATORY]** blocks release readiness if failed/unverified (recursively: an unmet item on

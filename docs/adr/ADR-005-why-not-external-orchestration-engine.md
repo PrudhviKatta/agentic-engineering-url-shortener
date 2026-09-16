@@ -4,7 +4,7 @@
 
 **Accepted** — drafted 2026-09-13 at Task 7, formalizing the position `plan.md` Section 12 and
 `research.md` D5 already recorded as "Proposed for ADR at Task 7." Reviewed and accepted by the
-human candidate (Prudhvidhar Reddy Katta) on 2026-09-13.
+human candidate on 2026-09-13.
 
 ## Context
 
@@ -143,7 +143,7 @@ separately learning and trusting that product's own runtime.
   orchestration characteristic without the rejected infrastructure.
 
 **Governance:**
-- **Accepted** by the human candidate (Prudhvidhar Reddy Katta) on 2026-09-13 — see
+- **Accepted** by the human candidate on 2026-09-13 — see
   `docs/governance/human-gates-log.md`. Rejecting a category of infrastructure is itself a material
   decision under Principle VII and is recorded here rather than left as an implicit default.
   **Corrected by the Task 10 corrective batch** (the pre-implementation external review Finding #12): this bullet

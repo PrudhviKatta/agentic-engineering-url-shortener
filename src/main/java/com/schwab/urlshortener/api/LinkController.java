@@ -48,6 +48,14 @@ public class LinkController {
         return new LinkResponse(code, normalized, "/r/" + code, request.expiresAt());
     }
 
+    @GetMapping("/links/{code}")
+    public LinkResponse getLinkMetadata(@PathVariable String code) {
+        ShortLinkEntity entity = repository.findByCode(code)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "short_code_not_found"));
+        return new LinkResponse(
+                entity.getCode(), entity.getLongUrl(), "/r/" + entity.getCode(), entity.getExpiresAt());
+    }
+
     @GetMapping("/r/{code}")
     public ResponseEntity<Void> redirect(@PathVariable String code) {
         ShortLinkEntity entity = repository.findByCode(code)

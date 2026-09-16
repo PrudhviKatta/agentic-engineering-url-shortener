@@ -2,13 +2,13 @@
 
 ## Overall Verdict
 
-**PASS — READY WITH ACCEPTED LIMITATIONS for the local interview-assessment prototype.**
+**PASS — ready for public assessment submission with disclosed limitations.**
 
-No mandatory in-scope blocker remains. The repository demonstrates the requested URL-shortener
-behavior, persisted agentic orchestration, three materially different scenarios, governance,
-reliability controls, and inspectable evidence. It is not ready for public or production deployment:
-authentication, authorization, TLS, distributed coordination, managed migrations, and production
-telemetry are explicitly outside the accepted prototype boundary.
+The repository demonstrates the requested URL-shortener behavior, persisted agentic orchestration,
+three materially different scenarios, governance, reliability controls, and inspectable evidence.
+The implementation is strong. The inconclusive local dependency analysis has a recorded temporary,
+assessment-only exception, and human final submission sign-off was recorded on 2026-09-15. It is
+not ready for untrusted-network or production deployment.
 
 ## Executive Rationale
 
@@ -16,12 +16,14 @@ The strongest evidence is executable rather than narrative. The engine persists 
 configuration, reconstructs handlers from stable catalog keys, executes independent siblings in
 parallel, synchronizes joins, pauses at explicit approvals, enforces policy, records lineage, and
 recovers on application boot. Greenfield, seven-branch brownfield, and ambiguous/replanned scenarios
-finish through distinct paths. The final unfiltered suite passes 231 tests, including repeated race
+finish through distinct paths. The final unfiltered suite passes 241 tests, including repeated race
 coverage, failure paths, HTTP contracts, persistence, application boot, and end-to-end scenarios.
 
 The main deductions are scope and operational maturity, not missing assignment mechanics. Human
 actors are self-asserted in this loopback demonstration; compensation does not reverse a real remote
-system; concurrency is single-process; and no remote pull-request or hosted CI evidence exists.
+system; concurrency is single-process; and the configured hosted CI has not run because no remote is
+configured. The final submission tree also passes `verify` when reconstructed in a temporary clean
+copy.
 
 ## Scoring Matrix
 
@@ -49,7 +51,7 @@ limitations; and 0 is absent.
 | 17 | Code quality and maintainability | 4 | Clear types and tests exist; `WorkflowEngine` and compatibility constructors carry complexity. |
 | 18 | Test-first development evidence | 4 | Failure/fix evidence and broad tests exist, but history cannot prove every change began red. |
 | 19 | Test depth and negative paths | 5 | Unit, integration, contract, security, boot, race, recovery, and scenario paths execute. |
-| 20 | Security engineering | 4 | SSRF address classes and fail-closed gates are covered; auth and DNS rebinding defense are absent. |
+| 20 | Security engineering | 3 | SSRF, input bounds, and fail-closed gates are covered; local dependency analysis is temporarily excepted, and auth/DNS rebinding defenses are absent. |
 | 21 | Reliability engineering | 4 | Bounded controls and recovery are strong locally; distributed failure semantics are excluded. |
 | 22 | Observability and metrics | 4 | Audit and metrics include MTTR populations; telemetry is local demonstration data only. |
 | 23 | Auditability and evidence integrity | 5 | Failed runs, actor limitations, degraded fallback, and demonstration labels are disclosed. |
@@ -57,14 +59,16 @@ limitations; and 0 is absent.
 | 25 | Brownfield scenario | 5 | Real seven-branch impact path and join gate complete with ordered evidence. |
 | 26 | Ambiguous scenario | 5 | Clarification pause, approval, replan, invalidation, replacement, and completion execute. |
 | 27 | Documentation usability | 5 | README, ADRs, scenario guides, architecture, navigation, traceability, and convergence are present. |
-| 28 | GitHub/remote collaboration evidence | 2 | Local commits are detailed; no hosted PR, branch protection, or CI run is evidenced. |
+| 28 | GitHub/remote collaboration evidence | 3 | Local commits and a CI workflow exist; no hosted PR, branch protection, or CI run is yet evidenced. |
 | 29 | Reviewer defensibility | 5 | Commands and file paths support rapid reproduction and hostile questioning. |
 | 30 | Engineering judgment and scope honesty | 5 | Prototype readiness is separated clearly from production readiness. |
 |  | **Total** | **136/150** | **90.7%** |
 
 ## Mandatory Blocking Gaps
 
-None for the stated local assessment scope.
+None for public assessment submission. The approved dependency-scan exception remains temporary:
+hosted CI/Dependabot results must be reviewed when available, and any actionable finding reopens
+readiness until disposition.
 
 The following would be blockers for a production or network-exposed release: authenticated and
 authorized approval mutations, TLS and rate limiting, redirect-time DNS rebinding protection,
@@ -119,15 +123,17 @@ gate entries should remain auditable and should not be rewritten to imply earlie
 The suite is broad and currently green. The largest residual concern is environmental breadth: it
 runs on one local Java/H2 configuration and does not test a managed database, multiple JVMs, network
 partitions, or real third-party side effects. Race repetition improves confidence but is not a formal
-concurrency proof. Hosted CI evidence is absent.
+concurrency proof. Hosted CI evidence is absent until the repository is pushed, although the
+workflow is configured.
 
 ## Security and Reliability Concerns
 
 URL validation rejects non-HTTP(S), loopback, any-local, link-local, private/site-local, multicast,
 and IPv6 ULA destinations before persistence. Redirect-time DNS re-resolution/pinning is still
-needed against rebinding. No authentication, authorization, TLS, abuse controls, secrets platform,
-or continuous vulnerability scanning exists. Reliability metrics come from a small mixed local
-population and cannot be interpreted as production performance.
+needed against rebinding. No authentication, authorization, TLS, abuse controls, or secrets platform
+exists. Dependabot and CI are configured, but the local OWASP scan could not obtain NVD data.
+Reliability metrics come from a small mixed local population and cannot be interpreted as
+production performance.
 
 ## Documentation and Traceability Concerns
 
@@ -139,9 +145,11 @@ reviewer navigation guide. Those three should remain the primary entry path.
 ## Git History Assessment
 
 The local history shows incremental features, defect discoveries, reversions, and race-hardening
-rounds rather than a single opaque delivery. That is valuable evidence. The weaker point is external
-workflow evidence: no remote repository, pull request review, required status checks, or hosted CI
-execution is part of the submission. History was not rewritten during final convergence.
+rounds rather than a single opaque delivery. Commit `12f1353` contains a disclosed shared-index
+bundling incident: valid scaffold deletions landed with an unrelated specification change. No data
+was lost, and preserving rather than rewriting that history is the correct evidence-integrity call.
+The weaker point is external workflow evidence: no remote repository, pull request review, required
+status checks, or hosted CI execution is part of the submission.
 
 ## Likely Reviewer Questions
 
@@ -160,7 +168,7 @@ execution is part of the submission. History was not rewritten during final conv
    rate limiting before any network deployment.
 2. Move to a managed database with versioned migrations; add distributed leases/fencing,
    idempotency keys, and multi-node fault tests before scaling workers.
-3. Re-resolve and pin destinations at redirect time; add automated dependency/SAST/DAST scanning.
+3. Complete dependency scanning; re-resolve and pin destinations at redirect time; add SAST/DAST scanning.
 4. Send audit and reliability telemetry to an isolated store with defined windows, SLOs, and alerts.
 5. Split transition responsibilities out of `WorkflowEngine` and remove compatibility constructors.
-6. Add hosted CI, protected branches, pull-request evidence, and repeat the full verification matrix.
+6. Push the configured CI, add protected branches/pull-request evidence, and repeat the verification matrix.

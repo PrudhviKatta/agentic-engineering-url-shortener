@@ -78,11 +78,14 @@ public class ScenarioRunner implements CommandLineRunner {
 
         if ("ambiguous".equals(scenario)) {
             engine.replan(workflowId, "decomposition", AmbiguousWorkflowGraph.replannedStages(),
-                    "scenario-reviewer", "narrow the ambiguous request to one versioned delivery scope");
+                    "scenario-reviewer", "replace downstream work after the rate-limit scope is clarified");
         }
         for (String gate : definition.approvalOrder()) {
+            String reason = "ambiguous".equals(scenario) && "human_clarification".equals(gate)
+                    ? "rate limit set to 100 requests per minute per IP"
+                    : "demonstration approval for " + gate + " after inspecting persisted evidence";
             engine.approve(workflowId, gate, "approved", "scenario-reviewer",
-                    "demonstration approval for " + gate + " after inspecting persisted evidence");
+                    reason);
         }
 
         for (WorkflowEventEntity event : eventRepository.findByWorkflowIdOrderById(workflowId)) {
@@ -105,7 +108,7 @@ public class ScenarioRunner implements CommandLineRunner {
                     "REQ-021: reject 100 percent of IPv6 ULA fc00::/7 targets without rejecting public IPv6",
                     List.of("design", "change_impact_report", "release_readiness"));
             case "ambiguous" -> new ScenarioDefinition(BaselineWorkflowGraph.stages(),
-                    "Make the short-link workflow better",
+                    "add rate limiting",
                     List.of("human_clarification", "design", "release_readiness"));
             default -> throw new IllegalArgumentException("unknown scenario: " + scenario);
         };

@@ -16,7 +16,7 @@ public class PolicyEngine {
     private final String version;
     private final List<PolicyDefinition> policies;
 
-    // Codex REQUEST AMENDMENTS item 3: a context entry named "<checkKey>.exceptionRequested" ==
+    // Independent review amendments item 3: a context entry named "<checkKey>.exceptionRequested" ==
     // Boolean.TRUE is the ONLY legitimate way evaluate() produces EXCEPTION_REQUESTED — a stage
     // handler that knows a control isn't met and is explicitly flagging that it's requesting a
     // policy exception for it (as opposed to silently failing). This mirrors applicabilityKey's
@@ -45,7 +45,7 @@ public class PolicyEngine {
 
     public String version() { return version; }
 
-    // Codex REQUEST AMENDMENTS item 4: lets a caller (WorkflowEngine.grantPolicyException) verify
+    // Independent review amendments item 4: lets a caller (WorkflowEngine.grantPolicyException) verify
     // a policyId is real before recording an exception for it, rather than silently accepting an
     // exception that can never actually excuse anything because it names a policy that doesn't exist.
     public boolean hasPolicy(String policyId) {
@@ -74,7 +74,7 @@ public class PolicyEngine {
                     outcome = PolicyOutcome.EXCEPTION_REQUESTED;
                     reason = checkKey + " not confirmed present; exception explicitly requested";
                 } else {
-                    // Codex REQUEST AMENDMENTS item 3: missing, false, AND non-Boolean evidence
+                    // Independent review amendments item 3: missing, false, AND non-Boolean evidence
                     // all resolve here — a matched policy never silently stops being enforced just
                     // because nobody reported evidence for it. Absence of proof is not proof of
                     // absence, but it is also never treated as "doesn't apply."

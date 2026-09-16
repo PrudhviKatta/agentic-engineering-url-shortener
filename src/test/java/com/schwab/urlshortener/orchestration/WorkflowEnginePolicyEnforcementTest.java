@@ -30,9 +30,9 @@ class WorkflowEnginePolicyEnforcementTest {
     @Autowired private PolicyEvaluationJpaRepository policyEvaluationRepository;
     @Autowired private PlatformTransactionManager transactionManager;
 
-    private WorkflowEngine policyAwareEngine(PolicyEngine policyEngine) {
+    private WorkflowEngine policyAwareEngine(PolicyEngine policyEngine, List<StageDefinition> stages) {
         return new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository,
-                transactionManager, policyEvaluationRepository, policyEngine);
+                transactionManager, policyEvaluationRepository, policyEngine, null, null, com.schwab.urlshortener.support.TestStageCatalogs.fromStages(stages));
     }
 
     @Test
@@ -43,7 +43,7 @@ class WorkflowEnginePolicyEnforcementTest {
         };
         List<StageDefinition> stages = List.of(StageDefinition.of("implementation", List.of(), impl));
         PolicyEngine policyEngine = new PolicyEngine("policies/v1.yaml");
-        WorkflowEngine engine = policyAwareEngine(policyEngine);
+        WorkflowEngine engine = policyAwareEngine(policyEngine, stages);
 
         String workflowId = engine.submit("demo", stages, "run-28a");
 
@@ -71,7 +71,7 @@ class WorkflowEnginePolicyEnforcementTest {
         };
         List<StageDefinition> stages = List.of(StageDefinition.of("implementation", List.of(), impl));
         PolicyEngine policyEngine = new PolicyEngine("policies/v1.yaml");
-        WorkflowEngine engine = policyAwareEngine(policyEngine);
+        WorkflowEngine engine = policyAwareEngine(policyEngine, stages);
 
         String workflowId = engine.submit("demo", stages, "run-28b");
 
@@ -101,7 +101,7 @@ class WorkflowEnginePolicyEnforcementTest {
         };
         List<StageDefinition> stages = List.of(StageDefinition.of("implementation", List.of(), impl));
         WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository,
-                approvalRepository, transactionManager);
+                approvalRepository, transactionManager, null, null, null, null, com.schwab.urlshortener.support.TestStageCatalogs.fromStages(stages));
 
         String workflowId = engine.submit("demo", stages, "run-28c");
 

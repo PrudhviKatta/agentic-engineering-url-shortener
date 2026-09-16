@@ -34,7 +34,7 @@ class WorkflowContextTest {
         assertThat(stored.get("text")).isEqualTo("...");
     }
 
-    // Codex round 3 hardening (carried forward from Section 21): a handler must go through
+    // independent review round 3 hardening (carried forward from Section 21): a handler must go through
     // addArtifact to contribute a value, never by mutating the map artifacts() returns directly.
     @Test
     void artifactsReturnsAReadOnlyViewThatStillReflectsLiveUpdates() {
@@ -111,7 +111,7 @@ class WorkflowContextTest {
         ctx.endStageAttribution();
     }
 
-    // 7th independent-review finding (Section 18 follow-up review, round 2 — Codex's direct review
+    // 7th independent-review finding (Section 18 follow-up review, round 2 — the independent review's direct review
     // of the 6th finding's fix), gap (b): a generation-equality check against a monotonic counter
     // that only ever increases never actually CLOSES — the FINAL attempt of a runStage call has no
     // later attempt to invalidate it, so its generation stays "current" forever unless something
@@ -237,7 +237,7 @@ class WorkflowContextTest {
         ctx.endStageAttribution();
     }
 
-    // Codex's Section 18 follow-up round 2 explicitly asked this be re-proven at the WorkflowContext
+    // the independent review's Section 18 follow-up round 2 explicitly asked this be re-proven at the WorkflowContext
     // level (not only via the higher-level WorkflowEngineReliabilityIntegrationTest): the per-stage
     // lock added to close gaps (a)/(b) above must not turn into a GLOBAL lock that serializes
     // unrelated stages, and beginAttempt/addArtifact for one stage must never delete or overwrite a

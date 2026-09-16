@@ -1,6 +1,7 @@
 package com.schwab.urlshortener.orchestration;
 
 import com.schwab.urlshortener.orchestration.persistence.*;
+import com.schwab.urlshortener.observability.AuditRecorder;
 import com.schwab.urlshortener.policy.PolicyCheckResult;
 import com.schwab.urlshortener.policy.PolicyEngine;
 import com.schwab.urlshortener.policy.PolicyOutcome;
@@ -23,76 +24,50 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Component
 public class WorkflowEngine {
 
-    // Codex REQUEST AMENDMENTS item 5: base delay for RetryExecutor's exponential backoff
+    // Independent review amendments item 5: base delay for RetryExecutor's exponential backoff
     // (backoffMillis * 2^attempt). Not exposed on StageDefinition/openapi.yaml — a fixed, disclosed
     // constant rather than new per-stage configuration surface this round didn't ask for.
     private static final long RETRY_BACKOFF_BASE_MILLIS = 100L;
-    // Codex round 4 finding: data-model.md Section 5 specifies workflow_events.reason as
+    // independent review round 4 finding: data-model.md Section 5 specifies workflow_events.reason as
     // VARCHAR(1024) — approve()/replan() both eventually feed their caller-supplied reason into a
     // recordEvent(...) call, so both reject an over-length reason here, at the point of entry,
     // rather than letting it reach the database and rely on the column's own truncation/constraint
     // behavior (which differs by database and is not a clean, typed error for the caller).
     private static final int REASON_MAX_LENGTH = 1024;
 
-    private final Map<String, StageRegistration> registry = new ConcurrentHashMap<>();
-    // Task 35 remediation, round 5 (Codex round 5 finding): moving replan()'s registry.put(...) to
-    // strictly after its transaction commits (round 4) narrowed the unsafe window but did not close
-    // it — a concurrent runFrom() (via approve() on a SURVIVING gate) could still run, in that
-    // window, against the STALE registry, which is not merely "behind" but genuinely blind to any
-    // brand-new replacement stage (e.g. "impl_v2") the old graph never listed at all.
-    //
-    // One monitor object per workflow id. Two things hold it:
-    //   1. replan()'s own critical section (its transaction through its registry publish) — so a
-    //      SECOND, concurrent replan() for the same workflow cannot commit-and-publish its own
-    //      (later) registry in between, which would let publish ordering disagree with commit
-    //      ordering.
-    //   2. Nothing else. An earlier version of this fix also held this same monitor across
-    //      runFrom()'s ENTIRE execution (registry read through batch dispatch to completion), on
-    //      the theory that only full mutual exclusion between runFrom() and replan() could close
-    //      the race. That serializes replan() against runFrom() for however long a genuinely
-    //      slow-running handler takes to finish — REQ-018's own near-instant rejection of an
-    //      already-RUNNING stage would then block behind a completely unrelated stage's slow
-    //      execution, a real usability regression. The actual defect only ever mattered for ONE
-    //      irreversible decision inside runFrom — marking the workflow COMPLETED — because every
-    //      OTHER decision it makes from a stale graph is provably harmless (a stage the stale graph
-    //      lists that the database has since invalidated is already handled safely by
-    //      activeStepOrNull/activeStepStatus's null-tolerant resolution; a stage the stale graph
-    //      never lists at all is simply left for the replan's own resume to pick up). Closing that
-    //      one decision needs no lock at all — see runFrom's own comment on the DB-authoritative
-    //      check it performs immediately before that specific write, which is correct regardless of
-    //      timing (transactional atomicity), not merely a narrower window.
-    // Java's `synchronized` is reentrant for the owning thread; different workflow ids never share
-    // a monitor, so this adds no cross-workflow serialization.
-    private final Map<String, Object> workflowLocks = new ConcurrentHashMap<>();
-
-    private Object lockFor(String workflowId) {
-        return workflowLocks.computeIfAbsent(workflowId, k -> new Object());
-    }
-
     private final WorkflowInstanceJpaRepository instanceRepository;
     private final WorkflowStepJpaRepository stepRepository;
     private final WorkflowEventJpaRepository eventRepository;
+    private final AuditRecorder auditRecorder;
     private final ApprovalJpaRepository approvalRepository;
     private final TransactionTemplate transactionTemplate;
-    // Task 28/29: all three nullable — policy enforcement (and exceptions to it) are opt-in via
-    // the overloaded constructors below. The shared @Component bean (used by
-    // ScenarioRunner/WorkflowController today) still resolves via the 5-arg constructor with all
-    // three null, since no PolicyEngine is registered as a Spring bean yet — wiring a real
-    // policy-aware production instance remains a later task's job, not this one's.
+    // Nullable only for the narrow constructors retained for isolated engine tests. The shared
+    // Spring bean uses the full constructor and enforces the versioned production policy set.
     private final PolicyEvaluationJpaRepository policyEvaluationRepository;
     private final PolicyEngine policyEngine;
     private final PolicyExceptionJpaRepository policyExceptionRepository;
-    // Task 33: nullable — compensation is opt-in, same pattern as the policy fields above.
+    // Nullable only for isolated tests that do not exercise compensation.
     private final CompensationRegistry compensationRegistry;
+    private final StageCatalog stageCatalog;
+    private final Set<Long> locallyRunningStepIds = ConcurrentHashMap.newKeySet();
 
-    @Autowired
+    public WorkflowEngine(WorkflowInstanceJpaRepository instanceRepository,
+                           WorkflowStepJpaRepository stepRepository,
+                           WorkflowEventJpaRepository eventRepository,
+                           ApprovalJpaRepository approvalRepository,
+                           PlatformTransactionManager transactionManager,
+                           StageCatalog stageCatalog) {
+        this(instanceRepository, stepRepository, eventRepository, approvalRepository,
+                transactionManager, null, null, null, null, stageCatalog);
+    }
+
     public WorkflowEngine(WorkflowInstanceJpaRepository instanceRepository,
                            WorkflowStepJpaRepository stepRepository,
                            WorkflowEventJpaRepository eventRepository,
                            ApprovalJpaRepository approvalRepository,
                            PlatformTransactionManager transactionManager) {
         this(instanceRepository, stepRepository, eventRepository, approvalRepository,
-                transactionManager, null, null, null, null);
+                transactionManager, null, null, null, null, new StageCatalog(Map.of(), Map.of(), Map.of()));
     }
 
     // Task 28's constructor shape, preserved unchanged so WorkflowEnginePolicyEnforcementTest
@@ -107,7 +82,8 @@ public class WorkflowEngine {
                            PolicyEvaluationJpaRepository policyEvaluationRepository,
                            PolicyEngine policyEngine) {
         this(instanceRepository, stepRepository, eventRepository, approvalRepository,
-                transactionManager, policyEvaluationRepository, policyEngine, null, null);
+                transactionManager, policyEvaluationRepository, policyEngine, null, null,
+                new StageCatalog(Map.of(), Map.of(), Map.of()));
     }
 
     // Task 29's constructor shape, preserved unchanged so PolicyExceptionTest keeps compiling and
@@ -121,7 +97,8 @@ public class WorkflowEngine {
                            PolicyEngine policyEngine,
                            PolicyExceptionJpaRepository policyExceptionRepository) {
         this(instanceRepository, stepRepository, eventRepository, approvalRepository,
-                transactionManager, policyEvaluationRepository, policyEngine, policyExceptionRepository, null);
+                transactionManager, policyEvaluationRepository, policyEngine, policyExceptionRepository, null,
+                new StageCatalog(Map.of(), Map.of(), Map.of()));
     }
 
     // Task 33: fourth overload across Tasks 22/23/28/29/33 (4 -> 6 -> 7 -> 9 positional
@@ -139,22 +116,40 @@ public class WorkflowEngine {
                            PolicyEngine policyEngine,
                            PolicyExceptionJpaRepository policyExceptionRepository,
                            CompensationRegistry compensationRegistry) {
+        this(instanceRepository, stepRepository, eventRepository, approvalRepository, transactionManager,
+                policyEvaluationRepository, policyEngine, policyExceptionRepository, compensationRegistry,
+                new StageCatalog(Map.of(), Map.of(), Map.of()));
+    }
+
+    @Autowired
+    public WorkflowEngine(WorkflowInstanceJpaRepository instanceRepository,
+                           WorkflowStepJpaRepository stepRepository,
+                           WorkflowEventJpaRepository eventRepository,
+                           ApprovalJpaRepository approvalRepository,
+                           PlatformTransactionManager transactionManager,
+                           PolicyEvaluationJpaRepository policyEvaluationRepository,
+                           PolicyEngine policyEngine,
+                           PolicyExceptionJpaRepository policyExceptionRepository,
+                           CompensationRegistry compensationRegistry,
+                           StageCatalog stageCatalog) {
         this.instanceRepository = instanceRepository;
         this.stepRepository = stepRepository;
         this.eventRepository = eventRepository;
+        this.auditRecorder = new AuditRecorder(eventRepository);
         this.approvalRepository = approvalRepository;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
         this.policyEvaluationRepository = policyEvaluationRepository;
         this.policyEngine = policyEngine;
         this.policyExceptionRepository = policyExceptionRepository;
         this.compensationRegistry = compensationRegistry;
+        this.stageCatalog = Objects.requireNonNull(stageCatalog, "stageCatalog");
     }
 
     public String submit(String feature, List<StageDefinition> stages, String correlationId) {
         return submit(feature, stages, correlationId, null);
     }
 
-    // Codex REQUEST AMENDMENTS follow-up (Section 17 review): the original 3-arg submit() (kept
+    // Independent review amendments follow-up (Section 17 review): the original 3-arg submit() (kept
     // above, delegating here with requirementText=null, for every caller — ScenarioRunner, every
     // existing test — that has no requirement text to carry) validated requirementText at the
     // controller and then dropped it entirely; it never reached contextJson or any persisted
@@ -168,12 +163,8 @@ public class WorkflowEngine {
     public String submit(String feature, List<StageDefinition> stages, String correlationId, String requirementText) {
         DependencyGraph graph = new DependencyGraph(stages);
         graph.validate();
+        validateCatalogEntries(stages);
         String workflowId = UUID.randomUUID().toString();
-        // Task 35 remediation (Codex round 7): every stage created here belongs to plan_version 1
-        // — see StageRegistration's own comment for what this map is for and why it exists.
-        Map<String, Integer> planVersionByName = stages.stream()
-                .collect(java.util.stream.Collectors.toMap(StageDefinition::name, s -> 1));
-        registry.put(workflowId, new StageRegistration(stages, graph, planVersionByName));
 
         WorkflowInstanceEntity instance = new WorkflowInstanceEntity();
         instance.setId(workflowId);
@@ -200,6 +191,7 @@ public class WorkflowEngine {
             step.setSequence(sequence++);
             step.setDependsOn(stage.dependsOn());
             step.setPlanVersion(instance.getPlanVersion());
+            copyStageConfiguration(stage, step);
             stepRepository.save(step);
         }
 
@@ -268,37 +260,16 @@ public class WorkflowEngine {
                 throw new IllegalArgumentException("duplicate stage name in newStages: " + s.name());
             }
         }
+        validateCatalogEntries(newStages);
 
-        // Codex round 5 finding: publishing the replacement registry strictly after the
-        // transaction commits (round 4) closes "commit rolls back, registry doesn't" but not the
-        // remaining window between that commit and this line — a concurrent runFrom() (e.g. via
-        // approve() on a SURVIVING gate) could still run in that window against the STALE registry.
-        // That registry is not merely behind, it is genuinely blind to any brand-new replacement
-        // stage the old graph never listed at all (unlike a stage the old graph lists that the DB
-        // has since invalidated, which activeStepOrNull/activeStepStatus already treat safely as
-        // "not currently pending") — so a concurrent runFrom's own batch loop could reach its
-        // end-of-loop instance-COMPLETED write with the new stage sitting PENDING forever,
-        // unexamined. That specific decision is what runFrom's own DB-authoritative check (see its
-        // comment) closes, regardless of timing — it needs no lock from this method at all. What
-        // THIS monitor is for is narrower: serializing this workflow's own transaction-through-
-        // publish against a SECOND, concurrent replan() for the SAME workflow, so publish ordering
-        // can never disagree with commit ordering. It intentionally does NOT extend to this
-        // method's own trailing runFrom() call below — see workflowLocks' field comment for why a
-        // version that also serialized against runFrom()'s entire execution was tried and reverted.
-        synchronized (lockFor(workflowId)) {
-            StageRegistration published = transactionTemplate.execute(status -> {
+        transactionTemplate.executeWithoutResult(status -> {
                 WorkflowInstanceEntity instance = instanceRepository.findWithLockById(workflowId)
                         .orElseThrow(() -> new IllegalStateException("unknown workflow: " + workflowId));
                 if (instance.getStatus() == WorkflowStatus.FAILED || instance.getStatus() == WorkflowStatus.COMPLETED) {
                     throw new IllegalStateException(
                             "workflow " + workflowId + " is already terminal (" + instance.getStatus() + ")");
                 }
-                StageRegistration registration = registry.get(workflowId);
-                if (registration == null) {
-                    throw new IllegalStateException("workflow " + workflowId + " has no in-memory stage "
-                            + "registration (process restarted?) — cannot replan it");
-                }
-                List<StageDefinition> currentStages = registration.stages();
+                List<StageDefinition> currentStages = loadActiveStages(workflowId);
                 if (currentStages.stream().noneMatch(s -> s.name().equals(fromStage))) {
                     throw new IllegalArgumentException("unknown stage: " + fromStage);
                 }
@@ -366,6 +337,7 @@ public class WorkflowEngine {
                     step.setSequence(nextSequence++);
                     step.setDependsOn(stage.dependsOn());
                     step.setPlanVersion(newPlanVersion);
+                    copyStageConfiguration(stage, step);
                     stepRepository.save(step);
                 }
 
@@ -375,39 +347,12 @@ public class WorkflowEngine {
 
                 recordEvent(workflowId, "human", actor, "replanned", fromStage, "OK", reason,
                         Map.of("fromVersion", oldPlanVersion, "toVersion", newPlanVersion, "fromStage", fromStage));
-
-                // Task 35 remediation (Codex round 7): survivors keep their EXISTING plan_version
-                // tag (their row is never re-stamped, so this must never change either); newStages
-                // — including one that reuses an invalidated stage's exact name — get tagged with
-                // the version that was JUST stamped onto their own freshly-inserted rows above. This
-                // is what a stale (pre-publish) registration's own tag will disagree with the moment
-                // this row becomes visible, closing the "wrong handler, right row" gap — see
-                // StageRegistration's own comment.
-                Map<String, Integer> updatedPlanVersionByName = new HashMap<>();
-                for (StageDefinition survivor : survivors) {
-                    updatedPlanVersionByName.put(survivor.name(), registration.planVersionByName().get(survivor.name()));
-                }
-                for (StageDefinition stage : newStages) {
-                    updatedPlanVersionByName.put(stage.name(), newPlanVersion);
-                }
-                return new StageRegistration(updatedStages, updatedGraph, updatedPlanVersionByName);
             });
-
-            // Only reached if the transaction above committed successfully — see this method's own
-            // comment on why publishing here, and never inside the transaction, is what makes this
-            // race-free rather than merely "restored on failure." Still inside this workflow's own
-            // monitor: a second, concurrent replan() for the SAME workflow must not be able to
-            // commit and publish its OWN (later) registry in between this commit and this publish,
-            // which would otherwise let publish ordering disagree with commit ordering.
-            registry.put(workflowId, published);
-        }
-
-        // Deliberately OUTSIDE the synchronized block above: runFrom() no longer needs (or takes)
-        // this workflow's monitor for its own execution (see runFrom's own comment on why a lock
-        // spanning its whole body — including waiting on a genuinely slow-running handler — was
-        // tried and reverted). Calling it unlocked here means a replan() that only needed to
-        // invalidate/insert a few rows returns to resuming the workflow promptly rather than
-        // holding this monitor for however long the actual handler execution takes.
+        // REPLANNING is a durable crash marker, not a state that may escape a successful replan
+        // call. Move it to RUNNING with a compare-and-set before resuming. If a concurrent caller
+        // already advanced the workflow to PENDING_APPROVAL or a terminal state, the compare-and-
+        // set deliberately leaves that newer decision untouched.
+        transitionInstanceStatus(workflowId, WorkflowStatus.REPLANNING, WorkflowStatus.RUNNING);
         runFrom(workflowId);
     }
 
@@ -433,7 +378,7 @@ public class WorkflowEngine {
         return result;
     }
 
-    // Codex REQUEST AMENDMENTS item 7: every instance write below now goes through
+    // Independent review amendments item 7: every instance write below now goes through
     // applyInstanceUpdate — a short, independently-locked transaction that re-reads the instance
     // fresh, checks it isn't ALREADY terminal (a concurrent decision on a different sibling gate
     // may have already committed FAILED/COMPLETED), and abandons the write instead of overwriting
@@ -445,7 +390,7 @@ public class WorkflowEngine {
     // re-queries once an entity is already loaded. Keeping each read of workflow_steps its own
     // independent, uncached round trip (as it always was) while making ONLY the workflow_instances
     // write itself atomic-and-checked is what actually closes the race without breaking that.
-    // Codex round 5 finding, resolved WITHOUT holding a lock across this method's whole body: an
+    // independent review round 5 finding, resolved WITHOUT holding a lock across this method's whole body: an
     // earlier attempt did exactly that (see the field comment on `workflowLocks`/`lockFor` for why
     // it was tried) but that serializes this method against replan() for its ENTIRE duration,
     // including the time spent waiting on a genuinely slow-running handler — a replan() call
@@ -462,17 +407,7 @@ public class WorkflowEngine {
     // of timing, not merely narrows it (transactional atomicity: any reader who can see ONE effect
     // of replan()'s commit — an invalidated stage — can already see ALL of them, including the
     // replacement stage's own row).
-    private void runFrom(String workflowId) {
-        StageRegistration registration = registry.get(workflowId);
-        // Independent-review finding (2nd Section 17 follow-up review, D5): the in-memory
-        // registry is empty for a workflow id after a process restart, the same pre-existing
-        // fragility N1 fixed for retrySafeStopped's own lookup — runFrom itself had no equivalent
-        // guard, and every caller of runFrom (submit/approve/retrySafeStopped) would see a raw NPE
-        // instead of a clear, typed error.
-        if (registration == null) {
-            throw new IllegalStateException("workflow " + workflowId + " has no in-memory stage "
-                    + "registration (process restarted?) — cannot resume it");
-        }
+    public void runFrom(String workflowId) {
         WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
 
         // Cheap early exit: a concurrent decision may have already driven this workflow to a
@@ -483,10 +418,22 @@ public class WorkflowEngine {
             return;
         }
 
+        boolean recovered = recoverAbandonedRunningSteps(workflowId);
+        if (recovered) {
+            recordEvent(workflowId, "orchestrator", "workflow-engine", "resumed:" + workflowId,
+                    null, "OK", "recovered abandoned running work after restart");
+        }
+        List<WorkflowStepEntity> activeRows =
+                stepRepository.findByWorkflowIdAndStatusNotOrderBySequence(workflowId, StepStatus.INVALIDATED);
+        List<StageDefinition> stages = activeRows.stream().map(this::stageFromRow).toList();
+        DependencyGraph graph = new DependencyGraph(stages);
+        graph.validate();
+        Map<String, WorkflowStepEntity> rowsByName = activeRows.stream()
+                .collect(java.util.stream.Collectors.toMap(WorkflowStepEntity::getName, row -> row));
         WorkflowContext ctx = buildContext(instance);
 
-        for (List<StageDefinition> batch : registration.graph().topologicalBatches()) {
-            // Codex REQUEST AMENDMENTS item 7: re-check terminal status at the START of EVERY
+        for (List<StageDefinition> batch : graph.topologicalBatches()) {
+            // Independent review amendments item 7: re-check terminal status at the START of EVERY
             // batch iteration, not just once at entry. This closes a deeper gap the entry-only
             // guard and the per-write locking above didn't: the exit-gate scan below only checks
             // "has every exit-gated sibling in THIS batch been decided" — it does not (and can't,
@@ -502,7 +449,7 @@ public class WorkflowEngine {
                 return;
             }
 
-            // Task 35 remediation (Codex round 6, hardened round 7): resolve each batch member's
+            // Task 35 remediation (independent review round 6, hardened round 7): resolve each batch member's
             // CURRENT active row exactly ONCE, here, and bind every later operation on it — within
             // this SAME batch's processing — to that specific row's id, never to another by-name
             // lookup. See BatchMember's own comment for why: a stale (pre-replan) StageDefinition
@@ -523,12 +470,21 @@ public class WorkflowEngine {
             // a DIFFERENT generation of the plan than the StageDefinition in hand, so it is treated
             // exactly like "no active row exists" (null), never claimed or executed against.
             List<BatchMember> members = batch.stream()
-                    .map(s -> new BatchMember(s, resolveIfCurrentGeneration(workflowId, s, registration)))
+                    .map(s -> new BatchMember(s, rowsByName.get(s.name())))
                     .toList();
 
             List<BatchMember> pending = members.stream()
                     .filter(m -> m.row() != null && m.row().getStatus() == StepStatus.PENDING)
                     .toList();
+
+            List<BatchMember> inactive = pending.stream()
+                    .filter(member -> markSkippedWhenInactive(member, ctx))
+                    .toList();
+            if (!inactive.isEmpty()) {
+                Set<Long> skippedIds = inactive.stream().map(member -> member.row().getId()).collect(
+                        java.util.stream.Collectors.toSet());
+                pending = pending.stream().filter(member -> !skippedIds.contains(member.row().getId())).toList();
+            }
 
             // Entry gate: block BEFORE running any handler in this batch. Each entry-gated stage
             // that is still PENDING (i.e. hasn't been approved yet) halts the workflow one stage
@@ -566,7 +522,7 @@ public class WorkflowEngine {
                     // (decisions/artifacts) is persisted here so a mixed batch's OTHER
                     // (already-succeeded) siblings' evidence is not discarded just because a
                     // DIFFERENT sibling's SafeStopException happened to be the one that propagated
-                    // (Codex REQUEST AMENDMENTS follow-up, Section 17 review).
+                    // (Independent review amendments follow-up, Section 17 review).
                     //
                     // 2nd independent-review finding (Section 17 follow-up review, D1): an EARLIER
                     // version of this fix decided this batch-wide, all-or-nothing — "if ANY sibling
@@ -684,7 +640,7 @@ public class WorkflowEngine {
             // Exit gate: block AFTER running, before any dependent batch proceeds. This scans
             // EVERY exit-gated stage in the FULL batch (not just the subset that was `pending`
             // THIS call) and requires each one to carry its own approval before dependents
-            // proceed. Round-6 correction (Codex REQUEST AMENDMENTS item 2): the prior version
+            // proceed. Round-6 correction (Independent review amendments item 2): the prior version
             // scanned only `pending` and returned on the FIRST unapproved sibling it found: once
             // that sibling was approved and runFrom() resumed, the OTHER exit-gated siblings —
             // already SUCCEEDED from the batch's one-and-only run — were no longer `pending`
@@ -710,7 +666,9 @@ public class WorkflowEngine {
                 // its own human-approval gate entirely — dependents proceeded without the review the
                 // stage's config demands. Arguably a compensated failure needs that review MORE than
                 // a clean success does (the original outcome never happened; only a fallback ran).
-                boolean readyForGate = status == StepStatus.SUCCEEDED || status == StepStatus.COMPENSATED
+                boolean readyForGate = status == StepStatus.SUCCEEDED
+                        || status == StepStatus.SUCCEEDED_WITH_FALLBACK
+                        || status == StepStatus.COMPENSATED
                         || status == StepStatus.WAITING_APPROVAL;
                 // Round-6b correction (independent-review finding): gate on "has ANY decision yet"
                 // (approved OR rejected), not "has an approved decision" alone. A rejected exit
@@ -755,7 +713,7 @@ public class WorkflowEngine {
             }
         }
 
-        // Codex round 5 finding: the batch loop above is driven entirely by `registration`, an
+        // independent review round 5 finding: the batch loop above is driven entirely by `registration`, an
         // in-memory snapshot that can be stale relative to a concurrent replan() that has ALREADY
         // committed a brand-new replacement stage this call never knew existed (unlike a stage the
         // stale graph lists that the DB has since invalidated — activeStepOrNull/activeStepStatus
@@ -780,7 +738,7 @@ public class WorkflowEngine {
             return;
         }
 
-        // Codex REQUEST AMENDMENTS item 7: this is the write the concurrency test targets most
+        // Independent review amendments item 7: this is the write the concurrency test targets most
         // directly — a concurrent decision on a different sibling gate must never have this call
         // overwrite its (already-committed) FAILED status back to COMPLETED.
         if (!applyInstanceUpdate(workflowId, i -> i.setStatus(WorkflowStatus.COMPLETED))) {
@@ -792,7 +750,7 @@ public class WorkflowEngine {
         recordEvent(workflowId, "orchestrator", "workflow-engine", "workflow_completed", null, "OK", null);
     }
 
-    // Codex REQUEST AMENDMENTS item 7: applies a mutation to the workflow instance inside a short,
+    // Independent review amendments item 7: applies a mutation to the workflow instance inside a short,
     // independently pessimistic-locked transaction — a fresh read, not the (possibly stale)
     // in-memory `instance` object callers in runFrom hold. Returns false (mutation abandoned,
     // nothing written) if the instance is already terminal (FAILED/COMPLETED) by the time the lock
@@ -808,6 +766,19 @@ public class WorkflowEngine {
             return Boolean.TRUE;
         });
         return Boolean.TRUE.equals(applied);
+    }
+
+    private boolean transitionInstanceStatus(String workflowId, WorkflowStatus expected, WorkflowStatus next) {
+        Boolean changed = transactionTemplate.execute(status -> {
+            WorkflowInstanceEntity fresh = instanceRepository.findWithLockById(workflowId).orElseThrow();
+            if (fresh.getStatus() != expected) {
+                return Boolean.FALSE;
+            }
+            fresh.setStatus(next);
+            instanceRepository.save(fresh);
+            return Boolean.TRUE;
+        });
+        return Boolean.TRUE.equals(changed);
     }
 
     // Starting from batchStartArtifacts (the pre-batch baseline) and merging in ONLY the (key,
@@ -838,14 +809,32 @@ public class WorkflowEngine {
             // stale run resolve a same-named replacement row in the first place.
             WorkflowStepEntity siblingStep = member.row() == null ? null : activeStepById(member.row().getId());
             StepStatus st = siblingStep == null ? null : siblingStep.getStatus();
-            boolean trustworthy = st == StepStatus.SUCCEEDED || st == StepStatus.WAITING_APPROVAL
+            boolean trustworthy = st == StepStatus.SUCCEEDED || st == StepStatus.SUCCEEDED_WITH_FALLBACK
+                    || st == StepStatus.WAITING_APPROVAL
                     || (st == StepStatus.SAFE_STOPPED
                         && siblingStep.getSafeStopReason() == SafeStopReason.POLICY_BLOCKED);
             if (trustworthy) {
-                safeArtifacts.putAll(written);
+                for (Map.Entry<String, Object> entry : written.entrySet()) {
+                    if ("fallbacksUsed".equals(entry.getKey())) {
+                        TreeSet<String> union = new TreeSet<>();
+                        addStrings(union, safeArtifacts.get("fallbacksUsed"));
+                        addStrings(union, entry.getValue());
+                        safeArtifacts.put("fallbacksUsed", List.copyOf(union));
+                    } else {
+                        safeArtifacts.put(entry.getKey(), entry.getValue());
+                    }
+                }
             }
         }
         return safeArtifacts;
+    }
+
+    private static void addStrings(Set<String> target, Object value) {
+        if (value instanceof Collection<?> values) {
+            values.stream().map(String::valueOf).forEach(target::add);
+        } else if (value != null) {
+            target.add(String.valueOf(value));
+        }
     }
 
     // Independent-review finding (post-item-7 follow-up): two concurrent runFrom() calls — e.g.
@@ -860,7 +849,7 @@ public class WorkflowEngine {
     // that actually claimed a stage.
     private void runBatch(String workflowId, List<BatchMember> pending, WorkflowContext ctx,
                            Map<String, Object> inputsSnapshot) {
-        // Task 35 remediation (Codex round 6): claim by the row id this batch already resolved —
+        // Task 35 remediation (independent review round 6): claim by the row id this batch already resolved —
         // never re-derive "the current row for this name" here. See claimStage's own comment.
         List<BatchMember> claimed = pending.stream()
                 .filter(member -> claimStage(member.row().getId(), inputsSnapshot))
@@ -874,7 +863,13 @@ public class WorkflowEngine {
             for (BatchMember member : claimed) {
                 long stepId = member.row().getId();
                 StageDefinition stage = member.stage();
-                futures.add(pool.submit(() -> runStage(workflowId, stepId, stage, ctx, inputsSnapshot)));
+                futures.add(pool.submit(() -> {
+                    try {
+                        runStage(workflowId, stepId, stage, ctx, inputsSnapshot);
+                    } finally {
+                        locallyRunningStepIds.remove(stepId);
+                    }
+                }));
             }
         } finally {
             pool.shutdown();
@@ -899,7 +894,7 @@ public class WorkflowEngine {
         Throwable firstOther = null;
         boolean interrupted = false;
         for (Future<?> future : futures) {
-            // Codex REQUEST AMENDMENTS follow-up (Section 17 review): an InterruptedException
+            // Independent review amendments follow-up (Section 17 review): an InterruptedException
             // from future.get() means THIS thread was interrupted while waiting, not that the
             // future itself failed — the handler it's waiting on is still running. Moving on to
             // the next future without re-awaiting this one is exactly the orphan-thread gap the
@@ -930,7 +925,7 @@ public class WorkflowEngine {
                 }
             }
         }
-        // Codex REQUEST AMENDMENTS follow-up (Section 17 review): restore the interrupt flag so a
+        // Independent review amendments follow-up (Section 17 review): restore the interrupt flag so a
         // caller that cares can observe it — but do NOT synthesize an exception purely because
         // this thread was interrupted while waiting. Every future was still joined to its REAL
         // outcome above (that's the whole point of retrying get() on the same future rather than
@@ -953,7 +948,7 @@ public class WorkflowEngine {
     // dispatches this stage's handler. Sets startedAt/inputsSnapshot here — the values a losing
     // caller would otherwise have raced to write — so runStage's own read afterward is guaranteed
     // fresh rather than reused from a stale in-memory reference.
-    // Task 35 remediation (Codex round 6): claims by the row's own durable id, never by
+    // Task 35 remediation (independent review round 6): claims by the row's own durable id, never by
     // (workflowId, name) — see WorkflowStepJpaRepository.findWithLockById's own comment for why a
     // name-based claim let a stale run claim and execute a same-named REPLACEMENT row a concurrent
     // replan() had already inserted, running the OLD StageDefinition's handler against it. Binding
@@ -961,6 +956,7 @@ public class WorkflowEngine {
     // THIS EXACT row is correctly seen as "no longer PENDING" here, never silently swapped for
     // whatever OTHER row now happens to share its name.
     private boolean claimStage(long stepId, Map<String, Object> inputsSnapshot) {
+        locallyRunningStepIds.add(stepId);
         Boolean claimed = transactionTemplate.execute(status -> {
             // A concurrent replan() legitimately invalidates a PENDING stage (REQ-018 permits
             // invalidating not-yet-started work) in the window between this stage's own status
@@ -977,11 +973,15 @@ public class WorkflowEngine {
             stepRepository.save(step);
             return Boolean.TRUE;
         });
-        return Boolean.TRUE.equals(claimed);
+        if (!Boolean.TRUE.equals(claimed)) {
+            locallyRunningStepIds.remove(stepId);
+            return false;
+        }
+        return true;
     }
 
     public void approve(String workflowId, String stepName, String decision, String actor, String reason) {
-        // Round-6 correction (Codex REQUEST AMENDMENTS item 1): validate the decision value itself
+        // Round-6 correction (Independent review amendments item 1): validate the decision value itself
         // before touching any state — a decision that is neither "approved" nor "rejected" must
         // never be silently treated as an implicit approval.
         if (!"approved".equals(decision) && !"rejected".equals(decision)) {
@@ -1033,7 +1033,7 @@ public class WorkflowEngine {
     private DecisionOutcome recordDecisionInTransaction(String workflowId, String stepName, String decision,
                                                           String actor, String reason) {
         return transactionTemplate.execute(status -> {
-            // Codex REQUEST AMENDMENTS item 7: pessimistic row lock on the WORKFLOW instance
+            // Independent review amendments item 7: pessimistic row lock on the WORKFLOW instance
             // itself, acquired before the step-level lock below. This closes the previously
             // disclosed cross-sibling race: two DIFFERENT exit-gated siblings decided truly
             // simultaneously (reject one, approve the other) can no longer both pass the
@@ -1051,33 +1051,12 @@ public class WorkflowEngine {
             }
             int planVersion = instance.getPlanVersion();
 
-            StageRegistration registration = registry.get(workflowId);
-            StageDefinition stage = registration == null ? null : registration.stages().stream()
-                    .filter(s -> s.name().equals(stepName)).findFirst().orElse(null);
-            if (stage == null) {
-                throw new NoPendingApprovalException("unknown step: " + stepName);
-            }
-
             // Pessimistic row lock (SELECT ... FOR UPDATE): a concurrent approve() call targeting
             // this same step blocks here until this transaction commits or rolls back, then re-reads
             // the now-committed status — never a stale, pre-decision read.
             WorkflowStepEntity step = stepRepository
                     .findWithLockByWorkflowIdAndNameAndStatusNot(workflowId, stepName, StepStatus.INVALIDATED)
                     .orElseThrow(() -> new NoPendingApprovalException("unknown step: " + stepName));
-
-            // Task 35 remediation (Codex round 7): same generation check runFrom() applies via
-            // resolveIfCurrentGeneration(). `stage` above was resolved from the caller's own
-            // (possibly stale) in-memory registration by name alone; the row just locked above was
-            // independently resolved by (workflowId, name, status != INVALIDATED). A concurrent
-            // replan() that invalidates the old "stepName" row and inserts a fresh one under the
-            // SAME name between those two resolutions would otherwise let this decision be recorded
-            // — and, worse, dispatched — against the NEW row using the OLD StageDefinition's
-            // entryApproval/exitApproval flags and handler. Reject as unknown rather than silently
-            // deciding across a generation boundary.
-            Integer expectedPlanVersion = registration.planVersionByName().get(stepName);
-            if (expectedPlanVersion == null || step.getPlanVersion() != expectedPlanVersion) {
-                throw new NoPendingApprovalException("unknown step: " + stepName);
-            }
 
             // Reject premature (step never reached its gate), duplicate (step already decided), and
             // non-gate (stage has neither entryApproval nor exitApproval) approval attempts alike: a
@@ -1107,7 +1086,7 @@ public class WorkflowEngine {
             }
             recordEvent(workflowId, "human", actor, "approval_" + decision + ":" + stepName, stepName, "OK", reason);
 
-            // Codex REQUEST AMENDMENTS item 8: an exit-gated step's post-approval status now
+            // Independent review amendments item 8: an exit-gated step's post-approval status now
             // restores from preGateStatus (captured by enterPendingApproval right before it
             // overwrote the step to WAITING_APPROVAL) instead of hardcoding SUCCEEDED — a step
             // that reached this gate via COMPENSATED (Task 33) stays COMPENSATED through approval
@@ -1117,12 +1096,34 @@ public class WorkflowEngine {
             StepStatus exitGateOutcome = step.getPreGateStatus() != null ? step.getPreGateStatus() : StepStatus.SUCCEEDED;
             boolean rejected = "rejected".equals(decision);
             if (rejected) {
-                step.setStatus(stage.entryApproval() ? StepStatus.FAILED : exitGateOutcome);
+                step.setStatus(step.isEntryApproval() ? StepStatus.FAILED : exitGateOutcome);
             } else {
-                step.setStatus(stage.entryApproval() ? StepStatus.PENDING : exitGateOutcome);
+                step.setStatus(step.isEntryApproval() ? StepStatus.PENDING : exitGateOutcome);
             }
             step.setPreGateStatus(null);
             stepRepository.save(step);
+
+            if (!rejected) {
+                Map<String, Object> contextJson = new LinkedHashMap<>(instance.getContextJson());
+                @SuppressWarnings("unchecked")
+                Map<String, Object> existingArtifacts = (Map<String, Object>) contextJson
+                        .getOrDefault("artifacts", Map.of());
+                Map<String, Object> artifacts = new LinkedHashMap<>(existingArtifacts);
+                artifacts.put(stepName + "Resolution", reason);
+                contextJson.put("artifacts", artifacts);
+
+                @SuppressWarnings("unchecked")
+                List<Map<String, Object>> existingDecisions = (List<Map<String, Object>>) contextJson
+                        .getOrDefault("decisions", List.of());
+                List<Map<String, Object>> decisions = new ArrayList<>(existingDecisions);
+                decisions.add(Map.of(
+                        "actor", actor,
+                        "decision", "approved:" + stepName,
+                        "rationale", reason,
+                        "timestamp", Instant.now().toString()));
+                contextJson.put("decisions", decisions);
+                instance.setContextJson(contextJson);
+            }
             instance.setStatus(rejected ? WorkflowStatus.FAILED : WorkflowStatus.RUNNING);
             instanceRepository.save(instance);
             return new DecisionOutcome(rejected);
@@ -1131,7 +1132,7 @@ public class WorkflowEngine {
 
     private record DecisionOutcome(boolean rejected) { }
 
-    // Round-6 correction (Codex REQUEST AMENDMENTS item 1): stepInstanceId — not stepName — is the
+    // Round-6 correction (Independent review amendments item 1): stepInstanceId — not stepName — is the
     // authoritative key for "has THIS step instance been approved".
     private boolean isApproved(WorkflowStepEntity step) {
         return !approvalRepository.findByStepInstanceIdAndDecision(step.getId(), "approved").isEmpty();
@@ -1142,7 +1143,7 @@ public class WorkflowEngine {
     }
 
     private void enterPendingApproval(WorkflowStepEntity step) {
-        // Codex REQUEST AMENDMENTS item 8: capture the status a gate is about to overwrite, so
+        // Independent review amendments item 8: capture the status a gate is about to overwrite, so
         // approve() can restore it afterward instead of hardcoding SUCCEEDED — the only caller of
         // this method with anything other than PENDING/SUCCEEDED as the pre-gate status is an
         // exit-gated step that reached COMPENSATED (Task 33), which must stay COMPENSATED through
@@ -1152,7 +1153,7 @@ public class WorkflowEngine {
         stepRepository.save(step);
     }
 
-    // Task 35 remediation (Codex round 6): dispatched with the EXACT row id claimStage already
+    // Task 35 remediation (independent review round 6): dispatched with the EXACT row id claimStage already
     // claimed, never re-resolved by (workflowId, stage.name()) — that re-resolution is exactly what
     // let a stale StageDefinition's handler run against a same-named replacement row a concurrent
     // replan() had already inserted.
@@ -1163,7 +1164,7 @@ public class WorkflowEngine {
         // A fresh read, not a reused reference, so this reflects that committed state.
         WorkflowStepEntity step = requireStepById(stepId);
 
-        // Codex REQUEST AMENDMENTS item 5: actually wire T030's RetryExecutor (bounded exponential
+        // Independent review amendments item 5: actually wire T030's RetryExecutor (bounded exponential
         // backoff) around T031's TimeoutExecutor, rather than a hand-rolled loop that never slept
         // between attempts. Classification comes from the handler itself: PermanentStageException
         // never retries; TransientStageException — which StageTimeoutException now IS, by
@@ -1178,6 +1179,7 @@ public class WorkflowEngine {
         // SUCCEEDED path below.
         Map<String, Object> result = null;
         boolean succeeded = false;
+        boolean usedFallback = false;
         SafeStopReason failureReason = SafeStopReason.RETRY_EXHAUSTED;
         Throwable failureCause = null;
         // 6th/7th independent-review findings (Section 18 follow-up review, two rounds): resets
@@ -1186,7 +1188,7 @@ public class WorkflowEngine {
         // happens INSIDE TimeoutExecutor's own dedicated per-attempt worker thread (it's the first
         // thing that thread does), not before that thread exists. An attempt that throws after
         // writing mandatory-policy evidence can never have that evidence survive into a LATER,
-        // successful attempt's own evaluation, and (round 2, closing the gaps Codex's own review of
+        // successful attempt's own evaluation, and (round 2, closing the gaps the independent review's own review of
         // round 1 found) a straggler attempt whose worker thread keeps running past a timeout can
         // never have a write land in a newer attempt's bucket either — WorkflowContext makes the
         // generation-check-and-write atomic per stage and never lets a stage-attributed write touch
@@ -1222,7 +1224,7 @@ public class WorkflowEngine {
                 // the same catch clause since StageTimeoutException extends TransientStageException)
                 failureCause = e;
             } catch (RuntimeException e) {
-                // Codex REQUEST AMENDMENTS follow-up (Section 17 review): neither RetryExecutor
+                // Independent review amendments follow-up (Section 17 review): neither RetryExecutor
                 // nor TimeoutExecutor catches anything outside the Permanent/TransientStageException
                 // hierarchy — an unexpected handler bug (NPE, IllegalStateException, etc.)
                 // previously propagated straight out of runStage uncaught, leaving the step at
@@ -1266,6 +1268,27 @@ public class WorkflowEngine {
         // into a normal COMPENSATED continuation.
         try {
             if (!succeeded) {
+                Optional<StageHandler> fallback = stageCatalog.fallbackFor(stage.fallbackHandlerKey());
+                if (fallback.isPresent()) {
+                    String primaryFailure = failureDescription(failureReason, failureCause);
+                    recordEvent(workflowId, "orchestrator", "workflow-engine", "fallback_started",
+                            stage.name(), "STARTED", primaryFailure);
+                    FallbackOutcome outcome = runFallbackOnce(stage, fallback.get(), ctx);
+                    if (outcome.succeeded()) {
+                        result = outcome.result();
+                        succeeded = true;
+                        usedFallback = true;
+                        recordEvent(workflowId, "orchestrator", "workflow-engine", "fallback_succeeded",
+                                stage.name(), "OK", primaryFailure);
+                    } else {
+                        failureCause = outcome.failure();
+                        recordEvent(workflowId, "orchestrator", "workflow-engine", "fallback_failed",
+                                stage.name(), "FAILED", failureDescription(failureReason, outcome.failure()));
+                    }
+                }
+            }
+
+            if (!succeeded) {
                 // Design note (brief, Task 33): a compensated failure does NOT throw — the batch
                 // and the workflow proceed normally toward COMPLETED. Compensation is "the failure
                 // was handled," a controlled saga-style continuation, not a block. Only an
@@ -1288,7 +1311,7 @@ public class WorkflowEngine {
                     try {
                         compensated = compensationRegistry.run(stage.name(), result != null ? result : Map.of());
                     } catch (RuntimeException compensationFailure) {
-                        // Codex REQUEST AMENDMENTS item 2: a compensation function that itself
+                        // Independent review amendments item 2: a compensation function that itself
                         // throws must not corrupt state or leave the workflow stuck RUNNING.
                         // Persist the same endedAt/result bookkeeping every other terminal path
                         // gets, mark the step SAFE_STOPPED, emit an audit event naming the failure,
@@ -1364,7 +1387,7 @@ public class WorkflowEngine {
                     evaluation.setReason(pr.reason());
                     policyEvaluationRepository.save(evaluation);
                     // A mandatory FAIL blocks unless an approved, unexpired exception covers this
-                    // policy — see hasApprovedUnexpiredException below. Codex REQUEST AMENDMENTS
+                    // policy — see hasApprovedUnexpiredException below. Independent review amendments
                     // item 3: EXCEPTION_REQUESTED blocks the same way FAIL does — it is still not
                     // a PASS, just a differently-labeled failure the audit trail can distinguish
                     // as "the stage explicitly flagged this, awaiting a decision" rather than a
@@ -1395,7 +1418,7 @@ public class WorkflowEngine {
                 }
             }
 
-            step.setStatus(StepStatus.SUCCEEDED);
+            step.setStatus(usedFallback ? StepStatus.SUCCEEDED_WITH_FALLBACK : StepStatus.SUCCEEDED);
             step.setEndedAt(Instant.now());
             step.setResult(result != null ? result : Map.of());
             stepRepository.save(step);
@@ -1421,6 +1444,39 @@ public class WorkflowEngine {
         }
     }
 
+    private FallbackOutcome runFallbackOnce(StageDefinition stage, StageHandler fallback,
+                                             WorkflowContext ctx) {
+        StageHandler isolatedFallback = attemptCtx -> {
+            attemptCtx.beginAttempt(stage.name());
+            Map<String, Object> fallbackResult = fallback.run(attemptCtx);
+            TreeSet<String> used = new TreeSet<>();
+            addStrings(used, attemptCtx.artifacts().get("fallbacksUsed"));
+            used.add(stage.name());
+            attemptCtx.addArtifact("fallbacksUsed", List.copyOf(used));
+            return fallbackResult;
+        };
+        StageHandler timeoutBounded = TimeoutExecutor.withTimeout(
+                isolatedFallback, stage.timeoutSeconds() * 1000L);
+        ctx.beginStageAttribution(stage.name());
+        try {
+            return new FallbackOutcome(true, timeoutBounded.run(ctx), null);
+        } catch (RuntimeException failure) {
+            return new FallbackOutcome(false, null, failure);
+        } finally {
+            ctx.sealAttempt(stage.name());
+            ctx.endStageAttribution();
+        }
+    }
+
+    private static String failureDescription(SafeStopReason reason, Throwable cause) {
+        String detail = cause == null ? "primary handler did not succeed"
+                : cause.getClass().getSimpleName() + ": " + String.valueOf(cause.getMessage());
+        String value = reason + " — " + detail;
+        return value.length() <= REASON_MAX_LENGTH ? value : value.substring(0, REASON_MAX_LENGTH);
+    }
+
+    private record FallbackOutcome(boolean succeeded, Map<String, Object> result, Throwable failure) { }
+
     // Task 29: a mandatory FAIL is excused only by an exception that is BOTH recorded for this
     // exact (workflowId, policyId) pair AND not yet expired — a granted-but-expired exception
     // never silently resurrects (REQ-013-adjacent: approval is never inferred from something that
@@ -1437,7 +1493,7 @@ public class WorkflowEngine {
     // grant it ahead of time, before the stage that would otherwise fail ever runs).
     public void grantPolicyException(String workflowId, String policyId, String reason, String scope,
                                       String approvingAuthority, String compensatingControl, Instant expiry) {
-        // Codex REQUEST AMENDMENTS item 4: validate before touching any state — same discipline
+        // Independent review amendments item 4: validate before touching any state — same discipline
         // approve() already applies to its own inputs. Every field here maps directly to a
         // data-model.md-approved NOT NULL column (see PolicyExceptionEntity); this is the
         // application-level enforcement that guarantees this engine's own insert path can never
@@ -1501,7 +1557,7 @@ public class WorkflowEngine {
     // batches before that pending approval decision is ever made — an approval-gate bypass. Only the
     // exit-gate-pending case was genuinely idempotent as originally claimed.
     public void retrySafeStopped(String workflowId) {
-        // Codex REQUEST AMENDMENTS follow-up (Section 17 review): the SAFE_STOPPED -> RUNNING
+        // Independent review amendments follow-up (Section 17 review): the SAFE_STOPPED -> RUNNING
         // transition below is now claimed atomically under the instance's existing pessimistic
         // row lock, exactly like claimStage does for a step's PENDING -> RUNNING transition.
         // Before this, two concurrent retrySafeStopped(workflowId) calls could both read the
@@ -1534,11 +1590,6 @@ public class WorkflowEngine {
         // completed it before some unrelated later failure).
         try {
             WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
-            StageRegistration registration = registry.get(workflowId);
-            if (registration == null) {
-                throw new IllegalStateException("workflow " + workflowId + " has no in-memory stage "
-                        + "registration (process restarted?) — cannot resolve policy boundaries or resets");
-            }
             // Task 35 remediation: every currently-ACTIVE row, not just rows at the instance's
             // current plan_version — a survivor from an earlier replan keeps its own original
             // plan_version forever (it is never re-stamped), so filtering by the instance's current
@@ -1551,7 +1602,7 @@ public class WorkflowEngine {
             List<WorkflowStepEntity> steps =
                     stepRepository.findByWorkflowIdAndStatusNotOrderBySequence(workflowId, StepStatus.INVALIDATED);
 
-            // Codex REQUEST AMENDMENTS item 6: a POLICY_BLOCKED step's handler already ran to
+            // Independent review amendments item 6: a POLICY_BLOCKED step's handler already ran to
             // completion once — re-running it would risk double-executing whatever real side
             // effect it had. Resolve ONLY the policy boundary against the persisted (post-handler)
             // evidence, never touching stage.handler() again. A RETRY_EXHAUSTED,
@@ -1562,8 +1613,7 @@ public class WorkflowEngine {
             for (WorkflowStepEntity step : steps) {
                 if (step.getStatus() != StepStatus.SAFE_STOPPED) continue;
                 if (step.getSafeStopReason() == SafeStopReason.POLICY_BLOCKED) {
-                    StageDefinition stage = registration.stages().stream()
-                            .filter(s -> s.name().equals(step.getName())).findFirst().orElseThrow();
+                    StageDefinition stage = stageFromRow(step);
                     if (reevaluatePolicyBoundary(workflowId, step, stage)) {
                         anyProgress = true;
                     }
@@ -1641,7 +1691,7 @@ public class WorkflowEngine {
         return Boolean.TRUE.equals(reset);
     }
 
-    // Codex REQUEST AMENDMENTS item 6: re-runs ONLY the policy check for a step whose handler
+    // Independent review amendments item 6: re-runs ONLY the policy check for a step whose handler
     // already succeeded, against the SAME context it succeeded against — never calls
     // stage.handler() again. Returns whether the boundary actually cleared (the step transitioned
     // to SUCCEEDED); if still blocked, the step is left exactly as it was (SAFE_STOPPED,
@@ -1696,16 +1746,8 @@ public class WorkflowEngine {
     // always-null) column.
     private void recordEvent(String workflowId, String actorType, String actorId, String action,
                               String affectedArtifact, String result, String reason, Map<String, Object> payload) {
-        WorkflowEventEntity event = new WorkflowEventEntity();
-        event.setWorkflowId(workflowId);
-        event.setActorType(actorType);
-        event.setActorId(actorId);
-        event.setAction(action);
-        event.setAffectedArtifact(affectedArtifact);
-        event.setResult(result);
-        event.setReason(reason);
-        event.setPayload(payload);
-        eventRepository.save(event);
+        auditRecorder.record(workflowId, actorType, actorId, action, affectedArtifact, result,
+                reason, payload);
     }
 
     // Task 35 remediation: null, not an exception, when no active row exists — a CONCURRENT
@@ -1725,7 +1767,7 @@ public class WorkflowEngine {
                 .orElse(null);
     }
 
-    // Task 35 remediation (Codex round 7): the generation-aware resolution runFrom's BatchMember
+    // Task 35 remediation (independent review round 7): the generation-aware resolution runFrom's BatchMember
     // construction actually needs. Proving "a live row exists for this name" is not the same as
     // proving "this row is the SAME logical stage `stage` was written for" — a replan() that
     // invalidates the old row and inserts a fresh one under the identical name produces a row whose
@@ -1734,20 +1776,7 @@ public class WorkflowEngine {
     // the mismatched row) whenever the two disagree, or when the registration has no tag at all for
     // this name (should not happen for any stage actually in `registration.stages()`, but treated
     // as "not resolvable" rather than an NPE if it ever did).
-    private WorkflowStepEntity resolveIfCurrentGeneration(String workflowId, StageDefinition stage,
-                                                            StageRegistration registration) {
-        WorkflowStepEntity row = activeStepOrNull(workflowId, stage.name());
-        if (row == null) {
-            return null;
-        }
-        Integer expectedPlanVersion = registration.planVersionByName().get(stage.name());
-        if (expectedPlanVersion == null || row.getPlanVersion() != expectedPlanVersion) {
-            return null;
-        }
-        return row;
-    }
-
-    // Task 35 remediation (Codex round 6): a FRESH read of a row a caller has ALREADY resolved and
+    // Task 35 remediation (independent review round 6): a FRESH read of a row a caller has ALREADY resolved and
     // is bound to by its durable id — never a re-resolution by name. Used everywhere runFrom needs
     // this batch's own snapshot's up-to-date status (post-dispatch, mid-gate-scan, etc.) without
     // risking that name now resolving to a DIFFERENT row a concurrent replan() introduced in the
@@ -1769,7 +1798,7 @@ public class WorkflowEngine {
         return step;
     }
 
-    // Extracted from runFrom (Codex REQUEST AMENDMENTS item 6): reused by retrySafeStopped/
+    // Extracted from runFrom (Independent review amendments item 6): reused by retrySafeStopped/
     // reevaluatePolicyBoundary so a POLICY_BLOCKED resume reconstructs the exact same context
     // shape runFrom itself uses, from the same persisted contextJson.
     @SuppressWarnings("unchecked")
@@ -1781,23 +1810,128 @@ public class WorkflowEngine {
         return new WorkflowContext(instance.getCorrelationId(), priorDecisions, priorArtifacts);
     }
 
-    // Task 35 remediation (Codex round 7): `planVersionByName` tags every StageDefinition in
-    // `stages` with the plan_version its CURRENT persisted row is expected to carry. This is what
-    // makes a stale (pre-replan) registration DETECTABLY stale for a specific name, not just "old" —
-    // resolving a row by (workflowId, name, status != INVALIDATED) alone proves "this is the ONLY
-    // currently-live row for this name," never "this row is the SAME logical stage the caller's own
-    // StageDefinition object was written for." A replan() that invalidates the old row and inserts a
-    // fresh one under the SAME name produces a row whose plan_version has advanced; a stale
-    // registration's own tag for that name has not. Comparing the two at resolution time (see
-    // runFrom's BatchMember construction, and approve()'s own resolution) is what lets a stale run
-    // recognize "the row this name currently points to is not the stage I have a StageDefinition
-    // for" and refuse to touch it, rather than claiming and executing the wrong handler against the
-    // right row. Survivors keep their EXISTING tag forever (never re-stamped, matching their row's
-    // own immutable plan_version); only replan()'s own newStages get a fresh tag.
-    private record StageRegistration(List<StageDefinition> stages, DependencyGraph graph,
-                                      Map<String, Integer> planVersionByName) { }
+    public void resumeAll() {
+        for (WorkflowInstanceEntity instance : instanceRepository.findAll()) {
+            if (instance.getStatus() == WorkflowStatus.RUNNING
+                    || instance.getStatus() == WorkflowStatus.PENDING_APPROVAL
+                    || instance.getStatus() == WorkflowStatus.REPLANNING) {
+                try {
+                    runFrom(instance.getId());
+                } catch (IllegalStateException recoveryFailure) {
+                    String reason = recoveryFailure.getMessage() == null
+                            ? recoveryFailure.getClass().getSimpleName()
+                            : recoveryFailure.getMessage();
+                    applyInstanceUpdate(instance.getId(), current -> current.setStatus(WorkflowStatus.SAFE_STOPPED));
+                    recordEvent(instance.getId(), "orchestrator", "workflow-engine", "recovery_safe_stopped",
+                            null, "SAFE_STOPPED", reason.length() <= REASON_MAX_LENGTH
+                                    ? reason : reason.substring(0, REASON_MAX_LENGTH));
+                }
+            }
+        }
+    }
 
-    // Task 35 remediation (Codex round 6): binds a StageDefinition to the SPECIFIC persisted row
+    private List<StageDefinition> loadActiveStages(String workflowId) {
+        return stepRepository.findByWorkflowIdAndStatusNotOrderBySequence(workflowId, StepStatus.INVALIDATED)
+                .stream().map(this::stageFromRow).toList();
+    }
+
+    private StageDefinition stageFromRow(WorkflowStepEntity row) {
+        return new StageDefinition(row.getName(), row.getDependsOn(), stageCatalog.handlerFor(row.getName()),
+                row.isEntryApproval(), row.isExitApproval(), row.getMaxRetries(), row.getTimeoutSeconds(),
+                row.getParallelGroup(), row.getActivationConditionKey(), row.getFallbackHandlerKey());
+    }
+
+    private void copyStageConfiguration(StageDefinition stage, WorkflowStepEntity row) {
+        row.setEntryApproval(stage.entryApproval());
+        row.setExitApproval(stage.exitApproval());
+        row.setMaxRetries(stage.maxRetries());
+        row.setTimeoutSeconds(stage.timeoutSeconds());
+        row.setParallelGroup(stage.parallelGroup());
+        row.setActivationConditionKey(stage.activationConditionKey());
+        row.setFallbackHandlerKey(stage.fallbackHandlerKey());
+    }
+
+    private void validateCatalogEntries(List<StageDefinition> stages) {
+        for (StageDefinition stage : stages) {
+            StageHandler registered = stageCatalog.handlerFor(stage.name());
+            if (stage.handler() != registered) {
+                throw new IllegalStateException(
+                        "stage handler does not match the boot-time catalog entry: " + stage.name());
+            }
+            if (stage.activationConditionKey() != null
+                    && stageCatalog.activationConditionFor(stage.activationConditionKey()).isEmpty()) {
+                throw new IllegalStateException(
+                        "no activation condition registered for key: " + stage.activationConditionKey());
+            }
+            if (stage.fallbackHandlerKey() != null
+                    && stageCatalog.fallbackFor(stage.fallbackHandlerKey()).isEmpty()) {
+                throw new IllegalStateException(
+                        "no fallback handler registered for key: " + stage.fallbackHandlerKey());
+            }
+        }
+    }
+
+    private boolean recoverAbandonedRunningSteps(String workflowId) {
+        boolean recovered = false;
+        for (WorkflowStepEntity row : stepRepository
+                .findByWorkflowIdAndStatusNotOrderBySequence(workflowId, StepStatus.INVALIDATED)) {
+            if (row.getStatus() != StepStatus.RUNNING || locallyRunningStepIds.contains(row.getId())) {
+                continue;
+            }
+            Boolean reset = transactionTemplate.execute(status -> {
+                WorkflowStepEntity locked = stepRepository.findWithLockById(row.getId()).orElse(null);
+                if (locked == null || locked.getStatus() != StepStatus.RUNNING
+                        || locallyRunningStepIds.contains(locked.getId())) {
+                    return Boolean.FALSE;
+                }
+                locked.setStatus(StepStatus.PENDING);
+                locked.setStartedAt(null);
+                locked.setEndedAt(null);
+                locked.setRetryCount(0);
+                locked.setResult(null);
+                locked.setInputsSnapshot(null);
+                locked.setSafeStopReason(null);
+                stepRepository.save(locked);
+                recordEvent(workflowId, "orchestrator", "workflow-engine",
+                        "recovered_abandoned_running:" + locked.getName(), locked.getName(), "OK",
+                        "reset abandoned RUNNING step for idempotent restart recovery");
+                return Boolean.TRUE;
+            });
+            recovered |= Boolean.TRUE.equals(reset);
+        }
+        return recovered;
+    }
+
+    private boolean markSkippedWhenInactive(BatchMember member, WorkflowContext context) {
+        String conditionKey = member.stage().activationConditionKey();
+        if (conditionKey == null) {
+            return false;
+        }
+        boolean active = stageCatalog.activationConditionFor(conditionKey)
+                .orElseThrow(() -> new IllegalStateException(
+                        "no activation condition registered for key: " + conditionKey))
+                .test(context);
+        if (active) {
+            return false;
+        }
+        Boolean skipped = transactionTemplate.execute(status -> {
+            WorkflowStepEntity locked = stepRepository.findWithLockById(member.row().getId()).orElse(null);
+            if (locked == null || locked.getStatus() != StepStatus.PENDING) {
+                return Boolean.FALSE;
+            }
+            locked.setStatus(StepStatus.SKIPPED);
+            locked.setEndedAt(Instant.now());
+            locked.setInputsSnapshot(Map.copyOf(context.artifacts()));
+            stepRepository.save(locked);
+            recordEvent(locked.getWorkflowId(), "orchestrator", "workflow-engine",
+                    "stage_skipped:" + locked.getName(), locked.getName(), "OK",
+                    "activation condition evaluated false: " + conditionKey);
+            return Boolean.TRUE;
+        });
+        return Boolean.TRUE.equals(skipped);
+    }
+
+    // Task 35 remediation (independent review round 6): binds a StageDefinition to the SPECIFIC persisted row
     // resolved for it at ONE moment in time (the top of a single batch's processing in runFrom) —
     // `row` is null if no active (non-invalidated) row existed for this name at that moment. Every
     // later step of processing this batch member (entry-gate check, dispatch/claim/execute,

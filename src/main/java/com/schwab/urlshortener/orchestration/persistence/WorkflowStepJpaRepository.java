@@ -8,13 +8,15 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
 
 public interface WorkflowStepJpaRepository extends JpaRepository<WorkflowStepEntity, Long> {
+    List<WorkflowStepEntity> findByWorkflowId(String workflowId);
+
     // Corrected 2026-09-13: plan-version-scoped since Task 21 — kept for direct, exact-version
     // lookups (tests asserting against a specific historical plan_version; a caller that genuinely
     // wants "the row created under plan_version N" regardless of whether it is still live).
     Optional<WorkflowStepEntity> findByWorkflowIdAndPlanVersionAndName(String workflowId, int planVersion, String name);
     List<WorkflowStepEntity> findByWorkflowIdAndPlanVersionOrderBySequence(String workflowId, int planVersion);
 
-    // Task 35 remediation (Codex round 3): plan_version is immutable once a row is created — it
+    // Task 35 remediation (independent review round 3): plan_version is immutable once a row is created — it
     // records the plan active when the row was created, never re-stamped afterward (a replan that
     // leaves a stage untouched leaves its row, and its plan_version, exactly as they were). A bare
     // (workflowId, name) lookup is still ambiguous once a replan can leave an INVALIDATED row and
@@ -46,7 +48,7 @@ public interface WorkflowStepJpaRepository extends JpaRepository<WorkflowStepEnt
     // ordering guarantee needed here (callers reconstruct the dependency graph from depends_on).
     List<WorkflowStepEntity> findByWorkflowIdAndPlanVersion(String workflowId, int planVersion);
 
-    // Task 35 remediation (Codex round 6): pessimistic row lock addressed by the row's own durable
+    // Task 35 remediation (independent review round 6): pessimistic row lock addressed by the row's own durable
     // identity (its primary key), not by (workflowId, name, status). A name-based lookup is
     // ambiguous the instant a replan() has invalidated one row and inserted a fresh one under the
     // SAME name: "the current non-invalidated row named X" can silently resolve to a DIFFERENT

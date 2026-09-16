@@ -30,11 +30,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 // this slice context — ScenarioRunner's constructor now requires it as a bean. @Import must
 // name it explicitly, the same way ScenarioRunner itself is explicitly imported.
 @DataJpaTest
-@Import({ScenarioRunner.class, WorkflowEngine.class})
+@Import({ScenarioRunner.class, WorkflowEngine.class, com.schwab.urlshortener.orchestration.OrchestrationConfig.class})
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 class ScenarioRunnerSmokeTest {
 
     @Autowired private ScenarioRunner runner;
+
+    @Test
+    void recognizesMetricsReportWithoutChangingScenarioArgumentParsing() {
+        assertThat(ScenarioRunner.isMetricsReport(new String[]{"--metrics-report"})).isTrue();
+        assertThat(ScenarioRunner.isMetricsReport(new String[]{"--scenario=greenfield"})).isFalse();
+        assertThat(ScenarioRunner.extractScenarioArg(
+                new String[]{"--metrics-report", "--scenario=greenfield"})).isEqualTo("greenfield");
+    }
 
     @Test
     void cliRunsAndPrintsJsonLinesForGreenfield() throws Exception {

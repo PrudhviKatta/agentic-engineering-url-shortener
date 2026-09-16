@@ -50,7 +50,7 @@ class RetryTest {
 
     @Test
     void backoffIsInvokedWithExponentiallyGrowingDelaysDeterministically() {
-        // Codex REQUEST AMENDMENTS item 5: proves the backoff policy is genuinely invoked with the
+        // Independent review amendments item 5: proves the backoff policy is genuinely invoked with the
         // correct exponentially-growing values, WITHOUT any wall-clock/timing assertion (which
         // would be inherently flaky under load) — a fake sleep function records exactly what
         // RetryExecutor computed and requested, in place of an actual Thread.sleep.

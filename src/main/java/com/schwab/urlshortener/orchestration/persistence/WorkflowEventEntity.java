@@ -35,7 +35,7 @@ public class WorkflowEventEntity {
 
     private String result;
 
-    // Corrected 2026-09-15 (Codex round 4 finding): data-model.md Section 5 specifies
+    // Corrected 2026-09-15 (independent review round 4 finding): data-model.md Section 5 specifies
     // VARCHAR(1024) for this column ("Human-readable rationale — required by REQ-026 to be
     // present on every event that has one"); the entity carried no explicit length at all, so
     // Hibernate's default (255) was silently in effect instead — schema drift from the documented

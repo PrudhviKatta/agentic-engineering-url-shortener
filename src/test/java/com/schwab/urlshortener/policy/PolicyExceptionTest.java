@@ -25,6 +25,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 class PolicyExceptionTest {
 
+    private static final StageHandler COMPLIANT_IMPLEMENTATION = ctx -> {
+        ctx.addArtifact("urlSchemeAllowlistEnforced", true);
+        ctx.addArtifact("ssrfGuardEnforced", true);
+        return Map.of();
+    };
+    private static final List<StageDefinition> COMPLIANT_STAGES =
+            List.of(StageDefinition.of("implementation", List.of(), COMPLIANT_IMPLEMENTATION));
+
     @Autowired private WorkflowInstanceJpaRepository instanceRepository;
     @Autowired private WorkflowStepJpaRepository stepRepository;
     @Autowired private WorkflowEventJpaRepository eventRepository;
@@ -35,7 +43,7 @@ class PolicyExceptionTest {
 
     @Test
     void approvedUnexpiredExceptionAllowsProgressionPastMandatoryFail() {
-        // Codex REQUEST AMENDMENTS item 3: missing evidence now blocks a mandatory policy (was
+        // Independent review amendments item 3: missing evidence now blocks a mandatory policy (was
         // NOT_APPLICABLE before, harmless) — satisfy every OTHER mandatory policy on this stage
         // explicitly so only SEC-001 (the one under test) is the reason for the safe-stop.
         StageHandler impl = ctx -> {
@@ -47,7 +55,8 @@ class PolicyExceptionTest {
         PolicyEngine policyEngine = new PolicyEngine("policies/v1.yaml");
         WorkflowEngine engine = new WorkflowEngine(
                 instanceRepository, stepRepository, eventRepository, approvalRepository, transactionManager,
-                policyEvaluationRepository, policyEngine, policyExceptionRepository);
+                policyEvaluationRepository, policyEngine, policyExceptionRepository, null,
+                com.schwab.urlshortener.support.TestStageCatalogs.fromStages(stages));
 
         String workflowId = engine.submit("demo", stages, "run-29a");
 
@@ -68,7 +77,7 @@ class PolicyExceptionTest {
 
     @Test
     void expiredExceptionDoesNotExcuseTheMandatoryFail() {
-        // Codex REQUEST AMENDMENTS item 3: missing evidence now blocks a mandatory policy (was
+        // Independent review amendments item 3: missing evidence now blocks a mandatory policy (was
         // NOT_APPLICABLE before, harmless) — satisfy every OTHER mandatory policy on this stage
         // explicitly so only SEC-001 (the one under test) is the reason for the safe-stop.
         StageHandler impl = ctx -> {
@@ -80,10 +89,11 @@ class PolicyExceptionTest {
         PolicyEngine policyEngine = new PolicyEngine("policies/v1.yaml");
         WorkflowEngine engine = new WorkflowEngine(
                 instanceRepository, stepRepository, eventRepository, approvalRepository, transactionManager,
-                policyEvaluationRepository, policyEngine, policyExceptionRepository);
+                policyEvaluationRepository, policyEngine, policyExceptionRepository, null,
+                com.schwab.urlshortener.support.TestStageCatalogs.fromStages(stages));
 
         String workflowId = engine.submit("demo", stages, "run-29b");
-        // Codex REQUEST AMENDMENTS item 4: grantPolicyException now rejects an already-expired
+        // Independent review amendments item 4: grantPolicyException now rejects an already-expired
         // expiry outright, so an exception can no longer be granted expired in one step — grant
         // one with a short future expiry and let it actually lapse before retrying, to exercise
         // hasApprovedUnexpiredException's real expiry check rather than a rejected grant.
@@ -103,7 +113,7 @@ class PolicyExceptionTest {
 
     @Test
     void grantingAnExceptionForADifferentPolicyDoesNotExcuseThisOne() {
-        // Codex REQUEST AMENDMENTS item 3: missing evidence now blocks a mandatory policy (was
+        // Independent review amendments item 3: missing evidence now blocks a mandatory policy (was
         // NOT_APPLICABLE before, harmless) — satisfy every OTHER mandatory policy on this stage
         // explicitly so only SEC-001 (the one under test) is the reason for the safe-stop.
         StageHandler impl = ctx -> {
@@ -115,7 +125,8 @@ class PolicyExceptionTest {
         PolicyEngine policyEngine = new PolicyEngine("policies/v1.yaml");
         WorkflowEngine engine = new WorkflowEngine(
                 instanceRepository, stepRepository, eventRepository, approvalRepository, transactionManager,
-                policyEvaluationRepository, policyEngine, policyExceptionRepository);
+                policyEvaluationRepository, policyEngine, policyExceptionRepository, null,
+                com.schwab.urlshortener.support.TestStageCatalogs.fromStages(stages));
 
         String workflowId = engine.submit("demo", stages, "run-29c");
         engine.grantPolicyException(workflowId, "SEC-002", "unrelated policy", "n/a",
@@ -135,7 +146,8 @@ class PolicyExceptionTest {
         List<StageDefinition> stages = List.of(StageDefinition.of("implementation", List.of(), impl));
         WorkflowEngine engine = new WorkflowEngine(
                 instanceRepository, stepRepository, eventRepository, approvalRepository, transactionManager,
-                policyEvaluationRepository, null, policyExceptionRepository); // no PolicyEngine: never safe-stops
+                policyEvaluationRepository, null, policyExceptionRepository, null,
+                com.schwab.urlshortener.support.TestStageCatalogs.fromStages(stages)); // no PolicyEngine: never safe-stops
 
         String workflowId = engine.submit("demo", stages, "run-29d");
 
@@ -146,20 +158,17 @@ class PolicyExceptionTest {
                 .isInstanceOf(IllegalStateException.class);
     }
 
-    // --- Codex REQUEST AMENDMENTS item 4: harden grantPolicyException ---
+    // --- Independent review amendments item 4: harden grantPolicyException ---
 
     private WorkflowEngine engineWithRealPolicy() {
         return new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository,
-                transactionManager, policyEvaluationRepository, new PolicyEngine("policies/v1.yaml"), policyExceptionRepository);
+                transactionManager, policyEvaluationRepository, new PolicyEngine("policies/v1.yaml"),
+                policyExceptionRepository, null,
+                com.schwab.urlshortener.support.TestStageCatalogs.fromStages(COMPLIANT_STAGES));
     }
 
     private String aWorkflowId(WorkflowEngine engine) {
-        StageHandler impl = ctx -> {
-            ctx.addArtifact("urlSchemeAllowlistEnforced", true);
-            ctx.addArtifact("ssrfGuardEnforced", true);
-            return Map.of();
-        };
-        return engine.submit("demo", List.of(StageDefinition.of("implementation", List.of(), impl)), "run-4x");
+        return engine.submit("demo", COMPLIANT_STAGES, "run-4x");
     }
 
     @Test

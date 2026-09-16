@@ -188,7 +188,7 @@ targeting a gated stage's downstream correctly reaches only the not-yet-started 
   "approval is never inferred from silence" and REQ-013's negative criteria — a future rejection or
   amendment of this ADR would need to preserve those properties under whatever alternative
   mechanism is proposed instead. **Corrected by the Task 10 corrective batch**
-  (`codex-recommend.md` Finding #12): this bullet previously read "is proposed pending...
+  (the pre-implementation external review Finding #12): this bullet previously read "is proposed pending...
   accept/reject at Task 7" after Task 7 had already run and this ADR's own Status header above had
   already moved to Accepted.
 

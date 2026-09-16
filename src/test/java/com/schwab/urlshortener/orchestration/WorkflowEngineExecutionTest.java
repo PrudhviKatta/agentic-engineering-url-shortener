@@ -28,8 +28,8 @@ class WorkflowEngineExecutionTest {
     @Autowired private ApprovalJpaRepository approvalRepository;
     @Autowired private PlatformTransactionManager transactionManager;
 
-    private WorkflowEngine engine() {
-        return new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository, transactionManager);
+    private WorkflowEngine engine(List<StageDefinition> stages) {
+        return new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository, transactionManager, null, null, null, null, com.schwab.urlshortener.support.TestStageCatalogs.fromStages(stages));
     }
 
     @Test
@@ -42,7 +42,7 @@ class WorkflowEngineExecutionTest {
                 StageDefinition.of("b", List.of("a"), stepB)
         );
 
-        String workflowId = engine().submit("demo", stages, "run-1");
+        String workflowId = engine(stages).submit("demo", stages, "run-1");
 
         WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
         assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.COMPLETED);
@@ -53,7 +53,7 @@ class WorkflowEngineExecutionTest {
 
     @Test
     void submitRunsParallelGroupConcurrently() throws Exception {
-        // Round-6 correction (Codex REQUEST AMENDMENTS item 5): a Thread.sleep-based ordering
+        // Round-6 correction (Independent review amendments item 5): a Thread.sleep-based ordering
         // assertion is inherently non-deterministic (a slow CI runner can let the "slow" handler
         // finish first). This proves genuine concurrency instead: both handlers must independently
         // reach bothStarted.countDown() before either is allowed past releaseGate — impossible
@@ -78,7 +78,7 @@ class WorkflowEngineExecutionTest {
 
         ExecutorService submitExecutor = Executors.newSingleThreadExecutor();
         try {
-            Future<String> future = submitExecutor.submit(() -> engine().submit("demo", stages, "run-2"));
+            Future<String> future = submitExecutor.submit(() -> engine(stages).submit("demo", stages, "run-2"));
 
             assertThat(bothStarted.await(5, TimeUnit.SECONDS)).isTrue();
             releaseGate.countDown();

@@ -30,7 +30,7 @@ public class WorkflowContext {
     // key) closes it: the caller now merges the values THIS map itself captured, never re-reading
     // the shared `artifacts` map for a value it wants to trust.
     //
-    // 7th independent-review finding (Section 18 follow-up review, round 2 — Codex's own direct
+    // 7th independent-review finding (Section 18 follow-up review, round 2 — the independent review's own direct
     // review of the 6th finding's fix): the 6th finding's fix (a per-stage attemptGeneration counter
     // checked, non-atomically, at the top of addArtifact) had three real gaps, all now closed by the
     // fields/methods below:
@@ -119,7 +119,7 @@ public class WorkflowContext {
     // log of "what was attempted", not evidence a policy or a later attempt is asked to trust, so a
     // failed attempt's own decision entry (e.g. "requirement_ingested" before it went on to throw)
     // is legitimate history, not stale evidence. This is an explicit design choice, not an oversight
-    // (Codex's Section 18 follow-up round 2 asked this be called out rather than left silent): if a
+    // (the independent review's Section 18 follow-up round 2 asked this be called out rather than left silent): if a
     // future caller ever needs to filter decisions by which attempt produced them, the timestamp
     // already recorded here is sufficient to reconstruct that after the fact without new plumbing.
     public void recordDecision(String actor, String decision, String rationale) {
@@ -234,7 +234,7 @@ public class WorkflowContext {
     public String correlationId() { return correlationId; }
     public List<Map<String, Object>> decisions() { return decisions; }
 
-    // Read-only view (Codex round 3 hardening, carried forward from Section 21): a handler must go
+    // Read-only view (independent review round 3 hardening, carried forward from Section 21): a handler must go
     // through addArtifact — with its attempt-generation check and per-stage attribution — to
     // contribute a value; it must never be able to bypass that by mutating the map this accessor
     // returns directly. Collections.unmodifiableMap wraps the SAME backing map (not a copy), so

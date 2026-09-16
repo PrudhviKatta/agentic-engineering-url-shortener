@@ -10,6 +10,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.ResponseEntity;
+import org.springframework.transaction.PlatformTransactionManager;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -21,11 +22,16 @@ class WorkflowControllerContractTest {
 
     @Autowired private WorkflowInstanceJpaRepository instanceRepository;
     @Autowired private WorkflowEventJpaRepository eventRepository;
-    // Corrected 2026-09-13: autowire the shared @Component WorkflowEngine bean — the SAME
-    // instance WorkflowController holds — rather than constructing a private one. Using a
-    // separate `new WorkflowEngine(...)` here would prove nothing about the actual bug this
-    // task fixes (WorkflowController seeing workflows submitted elsewhere in the same process).
-    @Autowired private WorkflowEngine engine;
+    @Autowired private WorkflowStepJpaRepository stepRepository;
+    @Autowired private ApprovalJpaRepository approvalRepository;
+    @Autowired private PlatformTransactionManager transactionManager;
+    @Autowired private WorkflowEngine sharedEngine;
+
+    private WorkflowEngine engine(List<StageDefinition> stages) {
+        return new WorkflowEngine(instanceRepository, stepRepository, eventRepository,
+                approvalRepository, transactionManager, null, null, null, null,
+                com.schwab.urlshortener.support.TestStageCatalogs.fromStages(stages));
+    }
 
     private String url(String path) { return "http://localhost:" + port + path; }
 
@@ -36,12 +42,12 @@ class WorkflowControllerContractTest {
         // directly through the shared engine the same way ScenarioRunner does, then
         // exercise the read-only HTTP surface against it.
         List<StageDefinition> stages = List.of(StageDefinition.of("only", List.of(), ctx -> Map.of("ok", true)));
-        String workflowId = engine.submit("demo", stages, "contract-test");
+        String workflowId = engine(stages).submit("demo", stages, "contract-test");
 
         ResponseEntity<Map> stateResp = rest.getForEntity(url("/workflows/" + workflowId), Map.class);
         assertThat(stateResp.getStatusCode().value()).isEqualTo(200);
         assertThat(stateResp.getBody().get("status")).isEqualTo("COMPLETED");
-        // Round-6 correction (Codex REQUEST AMENDMENTS item 3): openapi.yaml's
+        // Round-6 correction (Independent review amendments item 3): openapi.yaml's
         // WorkflowStateResponse requires correlationId, planVersion, and decisionLineage.
         assertThat(stateResp.getBody().get("correlationId")).isEqualTo("contract-test");
         assertThat(stateResp.getBody().get("planVersion")).isEqualTo(1);
@@ -82,7 +88,7 @@ class WorkflowControllerContractTest {
                     ctx.recordDecision("agent", "propose", "initial design looks sound");
                     return Map.of();
                 }));
-        String workflowId = engine.submit("demo", stages, "contract-test-5");
+        String workflowId = engine(stages).submit("demo", stages, "contract-test-5");
 
         ResponseEntity<Map> stateResp = rest.getForEntity(url("/workflows/" + workflowId), Map.class);
         List<Map<String, Object>> lineage = (List<Map<String, Object>>) stateResp.getBody().get("decisionLineage");
@@ -97,7 +103,7 @@ class WorkflowControllerContractTest {
     void invalidApprovalDecisionReturns400() {
         List<StageDefinition> stages = List.of(
                 new StageDefinition("risky", List.of(), ctx -> Map.of(), true, false, 0, 30, null, null, null));
-        String workflowId = engine.submit("demo", stages, "contract-test-3");
+        String workflowId = engine(stages).submit("demo", stages, "contract-test-3");
 
         ResponseEntity<Map> resp = rest.postForEntity(
                 url("/workflows/" + workflowId + "/approvals/risky"),
@@ -110,7 +116,7 @@ class WorkflowControllerContractTest {
     void missingOrBlankActorReturns400() {
         List<StageDefinition> stages = List.of(
                 new StageDefinition("risky", List.of(), ctx -> Map.of(), true, false, 0, 30, null, null, null));
-        String workflowId = engine.submit("demo", stages, "contract-test-6");
+        String workflowId = engine(stages).submit("demo", stages, "contract-test-6");
 
         ResponseEntity<Map> missingResp = rest.postForEntity(
                 url("/workflows/" + workflowId + "/approvals/risky"),
@@ -130,7 +136,7 @@ class WorkflowControllerContractTest {
     void missingOrBlankReasonReturns400() {
         List<StageDefinition> stages = List.of(
                 new StageDefinition("risky", List.of(), ctx -> Map.of(), true, false, 0, 30, null, null, null));
-        String workflowId = engine.submit("demo", stages, "contract-test-7");
+        String workflowId = engine(stages).submit("demo", stages, "contract-test-7");
 
         ResponseEntity<Map> missingResp = rest.postForEntity(
                 url("/workflows/" + workflowId + "/approvals/risky"),
@@ -162,7 +168,7 @@ class WorkflowControllerContractTest {
                     ctx.addArtifact("from-three", "C");
                     return Map.of();
                 }));
-        String workflowId = engine.submit("demo", stages, "contract-test-8");
+        String workflowId = engine(stages).submit("demo", stages, "contract-test-8");
 
         ResponseEntity<Map> stateResp = rest.getForEntity(url("/workflows/" + workflowId), Map.class);
         assertThat(stateResp.getBody().get("status")).isEqualTo("COMPLETED");
@@ -190,7 +196,7 @@ class WorkflowControllerContractTest {
     @Test
     void approvalOnAStepWithNoPendingGateReturns404() {
         List<StageDefinition> stages = List.of(StageDefinition.of("plain", List.of(), ctx -> Map.of()));
-        String workflowId = engine.submit("demo", stages, "contract-test-4");
+        String workflowId = engine(stages).submit("demo", stages, "contract-test-4");
 
         ResponseEntity<Map> resp = rest.postForEntity(
                 url("/workflows/" + workflowId + "/approvals/plain"),
@@ -206,25 +212,27 @@ class WorkflowControllerContractTest {
         // approval endpoint (simulating a separate WorkflowController-driven caller) — this
         // only works if both go through the SAME WorkflowEngine bean and its registry.
         List<StageDefinition> stages = List.of(
-                new StageDefinition("risky", List.of(), ctx -> Map.of(), true, false, 0, 30, null, null, null));
-        String workflowId = engine.submit("demo", stages, "contract-test-2");
+                new StageDefinition("human_clarification", List.of(), ctx -> Map.of(),
+                        true, false, 0, 30, null, null, null));
+        String workflowId = engine(stages).submit("demo", stages, "contract-test-2");
 
         ResponseEntity<Map> beforeResp = rest.getForEntity(url("/workflows/" + workflowId), Map.class);
         assertThat(beforeResp.getBody().get("status")).isEqualTo("PENDING_APPROVAL");
 
         ResponseEntity<Void> approveResp = rest.postForEntity(
-                url("/workflows/" + workflowId + "/approvals/risky"),
+                url("/workflows/" + workflowId + "/approvals/human_clarification"),
                 Map.of("decision", "approved", "actor", "human", "reason", "looks safe"),
                 Void.class);
-        // Round-6 correction (Codex REQUEST AMENDMENTS item 3): openapi.yaml specifies 204 for a
+        // Round-6 correction (Independent review amendments item 3): openapi.yaml specifies 204 for a
         // valid approval, not the framework's implicit 200.
         assertThat(approveResp.getStatusCode().value()).isEqualTo(204);
 
         ResponseEntity<Map> afterResp = rest.getForEntity(url("/workflows/" + workflowId), Map.class);
         assertThat(afterResp.getBody().get("status")).isEqualTo("COMPLETED");
+        assertThat(sharedEngine).isNotNull();
     }
 
-    // --- Codex REQUEST AMENDMENTS item 1 (T026a): POST /workflows ---
+    // --- Independent review amendments item 1 (T026a): POST /workflows ---
 
     @Test
     void postWorkflowsCreatesTheBaseline12NodeGraph() {
@@ -254,7 +262,7 @@ class WorkflowControllerContractTest {
 
     @Test
     void postWorkflowsPersistsTheSubmittedRequirementTextVerbatimWithProvenance() {
-        // Codex REQUEST AMENDMENTS follow-up (Section 17 review): requirementText was validated
+        // Independent review amendments follow-up (Section 17 review): requirementText was validated
         // at the controller but then discarded — never reaching contextJson or any persisted
         // column. Confirms the exact submitted text now shows up in the FIRST stage's own
         // persisted inputsSnapshot (contextArtifactsAtStageStart), not merely that 201 was

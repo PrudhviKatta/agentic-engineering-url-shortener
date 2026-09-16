@@ -398,8 +398,8 @@ it is still cheap to fix, is:
 Each of the twenty named anti-patterns was checked against the current artifact set. Findings stated
 explicitly, including confirmed-absent cases, per this task's instructions not to skip silently.
 
-**Corrective note (Task 10 corrective batch, prompted by the external Codex review,
-`codex-recommend.md` Finding #3):** the table below previously described several of these findings
+**Corrective note (Task 10 corrective batch, prompted by the external independent review,
+the pre-implementation external review Finding #3):** the table below previously described several of these findings
 using "Absent" language that read as a runtime/testing claim (e.g. "`X` exists," "`Y` is tested,"
 "`Z` enforces..."), even though this is a pre-implementation, documentation-only gate — no Java
 production code exists in this repository beyond the Spring Boot entry point, and nothing has

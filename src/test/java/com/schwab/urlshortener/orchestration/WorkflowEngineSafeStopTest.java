@@ -49,7 +49,7 @@ class WorkflowEngineSafeStopTest {
         List<StageDefinition> stages = List.of(StageDefinition.of("implementation", List.of(), impl));
         PolicyEngine policyEngine = new PolicyEngine("policies/v1.yaml");
         WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository,
-                approvalRepository, transactionManager, policyEvaluationRepository, policyEngine);
+                approvalRepository, transactionManager, policyEvaluationRepository, policyEngine, null, null, com.schwab.urlshortener.support.TestStageCatalogs.fromStages(stages));
 
         String workflowId = engine.submit("demo", stages, "safe-stop-policy");
 
@@ -74,7 +74,7 @@ class WorkflowEngineSafeStopTest {
                 new StageDefinition("flaky", List.of(), alwaysFails, false, false, 1, 5, null, null, null));
         WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository,
                 approvalRepository, transactionManager, policyEvaluationRepository, null,
-                policyExceptionRepository, new CompensationRegistry()); // nothing registered
+                policyExceptionRepository, new CompensationRegistry(), com.schwab.urlshortener.support.TestStageCatalogs.fromStages(stages)); // nothing registered
 
         String workflowId = engine.submit("demo", stages, "safe-stop-retry");
 
@@ -107,19 +107,22 @@ class WorkflowEngineSafeStopTest {
             return Map.of();
         };
         PolicyEngine policyEngine = new PolicyEngine("policies/v1.yaml");
+        List<StageDefinition> policyStages =
+                List.of(StageDefinition.of("implementation", List.of(), policyFailing));
         WorkflowEngine policyEngineInstance = new WorkflowEngine(instanceRepository, stepRepository,
                 eventRepository, approvalRepository, transactionManager, policyEvaluationRepository,
-                policyEngine);
-        String policyWorkflowId = policyEngineInstance.submit("demo",
-                List.of(StageDefinition.of("implementation", List.of(), policyFailing)), "safe-stop-both-a");
+                policyEngine, null, null,
+                com.schwab.urlshortener.support.TestStageCatalogs.fromStages(policyStages));
+        String policyWorkflowId = policyEngineInstance.submit("demo", policyStages, "safe-stop-both-a");
 
         StageHandler alwaysFails = ctx -> { throw new TransientStageException("simulated"); };
+        List<StageDefinition> retryStages = List.of(
+                new StageDefinition("flaky", List.of(), alwaysFails, false, false, 1, 5, null, null, null));
         WorkflowEngine retryEngineInstance = new WorkflowEngine(instanceRepository, stepRepository,
                 eventRepository, approvalRepository, transactionManager, policyEvaluationRepository, null,
-                policyExceptionRepository, new CompensationRegistry());
-        String retryWorkflowId = retryEngineInstance.submit("demo",
-                List.of(new StageDefinition("flaky", List.of(), alwaysFails, false, false, 1, 5, null, null, null)),
-                "safe-stop-both-b");
+                policyExceptionRepository, new CompensationRegistry(),
+                com.schwab.urlshortener.support.TestStageCatalogs.fromStages(retryStages));
+        String retryWorkflowId = retryEngineInstance.submit("demo", retryStages, "safe-stop-both-b");
 
         WorkflowStepEntity policyStep = stepRepository
                 .findByWorkflowIdAndPlanVersionAndName(policyWorkflowId, 1, "implementation").orElseThrow();

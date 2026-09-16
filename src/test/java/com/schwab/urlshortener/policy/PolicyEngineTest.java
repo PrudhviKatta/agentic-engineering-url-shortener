@@ -29,7 +29,7 @@ class PolicyEngineTest {
 
     @Test
     void mandatoryPolicyWithMissingEvidenceFailsRatherThanBeingNotApplicable() {
-        // Codex REQUEST AMENDMENTS item 3: a matched, mandatory policy must never silently stop
+        // Independent review amendments item 3: a matched, mandatory policy must never silently stop
         // being enforced just because nobody reported evidence for it. This test previously
         // asserted NOT_APPLICABLE here, which was exactly the defect this correction fixes.
         PolicyEngine engine = new PolicyEngine("policies/v1.yaml");

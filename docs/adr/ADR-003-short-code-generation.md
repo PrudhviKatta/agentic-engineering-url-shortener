@@ -149,7 +149,7 @@ rather than silently accepted.
 **Governance:**
 - **Accepted** by the human candidate (Prudhvidhar Reddy Katta) on 2026-09-13, per the same
   governance standing as ADR-001/002 (no self-approval) — see `docs/governance/human-gates-log.md`.
-  **Corrected by the Task 10 corrective batch** (`codex-recommend.md` Finding #12): this bullet
+  **Corrected by the Task 10 corrective batch** (the pre-implementation external review Finding #12): this bullet
   previously read "is proposed pending... accept/reject at Task 7" after Task 7 had already run and
   this ADR's own Status header above had already moved to Accepted.
 

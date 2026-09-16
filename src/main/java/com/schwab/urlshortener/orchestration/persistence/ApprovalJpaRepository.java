@@ -8,7 +8,7 @@ public interface ApprovalJpaRepository extends JpaRepository<ApprovalEntity, Lon
     List<ApprovalEntity> findByWorkflowIdAndPlanVersionAndStepNameAndDecision(
             String workflowId, int planVersion, String stepName, String decision);
 
-    // Round-6 correction (Codex REQUEST AMENDMENTS item 1): stepInstanceId, not stepName, is the
+    // Round-6 correction (Independent review amendments item 1): stepInstanceId, not stepName, is the
     // authoritative key for "was THIS specific step instance approved" — stepName alone cannot
     // distinguish two different WorkflowStepEntity rows that happen to share a name (e.g. a
     // retired-and-reintroduced stage across plan versions, even within the same planVersion if a

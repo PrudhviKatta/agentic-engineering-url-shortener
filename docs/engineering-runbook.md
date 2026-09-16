@@ -2050,7 +2050,7 @@ class WorkflowEngineExecutionTest {
 }
 ```
 
-> **Round-6 correction (2026-09-13, Codex REQUEST AMENDMENTS item 5):** `submitRunsParallelGroupConcurrently`
+> **Round-6 correction (2026-09-13, Independent review amendments item 5):** `submitRunsParallelGroupConcurrently`
 > above is this task's ORIGINAL, now-superseded test — asserting completion ORDER via a
 > `Thread.sleep` is inherently non-deterministic (a slow CI runner can let "slow" finish first). The
 > actual `WorkflowEngineExecutionTest.java` on `main` replaces it with a `CountDownLatch`-based test:
@@ -2538,7 +2538,7 @@ public class WorkflowEngine {
 }
 ```
 
-> **Round-6 correction (2026-09-13, Codex REQUEST AMENDMENTS on Section 13):** the `approve()` and
+> **Round-6 correction (2026-09-13, Independent review amendments on Section 13):** the `approve()` and
 > `isApproved()`/exit-gate shown above are this task's ORIGINAL, now-superseded design — they were
 > found to accept any decision string, never check that the target step was actually
 > `WAITING_APPROVAL` (premature/duplicate/non-gate approvals were silently accepted), key
@@ -3089,7 +3089,7 @@ public class WorkflowController {
 }
 ```
 
-> **Round-6 correction (2026-09-13, Codex REQUEST AMENDMENTS on Section 13):** the snippets above are
+> **Round-6 correction (2026-09-13, Independent review amendments on Section 13):** the snippets above are
 > this task's ORIGINAL, now-superseded design — they omit `correlationId`/`planVersion`/
 > `decisionLineage` and each step's `inputs`/`outputs` from `WorkflowStateResponse`;
 > `workflowId`/`actorId`/`affectedArtifact`/`payload` from `AuditEventResponse`; return an implicit
@@ -4610,7 +4610,7 @@ it is the first task that creates `RequirementIngestionStage`, `RequirementNorma
 `AmbiguityDetectionStage`, `HumanClarificationStage`, and `FinalSummaryStage`, so nothing here is
 forward-referencing a not-yet-created file.
 
-**Correction (2026-09-15, Codex Section 18 follow-up review):** every sample below through this
+**Correction (2026-09-15, independent review Section 18 follow-up review):** every sample below through this
 task's original writing read the submitted requirement text off the `feature` artifact — a leftover
 from an early draft of `WorkflowEngine.submit()` that predates the 4-arg overload
 (`submit(feature, stages, correlationId, requirementText)`) actually shipped in Section 17/18.
@@ -4775,7 +4775,7 @@ public final class RequirementIngestionStage {
     private RequirementIngestionStage() { }
 
     public static Map<String, Object> run(WorkflowContext ctx) {
-        // 2026-09-15 correction (Codex Section 18 follow-up review): the real submitted
+        // 2026-09-15 correction (independent review Section 18 follow-up review): the real submitted
         // requirement lives under the nested "requirement" artifact WorkflowEngine.submit() seeds
         // directly into contextJson (requirement.text) — "feature" is a short slug
         // (e.g. "add-expiration-endpoint"), never the free-text ask itself. A workflow submitted
@@ -4787,7 +4787,7 @@ public final class RequirementIngestionStage {
         // captures a write's value by reference, not a deep copy (disclosed Section 18 limitation),
         // so holding onto or writing back into this same nested Map would bypass attribution.
         String requirementText = requirement == null ? null : (String) requirement.get("text");
-        // 2026-09-15 correction, round 2 (Codex Section 18 follow-up review): addArtifact's backing
+        // 2026-09-15 correction, round 2 (independent review Section 18 follow-up review): addArtifact's backing
         // maps are ConcurrentHashMap-based throughout WorkflowContext, which rejects a null VALUE
         // outright (NullPointerException) — calling addArtifact("requirementText", null) here would
         // crash every workflow submitted without requirementText (e.g. WorkflowRecoveryBootTest's
@@ -5885,7 +5885,7 @@ class AmbiguousScenarioTest {
 
 **Why this section exists, and why it's an addendum rather than an edit to Tasks 20–41 in place:**
 four rounds of pre-implementation review (this plan's own Task 10 analysis, and three rounds of an
-external Codex review — see `codex-recommend.md` and `CODEX-REVIEW-BRIEFING.md` in the repo, outside
+external independent review — see the pre-implementation external review and the external review briefing in the repo, outside
 this plan file) found real, confirmed design gaps discovered *before any code was written* — which
 is exactly what a pre-implementation gate is for. For Tasks 20, 23, 24, 34, and 37, this section
 remains an addendum: each of those originals kept its content, with a one-line pointer added saying
@@ -6375,7 +6375,7 @@ public class WorkflowEngine {
         WorkflowContext ctx = new WorkflowContext(instance.getCorrelationId(),
                 new ArrayList<>((List<Map<String,Object>>) instance.getContextJson().getOrDefault("decisions", List.of())),
                 new HashMap<>((Map<String,Object>) instance.getContextJson().getOrDefault("artifacts", Map.of())));
-        // 2026-09-15 correction (Codex Section 18 follow-up review): no putIfAbsent("feature", ...)
+        // 2026-09-15 correction (independent review Section 18 follow-up review): no putIfAbsent("feature", ...)
         // here — the line this draft originally had. The nested "requirement" artifact
         // (requirement.text) is already part of instance.getContextJson().get("artifacts") by the
         // time this constructor runs (submit() seeds it directly), so the HashMap copy above

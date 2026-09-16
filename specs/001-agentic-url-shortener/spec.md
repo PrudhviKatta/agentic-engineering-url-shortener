@@ -32,7 +32,7 @@ cloud provider, or agent-orchestration library — those are Architecture Decisi
 ("Prompt 2: Feature Specification"), interpreted at authoring time under
 `docs/governance/constitution.md` v1.0.0, which was itself still in draft pending Human Gate 1 at
 that moment — that gate has since closed and the constitution is now **Ratified** (see the
-Authority line above; corrected by the Task 10 corrective batch, `codex-recommend.md` Finding
+Authority line above; corrected by the Task 10 corrective batch, the pre-implementation external review Finding
 #12).
 
 ---
@@ -939,7 +939,7 @@ constitution-consistent:
 
 - This specification MUST NOT contradict any of the eleven principles in
   `docs/governance/constitution.md` v1.0.0 (**Ratified** — corrected by the Task 10 corrective
-  batch, `codex-recommend.md` Finding #12; see `docs/governance/human-gates-log.md`); where a
+  batch, the pre-implementation external review Finding #12; see `docs/governance/human-gates-log.md`); where a
   candidate requirement would have created tension, it was written to avoid that tension rather
   than silently overriding the
   constitution.
@@ -1115,7 +1115,7 @@ ADRs) once the human reviewer completed Human Gate 2:
 
 **Human decision (2026-09-13): APPROVED.** Recorded by the human candidate (Prudhvidhar Reddy
 Katta) in `docs/governance/human-gates-log.md`'s Gate Log, following five rounds of delegated
-technical review (Codex; not a human approver — see the same log's separate Delegated Technical
+technical review (independent review; not a human approver — see the same log's separate Delegated Technical
 Reviews table) that reconciled the safe-stop/`PENDING_APPROVAL` semantics conflict, restated
 REQ-007's post-CLR-2 behavior, closed ASM-2's eleven demonstration acceptance targets as binding
 (not production SLAs), and corrected the restart-safety, task-ordering, and fallback-completeness

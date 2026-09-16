@@ -260,7 +260,7 @@ columns, and the change of `policy_exceptions.compensating_control` from nullabl
 were **not** part of the original Task 6 draft of this document. They were added by the Task 10
 corrective batch to close a real, independently-confirmed gap: both Task 10's own
 `/speckit.analyze` + Independent Reviewer Gate (`docs/assessment/pre_implementation_analysis.md`)
-and an external Codex review (`codex-recommend.md`, Findings #6 and #11) found that, without a
+and an external independent review (the pre-implementation external review, Findings #6 and #11) found that, without a
 `plan_version` column, a `workflow_steps` row created before a replan and its replacement row
 created after cannot be reliably distinguished, `(workflow_id, step_name)` alone is not a safe
 uniqueness assumption once a replan can reintroduce a retired stage name, and an approval could not

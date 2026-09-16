@@ -11,7 +11,7 @@ exists so that SpecKit tooling and skills that look for `.specify/memory/constit
 the right document instead of an empty template.
 
 **Current version:** 1.0.0 — **Ratified** (Human Gate 1 closed 2026-09-13). **Corrected by the
-Task 10 corrective batch** (`pre_implementation_analysis.md` / `codex-recommend.md` Finding #12):
+Task 10 corrective batch** (`pre_implementation_analysis.md`, Finding #12):
 this pointer file previously restated a stale "draft, pending Human Gate 1" status that no longer
 matches the canonical document. Do not restate approval bookkeeping here — see the canonical
 document's own Section 6 for the ratification record, and

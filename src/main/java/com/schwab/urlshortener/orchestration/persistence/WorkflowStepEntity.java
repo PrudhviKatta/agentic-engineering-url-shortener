@@ -50,6 +50,21 @@ public class WorkflowStepEntity {
     @Column(name = "plan_version")
     private int planVersion = 1;
 
+    @Column(name = "entry_approval", columnDefinition = "boolean default false")
+    private boolean entryApproval;
+
+    @Column(name = "exit_approval", columnDefinition = "boolean default false")
+    private boolean exitApproval;
+
+    @Column(name = "max_retries", columnDefinition = "integer default 0")
+    private int maxRetries;
+
+    @Column(name = "timeout_seconds", columnDefinition = "integer default 30")
+    private int timeoutSeconds = 30;
+
+    @Column(name = "parallel_group", length = 64)
+    private String parallelGroup;
+
     // Task 49: stable string keys into StageCatalog for restart-safe lookup of the activation
     // condition and fallback handler configured for this step (nullable — most steps use neither).
     @Column(name = "activation_condition_key")
@@ -66,7 +81,7 @@ public class WorkflowStepEntity {
     @Column(name = "inputs_snapshot", columnDefinition = "CLOB")
     private Map<String, Object> inputsSnapshot;
 
-    // Codex REQUEST AMENDMENTS item 6: WHY this step is SAFE_STOPPED (null otherwise) — lets
+    // Independent review amendments item 6: WHY this step is SAFE_STOPPED (null otherwise) — lets
     // retrySafeStopped distinguish "the handler already succeeded once, only the policy boundary
     // needs re-checking" (POLICY_BLOCKED) from "the handler genuinely never completed and must
     // actually run again" (RETRY_EXHAUSTED, COMPENSATION_FAILED).
@@ -88,7 +103,7 @@ public class WorkflowStepEntity {
     @Column(name = "policy_evidence_snapshot", columnDefinition = "CLOB")
     private Map<String, Object> policyEvidenceSnapshot;
 
-    // Codex REQUEST AMENDMENTS item 8: this step's status immediately before an exit-approval gate
+    // Independent review amendments item 8: this step's status immediately before an exit-approval gate
     // overwrote it with WAITING_APPROVAL. approve() restores this (rather than hardcoding
     // SUCCEEDED) so a COMPENSATED step that passes through an exit gate is still COMPENSATED
     // afterward, not silently reported as a clean success. Null for steps that never passed
@@ -118,6 +133,16 @@ public class WorkflowStepEntity {
     public void setResult(Map<String, Object> result) { this.result = result; }
     public int getPlanVersion() { return planVersion; }
     public void setPlanVersion(int planVersion) { this.planVersion = planVersion; }
+    public boolean isEntryApproval() { return entryApproval; }
+    public void setEntryApproval(boolean entryApproval) { this.entryApproval = entryApproval; }
+    public boolean isExitApproval() { return exitApproval; }
+    public void setExitApproval(boolean exitApproval) { this.exitApproval = exitApproval; }
+    public int getMaxRetries() { return maxRetries; }
+    public void setMaxRetries(int maxRetries) { this.maxRetries = maxRetries; }
+    public int getTimeoutSeconds() { return timeoutSeconds; }
+    public void setTimeoutSeconds(int timeoutSeconds) { this.timeoutSeconds = timeoutSeconds; }
+    public String getParallelGroup() { return parallelGroup; }
+    public void setParallelGroup(String parallelGroup) { this.parallelGroup = parallelGroup; }
     public String getActivationConditionKey() { return activationConditionKey; }
     public void setActivationConditionKey(String activationConditionKey) { this.activationConditionKey = activationConditionKey; }
     public String getFallbackHandlerKey() { return fallbackHandlerKey; }

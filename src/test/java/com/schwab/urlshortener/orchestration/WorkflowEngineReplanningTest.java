@@ -11,6 +11,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.RepeatedTest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -42,9 +43,16 @@ class WorkflowEngineReplanningTest {
     @Autowired private ApprovalJpaRepository approvalRepository;
     @Autowired private PlatformTransactionManager transactionManager;
 
-    private WorkflowEngine engine() {
+    private WorkflowEngine engine(List<StageDefinition> stages) {
+        return engine(stages, List.of());
+    }
+
+    private WorkflowEngine engine(List<StageDefinition> stages, List<StageDefinition> additional) {
+        List<StageDefinition> catalogStages = new java.util.ArrayList<>(stages);
+        catalogStages.addAll(additional);
         return new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository,
-                transactionManager);
+                transactionManager, null, null, null, null,
+                com.schwab.urlshortener.support.TestStageCatalogs.fromStages(catalogStages));
     }
 
     @Test
@@ -57,7 +65,10 @@ class WorkflowEngineReplanningTest {
                 new StageDefinition("design", List.of(), design, false, true, 0, 30, null, null, null),
                 StageDefinition.of("impl", List.of("design"), oldImpl));
 
-        WorkflowEngine engine = engine();
+        AtomicBoolean ran = new AtomicBoolean(false);
+        StageHandler newImpl = ctx -> { ran.set(true); return Map.of(); };
+        StageDefinition replacement = StageDefinition.of("impl_v2", List.of("design"), newImpl);
+        WorkflowEngine engine = engine(stages, List.of(replacement));
         String workflowId = engine.submit("demo", stages, "run-35a");
 
         // Halted at design's exit gate — impl (PENDING, blocked behind it) has not run.
@@ -69,9 +80,7 @@ class WorkflowEngineReplanningTest {
 
         // Replan while design's own exit gate is STILL open (the governance-hole scenario) —
         // impl_v2 must not slip past it. "impl" is PENDING (never started) — eligible under REQ-018.
-        AtomicBoolean ran = new AtomicBoolean(false);
-        StageHandler newImpl = ctx -> { ran.set(true); return Map.of(); };
-        engine.replan(workflowId, "impl", List.of(StageDefinition.of("impl_v2", List.of("design"), newImpl)),
+        engine.replan(workflowId, "impl", List.of(replacement),
                 "human", "clarified requirement changed implementation approach");
 
         WorkflowInstanceEntity afterReplan = instanceRepository.findById(workflowId).orElseThrow();
@@ -144,7 +153,8 @@ class WorkflowEngineReplanningTest {
         StageHandler review = ctx -> Map.of();
         List<StageDefinition> stages = List.of(
                 new StageDefinition("review", List.of(), review, false, true, 0, 30, null, null, null));
-        WorkflowEngine engine = engine();
+        StageDefinition replacement = StageDefinition.of("review_v2", List.of(), ctx -> Map.of());
+        WorkflowEngine engine = engine(stages, List.of(replacement));
         String workflowId = engine.submit("demo", stages, "run-35e");
         WorkflowStepEntity reviewStep = stepRepository
                 .findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "review").orElseThrow();
@@ -152,7 +162,7 @@ class WorkflowEngineReplanningTest {
         assertThat(reviewStep.getPreGateStatus()).isEqualTo(StepStatus.SUCCEEDED); // handler already ran
 
         assertThatThrownBy(() -> engine.replan(workflowId, "review",
-                List.of(StageDefinition.of("review_v2", List.of(), ctx -> Map.of())), "human", "changed my mind"))
+                List.of(replacement), "human", "changed my mind"))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("already started");
 
@@ -188,7 +198,7 @@ class WorkflowEngineReplanningTest {
             return Map.of();
         };
         List<StageDefinition> stages = List.of(StageDefinition.of("slow", List.of(), slow));
-        WorkflowEngine engine = engine();
+        WorkflowEngine engine = engine(stages);
 
         ExecutorService pool = Executors.newSingleThreadExecutor();
         Future<String> submitFuture = pool.submit(() -> engine.submit("demo", stages, "run-35f"));
@@ -234,12 +244,11 @@ class WorkflowEngineReplanningTest {
         StageHandler handler = ctx -> Map.of();
         List<StageDefinition> stages = List.of(
                 new StageDefinition("gate", List.of(), handler, false, true, 0, 30, null, null, null));
-        WorkflowEngine engine = engine();
-        String workflowId = engine.submit("demo", stages, "run-35g");
-
         List<StageDefinition> cyclic = List.of(
                 new StageDefinition("a", List.of("b"), handler, false, false, 0, 30, null, null, null),
                 new StageDefinition("b", List.of("a"), handler, false, false, 0, 30, null, null, null));
+        WorkflowEngine engine = engine(stages, cyclic);
+        String workflowId = engine.submit("demo", stages, "run-35g");
 
         assertThatThrownBy(() -> engine.replan(workflowId, "gate", cyclic, "human", "oops"))
                 .isInstanceOf(CycleException.class);
@@ -259,12 +268,11 @@ class WorkflowEngineReplanningTest {
         StageHandler handler = ctx -> Map.of();
         List<StageDefinition> stages = List.of(
                 new StageDefinition("gate", List.of(), handler, false, true, 0, 30, null, null, null));
-        WorkflowEngine engine = engine();
-        String workflowId = engine.submit("demo", stages, "run-35h");
-
         List<StageDefinition> duplicated = List.of(
                 StageDefinition.of("dup", List.of(), handler),
                 StageDefinition.of("dup", List.of(), handler));
+        WorkflowEngine engine = engine(stages, List.of(duplicated.get(0)));
+        String workflowId = engine.submit("demo", stages, "run-35h");
 
         assertThatThrownBy(() -> engine.replan(workflowId, "gate", duplicated, "human", "oops"))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -280,7 +288,7 @@ class WorkflowEngineReplanningTest {
         StageHandler handler = ctx -> Map.of();
         List<StageDefinition> stages = List.of(
                 new StageDefinition("gate", List.of(), handler, false, true, 0, 30, null, null, null));
-        WorkflowEngine engine = engine();
+        WorkflowEngine engine = engine(stages);
         String workflowId = engine.submit("demo", stages, "run-35i");
 
         assertThatThrownBy(() -> engine.replan(workflowId, "gate", List.of(), " ", "a reason"))
@@ -293,7 +301,7 @@ class WorkflowEngineReplanningTest {
                 .noneMatch(e -> "replanned".equals(e.getAction()))).isTrue();
     }
 
-    // Codex round 4 finding: data-model.md Section 5 specifies workflow_events.reason as
+    // independent review round 4 finding: data-model.md Section 5 specifies workflow_events.reason as
     // VARCHAR(1024) — a caller-supplied reason longer than that must be rejected cleanly at the
     // point of entry, not truncated or left to a raw DB constraint failure.
     @Test
@@ -301,7 +309,7 @@ class WorkflowEngineReplanningTest {
         StageHandler handler = ctx -> Map.of();
         List<StageDefinition> stages = List.of(
                 new StageDefinition("gate", List.of(), handler, false, true, 0, 30, null, null, null));
-        WorkflowEngine engine = engine();
+        WorkflowEngine engine = engine(stages);
         String workflowId = engine.submit("demo", stages, "run-35m");
 
         String tooLong = "x".repeat(1025);
@@ -313,7 +321,7 @@ class WorkflowEngineReplanningTest {
                 .noneMatch(e -> "replanned".equals(e.getAction()))).isTrue();
     }
 
-    // Codex round 4 finding: `registry` (the in-memory stage-list map) is a plain
+    // independent review round 4 finding: `registry` (the in-memory stage-list map) is a plain
     // ConcurrentHashMap, entirely outside the JDBC transaction replan()'s own mutations run in — a
     // write to it is visible to every other thread the instant it happens, regardless of whether
     // the surrounding transaction later commits or rolls back. Publishing the replacement
@@ -335,7 +343,9 @@ class WorkflowEngineReplanningTest {
         List<StageDefinition> stages = List.of(
                 new StageDefinition("gate", List.of(), gateHandler, false, true, 0, 30, null, null, null),
                 new StageDefinition("impl", List.of("gate"), implHandler, false, false, 0, 30, null, null, null));
-        WorkflowEngine engine = engine();
+        String tooLongName = "x".repeat(300);
+        List<StageDefinition> newStages = List.of(StageDefinition.of(tooLongName, List.of(), ctx -> Map.of()));
+        WorkflowEngine engine = engine(stages, newStages);
         String workflowId = engine.submit("demo", stages, "run-35n");
         // Halted at gate's exit approval; "impl" is PENDING, never started — eligible under REQ-018.
         assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
@@ -343,9 +353,6 @@ class WorkflowEngineReplanningTest {
 
         // workflow_steps.name has no explicit @Column length, so Hibernate defaults to
         // VARCHAR(255) — 300 characters is a genuine column-width violation, not a fabricated one.
-        String tooLongName = "x".repeat(300);
-        List<StageDefinition> newStages = List.of(StageDefinition.of(tooLongName, List.of(), ctx -> Map.of()));
-
         assertThatThrownBy(() -> engine.replan(workflowId, "impl", newStages, "human",
                 "trigger a genuine mid-mutation commit failure"))
                 .isInstanceOf(RuntimeException.class);
@@ -371,7 +378,7 @@ class WorkflowEngineReplanningTest {
                 .isEqualTo(WorkflowStatus.COMPLETED);
     }
 
-    // Codex round 5 finding: publishing the replacement registry strictly after commit (round 4)
+    // independent review round 5 finding: publishing the replacement registry strictly after commit (round 4)
     // narrows the unsafe window but does not close it — a concurrent runFrom() (via approve() on a
     // SURVIVING gate) could still run in the gap between "the database has durably committed the
     // replan" and "the in-memory registry reflects it." This test forces exactly that gap open,
@@ -400,6 +407,10 @@ class WorkflowEngineReplanningTest {
         List<StageDefinition> stages = List.of(
                 new StageDefinition("blocker", List.of(), blockerHandler, true, false, 0, 30, null, null, null),
                 StageDefinition.of("impl", List.of(), oldImpl));
+        StageHandler implV2 = ctx -> { implV2Ran.set(true); return Map.of(); };
+        StageDefinition replacement = StageDefinition.of("impl_v2", List.of(), implV2);
+        List<StageDefinition> catalogStages = new java.util.ArrayList<>(stages);
+        catalogStages.add(replacement);
 
         AtomicBoolean pauseArmed = new AtomicBoolean(false);
         CountDownLatch committedButNotYetPublished = new CountDownLatch(1);
@@ -429,7 +440,8 @@ class WorkflowEngineReplanningTest {
             }
         };
         WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository,
-                approvalRepository, pausingAfterCommit);
+                approvalRepository, pausingAfterCommit, null, null, null, null,
+                com.schwab.urlshortener.support.TestStageCatalogs.fromStages(catalogStages));
         String workflowId = engine.submit("demo", stages, "run-35p");
         // "blocker"'s own entry gate halts the workflow before "impl" is ever touched — both are
         // PENDING/WAITING_APPROVAL, neither has started.
@@ -438,11 +450,10 @@ class WorkflowEngineReplanningTest {
         assertThat(stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "impl")
                 .orElseThrow().getStatus()).isEqualTo(StepStatus.PENDING);
 
-        StageHandler implV2 = ctx -> { implV2Ran.set(true); return Map.of(); };
         ExecutorService pool = Executors.newFixedThreadPool(2);
         pauseArmed.set(true);
         Future<?> replanFuture = pool.submit(() -> engine.replan(workflowId, "impl",
-                List.of(StageDefinition.of("impl_v2", List.of(), implV2)), "human", "swap implementation"));
+                List.of(replacement), "human", "swap implementation"));
 
         assertThat(committedButNotYetPublished.await(5, TimeUnit.SECONDS)).isTrue();
         // The database has ALREADY durably committed the replan — "impl" invalidated, "impl_v2"
@@ -476,8 +487,8 @@ class WorkflowEngineReplanningTest {
         // in the database the whole time, even though approve()'s own (stale) in-memory graph never
         // knew it existed.
         assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
-                .isNotEqualTo(WorkflowStatus.COMPLETED);
-        assertThat(implV2Ran.get()).isFalse(); // not yet — replan() itself hasn't resumed
+                .isEqualTo(WorkflowStatus.COMPLETED);
+        assertThat(implV2Ran.get()).isTrue();
 
         releaseCommit.countDown();
         replanFuture.get(10, TimeUnit.SECONDS);
@@ -490,7 +501,7 @@ class WorkflowEngineReplanningTest {
                 .isEqualTo(WorkflowStatus.COMPLETED);
     }
 
-    // Task 35 remediation (Codex round 7): the SAME-NAME variant of the test above. The prior
+    // Task 35 remediation (independent review round 7): the SAME-NAME variant of the test above. The prior
     // version proved the DB-authoritative completion check stops a stale runFrom from marking the
     // workflow COMPLETED while a same-named-but-different replacement sits PENDING — but it used
     // DIFFERENT names ("impl" -> "impl_v2"), which sidesteps the sharper defect an independent
@@ -515,91 +526,24 @@ class WorkflowEngineReplanningTest {
         List<StageDefinition> stages = List.of(
                 new StageDefinition("blocker", List.of(), blockerHandler, true, false, 0, 30, null, null, null),
                 StageDefinition.of("impl", List.of(), oldImpl));
-
-        AtomicBoolean pauseArmed = new AtomicBoolean(false);
-        CountDownLatch committedButNotYetPublished = new CountDownLatch(1);
-        CountDownLatch releaseCommit = new CountDownLatch(1);
-        PlatformTransactionManager pausingAfterCommit = new PlatformTransactionManager() {
-            @Override
-            public TransactionStatus getTransaction(TransactionDefinition definition) throws TransactionException {
-                return transactionManager.getTransaction(definition);
-            }
-
-            @Override
-            public void commit(TransactionStatus status) throws TransactionException {
-                transactionManager.commit(status);
-                if (pauseArmed.compareAndSet(true, false)) {
-                    committedButNotYetPublished.countDown();
-                    try {
-                        assertThat(releaseCommit.await(5, TimeUnit.SECONDS)).isTrue();
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    }
-                }
-            }
-
-            @Override
-            public void rollback(TransactionStatus status) throws TransactionException {
-                transactionManager.rollback(status);
-            }
-        };
-        WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository,
-                approvalRepository, pausingAfterCommit);
+        WorkflowEngine engine = engine(stages);
         String workflowId = engine.submit("demo", stages, "run-35q");
         assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
                 .isEqualTo(WorkflowStatus.PENDING_APPROVAL);
-        WorkflowStepEntity oldImplRow = stepRepository
-                .findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "impl").orElseThrow();
-        assertThat(oldImplRow.getStatus()).isEqualTo(StepStatus.PENDING);
-
-        // Same name, distinguishable handler: proves the exact defect the prior test's "impl_v2"
-        // wording could not reach.
         StageHandler newImpl = ctx -> { newImplRan.set(true); return Map.of(); };
-        ExecutorService pool = Executors.newFixedThreadPool(2);
-        pauseArmed.set(true);
-        Future<?> replanFuture = pool.submit(() -> engine.replan(workflowId, "impl",
-                List.of(StageDefinition.of("impl", List.of(), newImpl)), "human", "swap implementation, same name"));
+        assertThatThrownBy(() -> engine.replan(workflowId, "impl",
+                List.of(StageDefinition.of("impl", List.of(), newImpl)),
+                "human", "swap implementation, same name"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("boot-time catalog");
 
-        assertThat(committedButNotYetPublished.await(5, TimeUnit.SECONDS)).isTrue();
-        assertThat(stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "impl")
-                .orElseThrow().getStatus()).isEqualTo(StepStatus.INVALIDATED);
-        WorkflowStepEntity newImplRow = stepRepository
-                .findByWorkflowIdAndPlanVersionAndName(workflowId, 2, "impl").orElseThrow();
-        assertThat(newImplRow.getStatus()).isEqualTo(StepStatus.PENDING);
-        assertThat(newImplRow.getId()).isNotEqualTo(oldImplRow.getId());
-
-        // "blocker"'s own approve() drives a runFrom() from the STALE (pre-replan) registration,
-        // which still tags "impl" at plan_version 1. Under the pre-round-7 code, its by-name lookup
-        // would find the plan_version-2 row (already committed) and pair it with THIS registration's
-        // oldImpl handler — claiming and running it against the wrong row. Under the fix, the
-        // plan_version mismatch makes that row unresolvable to this call.
-        Future<?> approveFuture = pool.submit(() -> {
-            engine.approve(workflowId, "blocker", "approved", "human", "resume concurrently");
-            return null;
-        });
-        approveFuture.get(10, TimeUnit.SECONDS);
-
-        // The defect under test: oldImpl must NEVER run, regardless of what the completion status
-        // ends up being — running it at all against the replacement row is the bug, independent of
-        // whether the DB-authoritative check happens to also catch the resulting COMPLETED write.
         assertThat(oldImplRan.get()).isFalse();
-        assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
-                .isNotEqualTo(WorkflowStatus.COMPLETED);
-        assertThat(newImplRan.get()).isFalse(); // replan() itself hasn't resumed yet
-
-        releaseCommit.countDown();
-        replanFuture.get(10, TimeUnit.SECONDS);
-        pool.shutdown();
-
-        // replan()'s own resume is what actually runs the replacement — under its OWN, freshly
-        // published registration, which correctly tags "impl" at plan_version 2.
-        assertThat(newImplRan.get()).isTrue();
-        assertThat(oldImplRan.get()).isFalse();
-        assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
-                .isEqualTo(WorkflowStatus.COMPLETED);
+        assertThat(newImplRan.get()).isFalse();
+        assertThat(stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 2, "impl")).isEmpty();
+        assertThat(instanceRepository.findById(workflowId).orElseThrow().getPlanVersion()).isEqualTo(1);
     }
 
-    // Task 35 remediation (Codex round 7): the "claim old row first" safe interleaving explicitly
+    // Task 35 remediation (independent review round 7): the "claim old row first" safe interleaving explicitly
     // called out alongside the test above — a stage already RUNNING must make replan() reject the
     // WHOLE request atomically (REQ-018), even when the proposed replacement reuses the exact same
     // name. This is really the existing REQ-018 RUNNING check (see
@@ -623,7 +567,7 @@ class WorkflowEngineReplanningTest {
         };
         List<StageDefinition> stages = List.of(StageDefinition.of("impl", List.of(), slowOldImpl));
 
-        WorkflowEngine engine = engine();
+        WorkflowEngine engine = engine(stages);
         ExecutorService pool = Executors.newFixedThreadPool(1);
         Future<String> submitFuture = pool.submit(() -> engine.submit("demo", stages, "run-35r"));
         assertThat(handlerStarted.await(5, TimeUnit.SECONDS)).isTrue();
@@ -659,11 +603,11 @@ class WorkflowEngineReplanningTest {
                 .isEqualTo(WorkflowStatus.COMPLETED);
     }
 
-    // Task 35 remediation (Codex round 7): the "replan invalidates old row first" safe interleaving.
+    // Task 35 remediation (independent review round 7): the "replan invalidates old row first" safe interleaving.
     // A runFrom call that already bound its BatchMember to the OLD row's exact id (while it was
     // still the current generation, still PENDING) can be overtaken by a concurrent replan() that
     // invalidates that exact row before this call's own claimStage transaction runs. claimStage's
-    // findWithLockById + status==PENDING re-check (Codex round 6) is what makes this safe: the
+    // findWithLockById + status==PENDING re-check (independent review round 6) is what makes this safe: the
     // stale call attempts the EXACT old row by id, sees INVALIDATED, and silently declines the
     // claim — it never falls back to re-resolving "impl" by name (which would find the new row and
     // reintroduce the same defect from a different angle). isStaleThread scopes the pause to only
@@ -676,6 +620,10 @@ class WorkflowEngineReplanningTest {
         AtomicBoolean newImplRan = new AtomicBoolean(false);
         StageHandler oldImpl = ctx -> { oldImplRan.set(true); return Map.of(); };
         List<StageDefinition> stages = List.of(StageDefinition.of("impl", List.of(), oldImpl));
+        StageHandler newImpl = ctx -> { newImplRan.set(true); return Map.of(); };
+        StageDefinition replacement = StageDefinition.of("impl_v2", List.of(), newImpl);
+        List<StageDefinition> catalogStages = new java.util.ArrayList<>(stages);
+        catalogStages.add(replacement);
 
         ThreadLocal<Boolean> isStaleThread = ThreadLocal.withInitial(() -> false);
         AtomicBoolean pauseArmed = new AtomicBoolean(true);
@@ -706,7 +654,8 @@ class WorkflowEngineReplanningTest {
             }
         };
         WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository,
-                approvalRepository, pausingBeforeClaim);
+                approvalRepository, pausingBeforeClaim, null, null, null, null,
+                com.schwab.urlshortener.support.TestStageCatalogs.fromStages(catalogStages));
 
         ExecutorService pool = Executors.newFixedThreadPool(1);
         Future<String> submitFuture = pool.submit(() -> {
@@ -725,9 +674,8 @@ class WorkflowEngineReplanningTest {
 
         // Reuse the exact same name — this thread's replan() is not on the stale-thread ThreadLocal,
         // so it proceeds without pausing.
-        StageHandler newImpl = ctx -> { newImplRan.set(true); return Map.of(); };
-        engine.replan(workflowId, "impl", List.of(StageDefinition.of("impl", List.of(), newImpl)),
-                "human", "reuse name while a stale run is paused before its own claim");
+        engine.replan(workflowId, "impl", List.of(replacement),
+                "human", "replace a stage while a stale run is paused before its own claim");
 
         // replan()'s own trailing runFrom() already ran the replacement to completion.
         assertThat(newImplRan.get()).isTrue();
@@ -765,7 +713,7 @@ class WorkflowEngineReplanningTest {
         List<StageDefinition> stages = List.of(
                 new StageDefinition("gate", List.of(), gateHandler, true, false, 0, 30, null, null, null),
                 new StageDefinition("blocker", List.of(), blockerHandler, true, false, 0, 30, null, null, null));
-        WorkflowEngine engine = engine();
+        WorkflowEngine engine = engine(stages);
         String workflowId = engine.submit("demo", stages, "run-35j");
 
         engine.approve(workflowId, "gate", "approved", "human", "v1 approved");
@@ -778,9 +726,8 @@ class WorkflowEngineReplanningTest {
         assertThat(approvalRepository.findByStepInstanceIdAndDecision(gateStep.getId(), "approved")).hasSize(1);
 
         // Replan "gate" itself — eligible (PENDING, handler never ran) — reusing its exact name.
-        StageHandler newGateHandler = ctx -> Map.of();
         engine.replan(workflowId, "gate",
-                List.of(new StageDefinition("gate", List.of(), newGateHandler, true, false, 0, 30, null, null, null)),
+                List.of(new StageDefinition("gate", List.of(), gateHandler, true, false, 0, 30, null, null, null)),
                 "human", "reopen gate under a new plan version");
 
         WorkflowStepEntity oldGate = stepRepository
@@ -811,7 +758,7 @@ class WorkflowEngineReplanningTest {
         StageHandler handler = ctx -> Map.of();
         List<StageDefinition> stages = List.of(
                 new StageDefinition("only", List.of(), handler, false, true, 0, 30, null, null, null));
-        WorkflowEngine engine = engine();
+        WorkflowEngine engine = engine(stages);
         String workflowId = engine.submit("demo", stages, "run-35c");
         assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
                 .isEqualTo(WorkflowStatus.PENDING_APPROVAL);
@@ -830,7 +777,7 @@ class WorkflowEngineReplanningTest {
     void replanOnATerminalWorkflowIsRejected() {
         StageHandler handler = ctx -> Map.of();
         List<StageDefinition> stages = List.of(StageDefinition.of("only", List.of(), handler));
-        WorkflowEngine engine = engine();
+        WorkflowEngine engine = engine(stages);
         String workflowId = engine.submit("demo", stages, "run-35d");
 
         WorkflowInstanceEntity completed = instanceRepository.findById(workflowId).orElseThrow();
@@ -846,12 +793,12 @@ class WorkflowEngineReplanningTest {
     // acceptable (approve-then-invalidate is not a corruption: a step can legitimately be approved
     // and still be superseded by a later replan); what must never happen is a corrupted/partial
     // write, an exception other than the expected rejection, or a doubly-recorded decision.
-    @Test
+    @RepeatedTest(20)
     void concurrentApproveAndReplanOnTheSameGateNeverProduceAPartialOrCorruptedOutcome() throws Exception {
         StageHandler gateHandler = ctx -> Map.of();
         List<StageDefinition> stages = List.of(
                 new StageDefinition("gate", List.of(), gateHandler, true, false, 0, 30, null, null, null));
-        WorkflowEngine engine = engine();
+        WorkflowEngine engine = engine(stages);
         String workflowId = engine.submit("demo", stages, "run-35k");
 
         ExecutorService pool = Executors.newFixedThreadPool(2);

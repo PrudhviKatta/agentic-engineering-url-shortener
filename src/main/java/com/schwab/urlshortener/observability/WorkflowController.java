@@ -41,7 +41,7 @@ public class WorkflowController {
         this.engine = engine;
     }
 
-    // Codex REQUEST AMENDMENTS item 1 (T026a): generic Workflow Run creation over HTTP.
+    // Independent review amendments item 1 (T026a): generic Workflow Run creation over HTTP.
     // openapi.yaml's own contract for this operation is explicit — "mandatory, full
     // implementation, no stub path... no 501/not-implemented escape hatch." Instantiates the SAME
     // baseline 12-stage graph ScenarioRunner's CLI harness uses (BaselineWorkflowGraph), so the two

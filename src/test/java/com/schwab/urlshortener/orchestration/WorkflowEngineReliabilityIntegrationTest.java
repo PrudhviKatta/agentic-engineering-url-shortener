@@ -41,15 +41,16 @@ class WorkflowEngineReliabilityIntegrationTest {
     @Autowired private PolicyExceptionJpaRepository policyExceptionRepository;
     @Autowired private PlatformTransactionManager transactionManager;
 
-    private WorkflowEngine engineWithCompensation(CompensationRegistry registry) {
+    private WorkflowEngine engineWithCompensation(CompensationRegistry registry, List<StageDefinition> stages) {
         return new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository,
-                transactionManager, policyEvaluationRepository, null, policyExceptionRepository, registry);
+                transactionManager, policyEvaluationRepository, null, policyExceptionRepository, registry,
+                com.schwab.urlshortener.support.TestStageCatalogs.fromStages(stages));
     }
 
-    private WorkflowEngine engineWithPolicy(PolicyEngine policyEngine) {
+    private WorkflowEngine engineWithPolicy(PolicyEngine policyEngine, List<StageDefinition> stages) {
         return new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository,
                 transactionManager, policyEvaluationRepository, policyEngine, policyExceptionRepository,
-                new CompensationRegistry());
+                new CompensationRegistry(), com.schwab.urlshortener.support.TestStageCatalogs.fromStages(stages));
     }
 
     @Test
@@ -62,7 +63,7 @@ class WorkflowEngineReliabilityIntegrationTest {
         AtomicBoolean compensated = new AtomicBoolean(false);
         registry.register("flaky", result -> compensated.set(true));
 
-        WorkflowEngine engine = engineWithCompensation(registry);
+        WorkflowEngine engine = engineWithCompensation(registry, stages);
 
         String workflowId = engine.submit("demo", stages, "run-33a");
 
@@ -83,7 +84,7 @@ class WorkflowEngineReliabilityIntegrationTest {
         List<StageDefinition> stages = List.of(
                 new StageDefinition("flaky", List.of(), alwaysFails, false, false, 1, 5, null, null, null));
 
-        WorkflowEngine engine = engineWithCompensation(new CompensationRegistry()); // nothing registered
+        WorkflowEngine engine = engineWithCompensation(new CompensationRegistry(), stages); // nothing registered
 
         String workflowId = engine.submit("demo", stages, "run-33b");
 
@@ -106,7 +107,7 @@ class WorkflowEngineReliabilityIntegrationTest {
         AtomicBoolean compensated = new AtomicBoolean(false);
         registry.register("broken", result -> compensated.set(true));
 
-        WorkflowEngine engine = engineWithCompensation(registry);
+        WorkflowEngine engine = engineWithCompensation(registry, stages);
         String workflowId = engine.submit("demo", stages, "run-33c");
 
         assertThat(attempts.get()).isEqualTo(1); // no retries despite maxRetries=5
@@ -126,7 +127,7 @@ class WorkflowEngineReliabilityIntegrationTest {
         List<StageDefinition> stages = List.of(
                 new StageDefinition("flaky", List.of(), eventuallyWorks, false, false, 3, 5, null, null, null));
 
-        WorkflowEngine engine = engineWithCompensation(new CompensationRegistry());
+        WorkflowEngine engine = engineWithCompensation(new CompensationRegistry(), stages);
         String workflowId = engine.submit("demo", stages, "run-33d");
 
         WorkflowStepEntity step = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "flaky").orElseThrow();
@@ -154,7 +155,8 @@ class WorkflowEngineReliabilityIntegrationTest {
                 new StageDefinition("implementation", List.of(), eventuallyPasses, false, false, 2, 5, null, null, null));
         PolicyEngine policyEngine = new PolicyEngine("policies/v1.yaml");
         WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository,
-                transactionManager, policyEvaluationRepository, policyEngine, policyExceptionRepository, new CompensationRegistry());
+                transactionManager, policyEvaluationRepository, policyEngine, policyExceptionRepository,
+                new CompensationRegistry(), com.schwab.urlshortener.support.TestStageCatalogs.fromStages(stages));
 
         String workflowId = engine.submit("demo", stages, "run-33e");
 
@@ -185,7 +187,7 @@ class WorkflowEngineReliabilityIntegrationTest {
         CompensationRegistry registry = new CompensationRegistry();
         registry.register("flaky", result -> { });
 
-        WorkflowEngine engine = engineWithCompensation(registry);
+        WorkflowEngine engine = engineWithCompensation(registry, stages);
         String workflowId = engine.submit("demo", stages, "run-33f");
 
         WorkflowStepEntity step = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "flaky").orElseThrow();
@@ -198,7 +200,7 @@ class WorkflowEngineReliabilityIntegrationTest {
         instance = instanceRepository.findById(workflowId).orElseThrow();
         assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.COMPLETED);
 
-        // Codex REQUEST AMENDMENTS item 8 (metrics-facing regression): the step's own persisted
+        // Independent review amendments item 8 (metrics-facing regression): the step's own persisted
         // status must still read COMPENSATED after approval, not silently overwritten to
         // SUCCEEDED — any reporting/metrics path reading workflow_steps.status needs to be able to
         // tell "recovered via compensation" apart from "succeeded outright," even after a human
@@ -219,7 +221,7 @@ class WorkflowEngineReliabilityIntegrationTest {
         CompensationRegistry registry = new CompensationRegistry();
         registry.register("flaky", result -> { });
 
-        WorkflowEngine engine = engineWithCompensation(registry);
+        WorkflowEngine engine = engineWithCompensation(registry, stages);
         String workflowId = engine.submit("demo", stages, "run-33j");
 
         engine.approve(workflowId, "flaky", "rejected", "human", "compensation wasn't good enough");
@@ -230,7 +232,7 @@ class WorkflowEngineReliabilityIntegrationTest {
         assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.FAILED); // the workflow itself still fails
     }
 
-    // --- Codex REQUEST AMENDMENTS item 2: compensation failure handling ---
+    // --- Independent review amendments item 2: compensation failure handling ---
 
     @Test
     void aFailingCompensationSafeStopsTheWorkflowInsteadOfLeavingItRunning() {
@@ -241,7 +243,7 @@ class WorkflowEngineReliabilityIntegrationTest {
         CompensationRegistry registry = new CompensationRegistry();
         registry.register("flaky", result -> { throw new IllegalStateException("compensation itself failed"); });
 
-        WorkflowEngine engine = engineWithCompensation(registry);
+        WorkflowEngine engine = engineWithCompensation(registry, stages);
         String workflowId = engine.submit("demo", stages, "run-33g");
 
         WorkflowStepEntity step = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "flaky").orElseThrow();
@@ -261,7 +263,7 @@ class WorkflowEngineReliabilityIntegrationTest {
                 .isEqualTo("compensation itself failed");
     }
 
-    // --- Codex REQUEST AMENDMENTS item 6: distinguish policy-blocked vs retry-exhaustion resume ---
+    // --- Independent review amendments item 6: distinguish policy-blocked vs retry-exhaustion resume ---
 
     @Test
     void policyBlockedResumeReevaluatesWithoutRerunningTheHandler() {
@@ -274,7 +276,7 @@ class WorkflowEngineReliabilityIntegrationTest {
         };
         List<StageDefinition> stages = List.of(StageDefinition.of("implementation", List.of(), impl));
         PolicyEngine policyEngine = new PolicyEngine("policies/v1.yaml");
-        WorkflowEngine engine = engineWithPolicy(policyEngine);
+        WorkflowEngine engine = engineWithPolicy(policyEngine, stages);
 
         String workflowId = engine.submit("demo", stages, "run-33h");
         assertThat(handlerInvocations.get()).isEqualTo(1);
@@ -320,7 +322,7 @@ class WorkflowEngineReliabilityIntegrationTest {
         List<StageDefinition> stages = List.of(
                 new StageDefinition("flaky", List.of(), flakyThenWorks, false, false, 0, 5, null, null, null));
 
-        WorkflowEngine engine = engineWithCompensation(new CompensationRegistry()); // no compensation registered
+        WorkflowEngine engine = engineWithCompensation(new CompensationRegistry(), stages); // no compensation registered
         String workflowId = engine.submit("demo", stages, "run-33i");
         assertThat(handlerInvocations.get()).isEqualTo(1);
 
@@ -357,7 +359,7 @@ class WorkflowEngineReliabilityIntegrationTest {
                 StageDefinition.of("implementation", List.of(), impl),
                 new StageDefinition("flaky", List.of(), flakyThenWorks, false, false, 0, 5, null, null, null));
         PolicyEngine policyEngine = new PolicyEngine("policies/v1.yaml");
-        WorkflowEngine engine = engineWithPolicy(policyEngine);
+        WorkflowEngine engine = engineWithPolicy(policyEngine, stages);
 
         String workflowId = engine.submit("demo", stages, "run-33j");
         assertThat(implInvocations.get()).isEqualTo(1);
@@ -415,7 +417,7 @@ class WorkflowEngineReliabilityIntegrationTest {
                 StageDefinition.of("fast", List.of(), fast),
                 StageDefinition.of("slow", List.of(), slow));
 
-        WorkflowEngine engine = engineWithCompensation(new CompensationRegistry());
+        WorkflowEngine engine = engineWithCompensation(new CompensationRegistry(), stages);
         String workflowId = engine.submit("demo", stages, "run-33l");
 
         // submit() runs synchronously through runFrom/runBatch — by the time it returns, "slow"
@@ -430,7 +432,7 @@ class WorkflowEngineReliabilityIntegrationTest {
         assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.SAFE_STOPPED);
     }
 
-    // --- Codex REQUEST AMENDMENTS follow-up (Section 17 review): an unexpected handler runtime
+    // --- Independent review amendments follow-up (Section 17 review): an unexpected handler runtime
     // exception (outside the Permanent/TransientStageException hierarchy) must not strand a step
     // or the workflow RUNNING forever ---
 
@@ -439,7 +441,7 @@ class WorkflowEngineReliabilityIntegrationTest {
         StageHandler buggy = ctx -> { throw new IllegalStateException("not a StageException at all"); };
         List<StageDefinition> stages = List.of(StageDefinition.of("buggy", List.of(), buggy));
 
-        WorkflowEngine engine = engineWithCompensation(new CompensationRegistry());
+        WorkflowEngine engine = engineWithCompensation(new CompensationRegistry(), stages);
         String workflowId = engine.submit("demo", stages, "run-33m");
 
         WorkflowStepEntity step = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "buggy")
@@ -462,7 +464,7 @@ class WorkflowEngineReliabilityIntegrationTest {
                 .isEqualTo(WorkflowStatus.SAFE_STOPPED);
     }
 
-    // --- Codex REQUEST AMENDMENTS follow-up (Section 17 review): concurrent retrySafeStopped()
+    // --- Independent review amendments follow-up (Section 17 review): concurrent retrySafeStopped()
     // calls on the same workflow must not double-execute a handler ---
 
     @Test
@@ -475,7 +477,7 @@ class WorkflowEngineReliabilityIntegrationTest {
         List<StageDefinition> stages = List.of(
                 new StageDefinition("flaky", List.of(), flakyThenWorks, false, false, 0, 5, null, null, null));
 
-        WorkflowEngine engine = engineWithCompensation(new CompensationRegistry());
+        WorkflowEngine engine = engineWithCompensation(new CompensationRegistry(), stages);
         String workflowId = engine.submit("demo", stages, "run-33n");
         assertThat(invocations.get()).isEqualTo(1);
         assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
@@ -531,7 +533,7 @@ class WorkflowEngineReliabilityIntegrationTest {
         List<StageDefinition> stages = List.of(
                 new StageDefinition("implementation", List.of(), impl, false, false, 0, 5, null, null, null));
         PolicyEngine policyEngine = new PolicyEngine("policies/v1.yaml");
-        WorkflowEngine engine = engineWithPolicy(policyEngine);
+        WorkflowEngine engine = engineWithPolicy(policyEngine, stages);
 
         String workflowId = engine.submit("demo", stages, "run-33o");
         assertThat(invocations.get()).isEqualTo(1);
@@ -566,14 +568,15 @@ class WorkflowEngineReliabilityIntegrationTest {
     // RUNNING ---
 
     @Test
-    void retrySafeStoppedRevertsToSafeStoppedWhenTheRegistrationIsMissingAfterTheClaim() {
-        // Reproduces the exact scenario independent review found (N1): registry.get(workflowId)
-        // is an in-memory ConcurrentHashMap, empty for a workflow whose process has restarted,
-        // while the DB still shows it SAFE_STOPPED. Built directly via the repositories
-        // (bypassing submit(), which is what populates the registry) so no StageRegistration is
-        // ever registered for this workflow id — the claim below commits SAFE_STOPPED -> RUNNING
-        // and then genuinely has nothing to resolve the policy boundary or reset steps with.
-        WorkflowEngine engine = engineWithCompensation(new CompensationRegistry());
+    void retrySafeStoppedReconstructsAnOrphanedWorkflowFromTheCatalog() {
+        AtomicBoolean handlerRan = new AtomicBoolean(false);
+        StageHandler recoveredHandler = ctx -> {
+            handlerRan.set(true);
+            return Map.of("recovered", true);
+        };
+        List<StageDefinition> stages = List.of(
+                StageDefinition.of("doomed", List.of(), recoveredHandler));
+        WorkflowEngine engine = engineWithCompensation(new CompensationRegistry(), stages);
         String workflowId = "orphaned-workflow-33p";
         WorkflowInstanceEntity instance = new WorkflowInstanceEntity();
         instance.setId(workflowId);
@@ -589,20 +592,16 @@ class WorkflowEngineReliabilityIntegrationTest {
         step.setSequence(0);
         step.setDependsOn(List.of());
         step.setPlanVersion(1);
+        step.setTimeoutSeconds(30);
         stepRepository.save(step);
 
-        assertThatThrownBy(() -> engine.retrySafeStopped(workflowId)).isInstanceOf(IllegalStateException.class);
+        engine.retrySafeStopped(workflowId);
 
-        // The claim committed SAFE_STOPPED -> RUNNING before the missing registration was
-        // discovered — this must have been reverted, not left stranded RUNNING forever.
+        assertThat(handlerRan).isTrue();
         assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
-                .isEqualTo(WorkflowStatus.SAFE_STOPPED);
-
-        // And retrySafeStopped remains callable — not permanently refused by its own
-        // "not SAFE_STOPPED" precondition.
-        assertThatThrownBy(() -> engine.retrySafeStopped(workflowId)).isInstanceOf(IllegalStateException.class);
-        assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
-                .isEqualTo(WorkflowStatus.SAFE_STOPPED);
+                .isEqualTo(WorkflowStatus.COMPLETED);
+        assertThat(stepRepository.findById(step.getId()).orElseThrow().getStatus())
+                .isEqualTo(StepStatus.SUCCEEDED);
     }
 
     // --- Independent-review finding (Section 17 follow-up review, N4): the original exception's
@@ -613,7 +612,7 @@ class WorkflowEngineReliabilityIntegrationTest {
         StageHandler buggy = ctx -> { throw new IllegalStateException("very specific bug detail"); };
         List<StageDefinition> stages = List.of(StageDefinition.of("buggy", List.of(), buggy));
 
-        WorkflowEngine engine = engineWithCompensation(new CompensationRegistry());
+        WorkflowEngine engine = engineWithCompensation(new CompensationRegistry(), stages);
         String workflowId = engine.submit("demo", stages, "run-33q");
 
         List<WorkflowEventEntity> events = eventRepository.findByWorkflowIdOrderById(workflowId);
@@ -628,7 +627,7 @@ class WorkflowEngineReliabilityIntegrationTest {
     // "does ANY sibling look trustworthy" check let a genuinely successful sibling's presence
     // excuse persisting a COMPLETELY DIFFERENT, untrustworthy sibling's own stale evidence too.
     // Per-stage artifact attribution must exclude exactly the failing sibling's own writes while
-    // still preserving the successful sibling's real evidence — the original Codex complaint. ---
+    // still preserving the successful sibling's real evidence — the original independent review complaint. ---
 
     @Test
     void aSuccessfulSiblingsEvidenceSurvivesWhileTheFailingSiblingsOwnStaleEvidenceDoesNot() {
@@ -650,7 +649,7 @@ class WorkflowEngineReliabilityIntegrationTest {
                 new StageDefinition("implementation", List.of(), impl, false, false, 0, 5, null, null, null),
                 StageDefinition.of("sibling", List.of(), sibling));
         PolicyEngine policyEngine = new PolicyEngine("policies/v1.yaml");
-        WorkflowEngine engine = engineWithPolicy(policyEngine);
+        WorkflowEngine engine = engineWithPolicy(policyEngine, stages);
 
         String workflowId = engine.submit("demo", stages, "run-33r");
         assertThat(implInvocations.get()).isEqualTo(1);
@@ -694,7 +693,7 @@ class WorkflowEngineReliabilityIntegrationTest {
         CompensationRegistry registry = new CompensationRegistry();
         AtomicBoolean compensationRan = new AtomicBoolean(false);
         registry.register("risky", result -> compensationRan.set(true));
-        WorkflowEngine engine = engineWithCompensation(registry);
+        WorkflowEngine engine = engineWithCompensation(registry, stages);
 
         String workflowId = engine.submit("demo", stages, "run-33s");
 
@@ -737,7 +736,7 @@ class WorkflowEngineReliabilityIntegrationTest {
                 StageDefinition.of("security_scan", List.of(), securityScan),
                 new StageDefinition("implementation", List.of(), implementation, false, false, 0, 5, null, null, null));
         PolicyEngine policyEngine = new PolicyEngine("policies/v1.yaml");
-        WorkflowEngine engine = engineWithPolicy(policyEngine);
+        WorkflowEngine engine = engineWithPolicy(policyEngine, stages);
 
         String workflowId = engine.submit("demo", stages, "run-33t");
 
@@ -780,7 +779,7 @@ class WorkflowEngineReliabilityIntegrationTest {
                 new StageDefinition("doomed", List.of(), doomed, false, false, 0, 5, null, null, null),
                 StageDefinition.of("implementation", List.of(), implementation));
         PolicyEngine policyEngine = new PolicyEngine("policies/v1.yaml");
-        WorkflowEngine engine = engineWithPolicy(policyEngine);
+        WorkflowEngine engine = engineWithPolicy(policyEngine, stages);
 
         String workflowId = engine.submit("demo", stages, "run-33u");
 
@@ -814,7 +813,8 @@ class WorkflowEngineReliabilityIntegrationTest {
         registry.register("security_scan", result -> { });
         WorkflowEngine engine = new WorkflowEngine(instanceRepository, stepRepository, eventRepository,
                 approvalRepository, transactionManager, policyEvaluationRepository, policyEngine,
-                policyExceptionRepository, registry);
+                policyExceptionRepository, registry,
+                com.schwab.urlshortener.support.TestStageCatalogs.fromStages(stages));
 
         String workflowId = engine.submit("demo", stages, "run-33v");
 
@@ -850,7 +850,7 @@ class WorkflowEngineReliabilityIntegrationTest {
                 StageDefinition.of("helper", List.of(), helper),
                 StageDefinition.of("implementation", List.of(), implementation));
         PolicyEngine policyEngine = new PolicyEngine("policies/v1.yaml");
-        WorkflowEngine engine = engineWithPolicy(policyEngine);
+        WorkflowEngine engine = engineWithPolicy(policyEngine, stages);
 
         String workflowId = engine.submit("demo", stages, "run-33w");
         assertThat(stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "helper")
@@ -893,7 +893,7 @@ class WorkflowEngineReliabilityIntegrationTest {
         List<StageDefinition> stages = List.of(
                 new StageDefinition("implementation", List.of(), impl, false, false, 1, 5, null, null, null));
         PolicyEngine policyEngine = new PolicyEngine("policies/v1.yaml");
-        WorkflowEngine engine = engineWithPolicy(policyEngine);
+        WorkflowEngine engine = engineWithPolicy(policyEngine, stages);
 
         String workflowId = engine.submit("demo", stages, "run-33x");
 
@@ -907,7 +907,7 @@ class WorkflowEngineReliabilityIntegrationTest {
         WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
         assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.SAFE_STOPPED);
 
-        // Codex's Section 18 follow-up round 2 finding: the narrative claimed persisted context
+        // the independent review's Section 18 follow-up round 2 finding: the narrative claimed persisted context
         // excludes attempt 1's stale evidence but nothing here actually asserted it — added now.
         // attempt 2 never re-wrote either key, so ctx.writtenBy("implementation") is empty and
         // mergeTrustworthyArtifacts/resetArtifactsTo persist exactly that (no attempt 1 leak-through

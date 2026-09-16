@@ -5,14 +5,14 @@
 **Status: APPROVED — plan-approval gate closed 2026-09-13.** This document was authored by an
 agent acting under the project's SpecKit lifecycle, then reviewed and approved by the human
 candidate (Prudhvidhar Reddy Katta), in the same spirit as `spec.md`'s own Human Gate 2. **Historical
-note, corrected by the Task 10 corrective batch** (`codex-recommend.md` Finding #12): at the time
+note, corrected by the Task 10 corrective batch** (the pre-implementation external review Finding #12): at the time
 this plan was authored (Task 6), every technology/architecture choice beyond ADR-001/002 was
 phrased as "proposed for ADR at Task 7," since Task 7 had not yet run. Task 7 has since run: the
 human candidate reviewed and accepted ADR-003 through ADR-010, without amendment, on 2026-09-13
 (`docs/governance/human-gates-log.md`, "Human Gate 4" rows) — see Section 12's technology table
 below for their current status.
 
-**Approval history.** Reaching approval took five rounds of delegated technical review (Codex; not
+**Approval history.** Reaching approval took five rounds of delegated technical review (independent review; not
 a human approver — `docs/governance/human-gates-log.md`'s Delegated Technical Reviews table has the
 full record) plus this plan's own corrections in response: the planned executable graph was aligned
 with the specification's twelve-stage graph; SCN-B's seven parallel impact-analysis branches were
@@ -24,7 +24,7 @@ crash recovery for abandoned `RUNNING` steps, boot-time `resumeAll()` wiring) wa
 earlier design did not survive a process restart; and every non-functional target in `spec.md`
 Section 7 was closed as a binding demonstration acceptance target (ASM-2). The human candidate's own
 approval, recorded in `docs/governance/human-gates-log.md`'s Gate Log, is what closes this gate —
-Codex's round-5 "approve" verdict was evidence for that decision, not a substitute for it.
+the independent review's round-5 "approve" verdict was evidence for that decision, not a substitute for it.
 
 **Authority.** This plan sits directly beneath `docs/governance/constitution.md` (v1.0.0, Ratified)
 and `specs/001-agentic-url-shortener/spec.md` (approved with clarifications CLR-1..17) and directly
@@ -224,7 +224,7 @@ report). Approving an `exitApproval` gate does not re-run the stage; it releases
 output to its dependents.
 
 **State transitions.** Every `WorkflowStepEntity.status` moves through the `StepStatus` vocabulary:
-`PENDING → RUNNING → (SUCCEEDED | FAILED → RETRYING → ... | SAFE_STOPPED | COMPENSATED |
+`PENDING → RUNNING → (SUCCEEDED | SUCCEEDED_WITH_FALLBACK | FAILED → RETRYING → ... | SAFE_STOPPED | COMPENSATED |
 ROLLED_BACK)`, with `WAITING_APPROVAL` interposed at an entry gate and `INVALIDATED`/`SKIPPED`
 reachable only via a replan (Section 3.3) or an unmet-precondition branch, respectively. The
 workflow-level `WorkflowStatus` (`CREATED → RUNNING → (PENDING_APPROVAL | SAFE_STOPPED |
@@ -286,10 +286,12 @@ logic behind the same node shape, not a different graph.
 - **Synchronization (Stage 11):** a true join of three independent branches (8, 9, 10) — modeled
   as `ReleaseReadinessStage.dependsOn = ["testing", "security", "documentation"]`, not as three
   sequential checks.
-- **Change Impact Analysis group (SCN-B insertion):** a fifth, brownfield-only node
-  (`ImpactAnalysisStage`) is inserted with `dependsOn=[]` (or `[requirement]`) and
-  `implementation.dependsOn` extended to include it, gated by an approval before Implementation
-  may begin — see Section 11.2.
+- **Change Impact Analysis group (SCN-B insertion):** seven brownfield-only siblings fan out from
+  approved `design`: `impacted_components`, `impacted_interfaces`, `impacted_data_flows`,
+  `impacted_tests`, `impacted_documentation`, `regression_risk`, and `rollout_rollback`.
+  `change_impact_report` joins all seven, has an exit approval gate, and is an additional
+  dependency of `implementation`. The seven handlers share no dependency on each other and execute
+  in the same eligible batch; see Section 11.2 and `BrownfieldWorkflowGraph`.
 
 ### 3.4 Rejection, retry, fallback, rollback/compensation, safe-stop, resumption, and dynamic replanning states
 
@@ -503,7 +505,7 @@ nothing has recovered yet" are different, non-interchangeable claims.
   gate* — is exactly as unauthenticated as `GET /healthz`. Documented here directly, not left for
   a reviewer to discover.
 - **Precise characterization of the approval endpoint's posture (added by the Task 10 corrective
-  batch — `pre_implementation_analysis.md` Section 10 / `codex-recommend.md` Finding #7).** This
+  batch — `pre_implementation_analysis.md` Section 10 / the pre-implementation external review Finding #7).** This
   system enforces **approval-state**, not **human identity**. Concretely: the workflow logic
   itself cannot be bypassed — `entryApproval`/`exitApproval` are designed as real, to-be-tested
   gates that no agent code path is designed to satisfy on its own authority (ADR-006) — but the
@@ -561,7 +563,7 @@ nothing has recovered yet" are different, non-interchangeable claims.
   dependency license review, advisory) — the four policies defined in
   `src/main/resources/policies/v1.yaml` per research.md D7.
 - **Seven-domain disclosure (added by the Task 10 corrective batch — closes MEDIUM-1 in
-  `pre_implementation_analysis.md` Section 10 / `codex-recommend.md` Finding #11; required by
+  `pre_implementation_analysis.md` Section 10 / the pre-implementation external review Finding #11; required by
   `compliance.md` COMP-CHK-012 [MANDATORY]).** Constitution Principle VI names, "at minimum,"
   seven policy-guardrail domains. Every one of the seven is mapped below to either a concrete
   `PolicyEngine` check or the specific alternative mechanism that covers it — none is a silent
@@ -793,7 +795,7 @@ already-Accepted ADRs from the eight still pending Task 7; see the correction im
 for its current, post-Task-7 state.
 
 **Status column corrected by the Task 10 corrective batch** (`pre_implementation_analysis.md` /
-`codex-recommend.md` Finding #12): Task 7 (the ADR Generation Gate) has since run and the human
+the pre-implementation external review Finding #12): Task 7 (the ADR Generation Gate) has since run and the human
 candidate has accepted all eight of ADR-003 through ADR-010, without amendment, on 2026-09-13 (see
 `docs/governance/human-gates-log.md`, "Human Gate 4" rows). The table below previously listed them
 as "Proposed for ADR at Task 7," which was accurate when this plan was authored at Task 6 but is

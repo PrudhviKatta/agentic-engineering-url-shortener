@@ -39,8 +39,8 @@ class WorkflowEngineApprovalTest {
     @Autowired private ApprovalJpaRepository approvalRepository;
     @Autowired private PlatformTransactionManager transactionManager;
 
-    private WorkflowEngine engine() {
-        return new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository, transactionManager);
+    private WorkflowEngine engine(List<StageDefinition> stages) {
+        return new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository, transactionManager, null, null, null, null, com.schwab.urlshortener.support.TestStageCatalogs.fromStages(stages));
     }
 
     @Test
@@ -50,7 +50,7 @@ class WorkflowEngineApprovalTest {
         List<StageDefinition> stages = List.of(
                 new StageDefinition("risky", List.of(), risky, true, false, 0, 30, null, null, null));
 
-        WorkflowEngine engine = engine();
+        WorkflowEngine engine = engine(stages);
         String workflowId = engine.submit("demo", stages, "run-3");
 
         WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
@@ -71,7 +71,7 @@ class WorkflowEngineApprovalTest {
         List<StageDefinition> stages = List.of(
                 new StageDefinition("risky", List.of(), risky, true, false, 0, 30, null, null, null));
 
-        WorkflowEngine engine = engine();
+        WorkflowEngine engine = engine(stages);
         String workflowId = engine.submit("demo", stages, "run-4");
         engine.approve(workflowId, "risky", "rejected", "human", "too risky");
 
@@ -89,7 +89,7 @@ class WorkflowEngineApprovalTest {
                 new StageDefinition("design", List.of(), design, false, true, 0, 30, null, null, null),
                 StageDefinition.of("after", List.of("design"), after));
 
-        WorkflowEngine engine = engine();
+        WorkflowEngine engine = engine(stages);
         String workflowId = engine.submit("demo", stages, "run-4b");
 
         WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
@@ -105,13 +105,13 @@ class WorkflowEngineApprovalTest {
         assertThat(executed).containsExactly("design"); // "after" must never run
     }
 
-    // --- Round-6 regression tests (Codex REQUEST AMENDMENTS item 1) ---
+    // --- Round-6 regression tests (Independent review amendments item 1) ---
 
     @Test
     void invalidDecisionValueIsRejected() {
         List<StageDefinition> stages = List.of(
                 new StageDefinition("risky", List.of(), ctx -> Map.of(), true, false, 0, 30, null, null, null));
-        WorkflowEngine engine = engine();
+        WorkflowEngine engine = engine(stages);
         String workflowId = engine.submit("demo", stages, "run-6a");
 
         assertThatThrownBy(() -> engine.approve(workflowId, "risky", "maybe", "human", "unsure"))
@@ -128,7 +128,7 @@ class WorkflowEngineApprovalTest {
         List<StageDefinition> stages = List.of(
                 new StageDefinition("gate", List.of(), ctx -> Map.of(), true, false, 0, 30, null, null, null),
                 StageDefinition.of("after", List.of("gate"), ctx -> Map.of()));
-        WorkflowEngine engine = engine();
+        WorkflowEngine engine = engine(stages);
         String workflowId = engine.submit("demo", stages, "run-6b");
 
         assertThatThrownBy(() -> engine.approve(workflowId, "after", "approved", "human", "too early"))
@@ -139,7 +139,7 @@ class WorkflowEngineApprovalTest {
     void duplicateApprovalOnAnAlreadyDecidedStepIsRejected() {
         List<StageDefinition> stages = List.of(
                 new StageDefinition("risky", List.of(), ctx -> Map.of(), true, false, 0, 30, null, null, null));
-        WorkflowEngine engine = engine();
+        WorkflowEngine engine = engine(stages);
         String workflowId = engine.submit("demo", stages, "run-6c");
 
         engine.approve(workflowId, "risky", "approved", "human", "ok");
@@ -151,7 +151,7 @@ class WorkflowEngineApprovalTest {
     @Test
     void nonGateStepCanNeverBeApproved() {
         List<StageDefinition> stages = List.of(StageDefinition.of("plain", List.of(), ctx -> Map.of()));
-        WorkflowEngine engine = engine();
+        WorkflowEngine engine = engine(stages);
         String workflowId = engine.submit("demo", stages, "run-6d");
 
         WorkflowStepEntity step = stepRepository.findByWorkflowIdAndPlanVersionAndName(workflowId, 1, "plain").orElseThrow();
@@ -161,7 +161,7 @@ class WorkflowEngineApprovalTest {
                 .isInstanceOf(NoPendingApprovalException.class);
     }
 
-    // --- Round-6 regression test (Codex REQUEST AMENDMENTS item 2) ---
+    // --- Round-6 regression test (Independent review amendments item 2) ---
 
     @Test
     void everyExitGatedSiblingInAParallelBatchRequiresItsOwnApproval() {
@@ -174,7 +174,7 @@ class WorkflowEngineApprovalTest {
                 new StageDefinition("documentation", List.of(), documentation, false, true, 0, 30, "verify", null, null),
                 StageDefinition.of("after", List.of("security", "documentation"), after));
 
-        WorkflowEngine engine = engine();
+        WorkflowEngine engine = engine(stages);
         String workflowId = engine.submit("demo", stages, "run-6e");
 
         WorkflowInstanceEntity instance = instanceRepository.findById(workflowId).orElseThrow();
@@ -219,7 +219,7 @@ class WorkflowEngineApprovalTest {
                 new StageDefinition("documentation", List.of(), documentation, false, true, 0, 30, "verify", null, null),
                 StageDefinition.of("after", List.of("security", "documentation"), after));
 
-        WorkflowEngine engine = engine();
+        WorkflowEngine engine = engine(stages);
         String workflowId = engine.submit("demo", stages, "run-6f");
 
         engine.approve(workflowId, "security", "rejected", "human", "found a vulnerability");
@@ -245,7 +245,7 @@ class WorkflowEngineApprovalTest {
 
     @Test
     void approvingAnUnknownWorkflowIsRejected() {
-        assertThatThrownBy(() -> engine().approve("does-not-exist", "risky", "approved", "human", "n/a"))
+        assertThatThrownBy(() -> engine(List.of()).approve("does-not-exist", "risky", "approved", "human", "n/a"))
                 .isInstanceOf(NoPendingApprovalException.class);
     }
 
@@ -255,7 +255,7 @@ class WorkflowEngineApprovalTest {
     void blankOrMissingActorIsRejected() {
         List<StageDefinition> stages = List.of(
                 new StageDefinition("risky", List.of(), ctx -> Map.of(), true, false, 0, 30, null, null, null));
-        WorkflowEngine engine = engine();
+        WorkflowEngine engine = engine(stages);
         String workflowId = engine.submit("demo", stages, "run-6h");
 
         assertThatThrownBy(() -> engine.approve(workflowId, "risky", "approved", null, "ok"))
@@ -276,7 +276,7 @@ class WorkflowEngineApprovalTest {
     void blankOrMissingReasonIsRejected() {
         List<StageDefinition> stages = List.of(
                 new StageDefinition("risky", List.of(), ctx -> Map.of(), true, false, 0, 30, null, null, null));
-        WorkflowEngine engine = engine();
+        WorkflowEngine engine = engine(stages);
         String workflowId = engine.submit("demo", stages, "run-6i");
 
         assertThatThrownBy(() -> engine.approve(workflowId, "risky", "approved", "human", null))
@@ -289,14 +289,14 @@ class WorkflowEngineApprovalTest {
         assertThat(approvalRepository.existsByStepInstanceId(step.getId())).isFalse();
     }
 
-    // Codex round 4 finding: data-model.md Section 5 specifies workflow_events.reason (and
+    // independent review round 4 finding: data-model.md Section 5 specifies workflow_events.reason (and
     // approvals.reason, decided_at time) as VARCHAR(1024) — a caller-supplied reason longer than
     // that must be rejected cleanly, not truncated or left to a raw DB constraint failure.
     @Test
     void overLengthReasonIsRejected() {
         List<StageDefinition> stages = List.of(
                 new StageDefinition("risky", List.of(), ctx -> Map.of(), true, false, 0, 30, null, null, null));
-        WorkflowEngine engine = engine();
+        WorkflowEngine engine = engine(stages);
         String workflowId = engine.submit("demo", stages, "run-6j");
 
         String tooLong = "x".repeat(1025);
@@ -308,7 +308,7 @@ class WorkflowEngineApprovalTest {
         assertThat(approvalRepository.existsByStepInstanceId(step.getId())).isFalse();
     }
 
-    // Codex round 5 finding: the boundary itself must actually work end-to-end, not just reject
+    // independent review round 5 finding: the boundary itself must actually work end-to-end, not just reject
     // one character over it — ApprovalEntity.reason previously had no explicit @Column length at
     // all (Hibernate default 255), so a 1024-character reason would have been silently truncated
     // or rejected by the database despite passing WorkflowEngine's own validation.
@@ -316,7 +316,7 @@ class WorkflowEngineApprovalTest {
     void exactly1024CharacterReasonPersistsSuccessfully() {
         List<StageDefinition> stages = List.of(
                 new StageDefinition("risky", List.of(), ctx -> Map.of(), true, false, 0, 30, null, null, null));
-        WorkflowEngine engine = engine();
+        WorkflowEngine engine = engine(stages);
         String workflowId = engine.submit("demo", stages, "run-6k");
 
         String exactlyMax = "x".repeat(1024);
@@ -339,7 +339,7 @@ class WorkflowEngineApprovalTest {
         StageHandler risky = ctx -> { executed.add("risky"); return Map.of(); };
         List<StageDefinition> stages = List.of(
                 new StageDefinition("risky", List.of(), risky, true, false, 0, 30, null, null, null));
-        WorkflowEngine engine = engine();
+        WorkflowEngine engine = engine(stages);
         String workflowId = engine.submit("demo", stages, "run-6j");
 
         ExecutorService pool = Executors.newFixedThreadPool(2);
@@ -399,7 +399,7 @@ class WorkflowEngineApprovalTest {
         }
     }
 
-    // --- Codex REQUEST AMENDMENTS item 7: workflow-instance-level locking ---
+    // --- Independent review amendments item 7: workflow-instance-level locking ---
 
     @Test
     void concurrentDecisionsOnDifferentSiblingGatesCannotResurrectARejectedWorkflow() throws Exception {
@@ -416,7 +416,7 @@ class WorkflowEngineApprovalTest {
                 new StageDefinition("documentation", List.of(), documentation, false, true, 0, 30, "verify", null, null),
                 StageDefinition.of("after", List.of("security", "documentation"), after));
 
-        WorkflowEngine engine = engine();
+        WorkflowEngine engine = engine(stages);
         String workflowId = engine.submit("demo", stages, "run-7a");
         WorkflowInstanceEntity beforeRace = instanceRepository.findById(workflowId).orElseThrow();
         assertThat(beforeRace.getStatus()).isEqualTo(WorkflowStatus.PENDING_APPROVAL);
@@ -479,7 +479,7 @@ class WorkflowEngineApprovalTest {
                 new StageDefinition("documentation", List.of(), documentation, false, true, 0, 30, "verify", null, null),
                 StageDefinition.of("after", List.of("security", "documentation"), after));
 
-        WorkflowEngine engine = engine();
+        WorkflowEngine engine = engine(stages);
         String workflowId = engine.submit("demo", stages, "run-7b");
         assertThat(instanceRepository.findById(workflowId).orElseThrow().getStatus())
                 .isEqualTo(WorkflowStatus.PENDING_APPROVAL);
@@ -546,7 +546,7 @@ class WorkflowEngineApprovalTest {
                 StageDefinition.of("after", List.of("security", "documentation"), after),
                 StageDefinition.of("tail", List.of("after"), tail));
 
-        WorkflowEngine engine = engine();
+        WorkflowEngine engine = engine(stages);
         String workflowId = engine.submit("demo", stages, "run-7c");
 
         ExecutorService pool = Executors.newFixedThreadPool(2);
@@ -585,7 +585,7 @@ class WorkflowEngineApprovalTest {
         assertThat(instance.getStatus()).isEqualTo(WorkflowStatus.COMPLETED);
     }
 
-    // --- Codex REQUEST AMENDMENTS follow-up (Section 17 review): runBatch must keep waiting for
+    // --- Independent review amendments follow-up (Section 17 review): runBatch must keep waiting for
     // an interrupted future's SAME handler, not move on and leave it orphaned ---
 
     @Test
@@ -603,7 +603,7 @@ class WorkflowEngineApprovalTest {
         };
         List<StageDefinition> stages = List.of(StageDefinition.of("slow", List.of(), slow));
 
-        WorkflowEngine engine = engine();
+        WorkflowEngine engine = engine(stages);
         AtomicReference<Throwable> escaped = new AtomicReference<>();
         AtomicReference<String> workflowIdRef = new AtomicReference<>();
         Thread submitter = new Thread(() -> {

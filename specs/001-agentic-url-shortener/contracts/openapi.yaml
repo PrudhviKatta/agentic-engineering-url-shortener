@@ -3,13 +3,9 @@ info:
   title: Agentic URL Shortener & Orchestration API
   version: "0.1.0"
   description: |
-    Contract produced at the `/speckit.plan` stage (Task 6), corrected by the Task 10 corrective
-    batch (see `docs/assessment/pre_implementation_analysis.md`, `codex-recommend.md`). Not yet
-    implemented (no Java production code exists beyond the Spring Boot entry point). It has since
-    been independently reviewed twice pre-implementation (Task 10's own `/speckit.analyze` +
-    Independent Reviewer Gate, and an external Codex review); both reviews' additive corrections
-    are reflected in this document. Covers two independently inspectable surfaces sharing one
-    process (constitution Principle VII):
+    Implemented contract for two independently inspectable surfaces sharing one process
+    (constitution Principle VII). The contract was corrected during pre-implementation analysis
+    and is kept aligned with the executable controller tests:
 
     * **URL-shortener domain** (`/links`, `/r/{code}`) — REQ-001..010, REQ-021.
     * **Orchestration engine** (`/workflows/**`) — REQ-011..020, REQ-025, REQ-026.
@@ -185,7 +181,7 @@ paths:
       description: |
         **Plan-level design decision — mandatory, full implementation, no stub path (corrected by
         the Task 10 corrective batch; `pre_implementation_analysis.md` §Section 7 HIGH-1 /
-        `codex-recommend.md` Finding #4).** REQ-011 requires that the system MUST allow a new
+        the pre-implementation external review Finding #4).** REQ-011 requires that the system MUST allow a new
         Workflow Run to be created "via a new requirement input" as an externally reachable
         capability — the execution runbook's `ScenarioRunner` CLI harness calling
         `WorkflowEngine.submit(feature, stages, correlationId)` directly does not by itself satisfy
@@ -437,7 +433,7 @@ components:
           description: |
             The ingested requirement text (Stage 1, Section 3.1) — captured verbatim with
             provenance. Required (Task 10 corrective batch, `pre_implementation_analysis.md`
-            §Section 7 HIGH-1 / `codex-recommend.md` Finding #4): REQ-011 requires that a
+            §Section 7 HIGH-1 / the pre-implementation external review Finding #4): REQ-011 requires that a
             Workflow Run be created "via a new requirement input," so a request with no
             requirement text does not satisfy the operation this endpoint exists for.
 
@@ -457,10 +453,10 @@ components:
 
     StepStatus:
       type: string
-      enum: [PENDING, RUNNING, WAITING_APPROVAL, SUCCEEDED, FAILED, RETRYING, ROLLED_BACK, COMPENSATED, SAFE_STOPPED, INVALIDATED, SKIPPED]
+      enum: [PENDING, RUNNING, WAITING_APPROVAL, SUCCEEDED, SUCCEEDED_WITH_FALLBACK, FAILED, RETRYING, ROLLED_BACK, COMPENSATED, SAFE_STOPPED, INVALIDATED, SKIPPED]
 
     # Corrected by the Task 10 corrective batch (pre_implementation_analysis.md Section 10 /
-    # codex-recommend.md Finding #5): REQ-012 requires exposing each stage's inputs, outputs, and
+    # pre-implementation external review Finding #5): REQ-012 requires exposing each stage's inputs, outputs, and
     # decision lineage, plus the workflow's correlation ID and current plan version, from
     # persisted state. `WorkflowStateResponse` previously omitted all of these.
     DecisionLineageEntry:
@@ -523,7 +519,7 @@ components:
         reason: { type: string }
 
     # Corrected by the Task 10 corrective batch (pre_implementation_analysis.md Section 10 /
-    # codex-recommend.md Finding #10): AuditEventResponse previously omitted the correlation
+    # pre-implementation external review Finding #10): AuditEventResponse previously omitted the correlation
     # identifier (REQ-025), the affected artifact/state (REQ-026), a concrete actor identity
     # distinct from actorType, and the structured payload already planned in
     # data-model.md workflow_events.payload.
@@ -554,12 +550,28 @@ components:
 
     ReliabilitySummary:
       type: object
-      required: [successRate, retryFrequency, rollbackOrCompensationFrequency, isDemonstrationData]
+      required: [successRate, failureRate, retryFrequency, rollbackOrCompensationFrequency, fallbackFrequency, mttr, isDemonstrationData]
       properties:
         successRate: { type: number, format: double, minimum: 0, maximum: 1 }
+        failureRate: { type: number, format: double, minimum: 0, maximum: 1 }
         retryFrequency: { type: number, format: double, minimum: 0 }
         rollbackOrCompensationFrequency: { type: number, format: double, minimum: 0 }
+        fallbackFrequency: { type: number, format: double, minimum: 0 }
         endToEndLatencySeconds: { type: number, format: double, nullable: true }
+        mttr:
+          $ref: '#/components/schemas/MttrReport'
         isDemonstrationData:
           type: boolean
           description: Always true in this iteration — never a production SLA claim (constitution Principle IX).
+
+    MttrReport:
+      type: object
+      required: [recoveredCount, unrecoveredCount, excludedCount, populationNote]
+      properties:
+        mttrSeconds: { type: number, format: double, nullable: true, minimum: 0 }
+        recoveredCount: { type: integer, minimum: 0 }
+        unrecoveredCount: { type: integer, minimum: 0 }
+        excludedCount: { type: integer, minimum: 0 }
+        populationNote:
+          type: string
+          description: Defines the audit-derived demonstration population and states that it is not production statistics or an SLA.

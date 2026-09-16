@@ -30,8 +30,8 @@ class WorkflowEngineContextLineageTest {
     @Autowired private ApprovalJpaRepository approvalRepository;
     @Autowired private PlatformTransactionManager transactionManager;
 
-    private WorkflowEngine engine() {
-        return new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository, transactionManager);
+    private WorkflowEngine engine(List<StageDefinition> stages) {
+        return new WorkflowEngine(instanceRepository, stepRepository, eventRepository, approvalRepository, transactionManager, null, null, null, null, com.schwab.urlshortener.support.TestStageCatalogs.fromStages(stages));
     }
 
     @Test
@@ -54,7 +54,7 @@ class WorkflowEngineContextLineageTest {
                 StageDefinition.of("after", List.of("gate"), after)
         );
 
-        WorkflowEngine engine = engine();
+        WorkflowEngine engine = engine(stages);
         String workflowId = engine.submit("demo", stages, "run-5");
         engine.approve(workflowId, "gate", "approved", "human", "ok");
 

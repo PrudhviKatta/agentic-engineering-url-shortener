@@ -143,7 +143,7 @@ codebase.
   `docs/governance/human-gates-log.md`. Because policy format directly implements a constitutional
   principle (VI), its acceptance carried the same governance weight as the other seven ADRs — no
   exemption for being "just a file format." **Corrected by the Task 10 corrective batch**
-  (`codex-recommend.md` Finding #12): this bullet previously read "is proposed pending...
+  (the pre-implementation external review Finding #12): this bullet previously read "is proposed pending...
   accept/reject at Task 7" after Task 7 had already run and this ADR's own Status header above had
   already moved to Accepted.
 

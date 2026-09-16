@@ -40,7 +40,7 @@ public class ApprovalEntity {
     @Column(name = "decided_by")
     private String decidedBy;
 
-    // Corrected 2026-09-15 (Codex round 5 finding): data-model.md Section 6 specifies
+    // Corrected 2026-09-15 (independent review round 5 finding): data-model.md Section 6 specifies
     // VARCHAR(1024) for this column ("Rationale for the decision — required by REQ-013's
     // 'recorded with rationale' language"); the entity carried no explicit length at all, so
     // Hibernate's default (255) was silently in effect instead. WorkflowEngine.approve() already

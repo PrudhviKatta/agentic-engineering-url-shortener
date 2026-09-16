@@ -3,7 +3,7 @@
 **Feature branch**: none created — despite the `001-agentic-url-shortener` feature name used
 throughout this SpecKit artifact set, all work to date has been performed directly on `main`, and
 no `001-agentic-url-shortener` branch has ever existed in this repository. **Corrected by the Task
-10 corrective batch** (`pre_implementation_analysis.md` / `codex-recommend.md` Minor findings):
+10 corrective batch** (`pre_implementation_analysis.md` / the pre-implementation external review Minor findings):
 this line previously implied a branch strategy that was never followed. Actual practice: every
 commit in this repository's history (`git log --oneline`) has landed directly on `main`; Tasks
 11+ should continue that actual practice rather than a branch name that exists only in this
@@ -55,7 +55,7 @@ every task:
    above (§14.5); stop condition = if T020–T026 are not green by end of Day 1, cut SCN-C's replan
    depth (§14.6) before cutting any governance/audit task — see T041's guardrail.
 2. **API/schema deliverable group.** **Corrected by the Task 10 corrective batch**
-   (`pre_implementation_analysis.md` Section 7 HIGH-1 / `codex-recommend.md` Findings #4, #9): this
+   (`pre_implementation_analysis.md` Section 7 HIGH-1 / the pre-implementation external review Findings #4, #9): this
    group previously claimed `POST /workflows` and `GET /links/{code}` were already covered by
    T017–T019/T026; they were not — no task implemented or contract-tested either operation. T017a
    and T026a (added below) now close that gap. Contract generation: `contracts/openapi.yaml`
@@ -316,7 +316,7 @@ T047, T048. See each task's entry for the specific justification.
 ### T017a: `GET /links/{code}` metadata endpoint (contract test first)
 
 **Added by the Task 10 corrective batch** (`pre_implementation_analysis.md` Section 7 HIGH-1 /
-`codex-recommend.md` Findings #4, #9): `plan.md` Section 2.1 specified this endpoint as a
+the pre-implementation external review Findings #4, #9): `plan.md` Section 2.1 specified this endpoint as a
 plan-level design addition with its own implementation obligation, and `contracts/openapi.yaml`
 already defines it (`operationId: getLinkMetadata`), but no task in the original transcription
 implemented or contract-tested it — `tasks.md`'s own cross-reference table incorrectly implied
@@ -440,7 +440,7 @@ objects" — the first pass's `registerActivationCondition(...)`/`registerFallba
 `Predicate`/`StageHandler` objects directly on the live `WorkflowEngine` instance does not survive a
 process restart, contradicting REQ-017 and the binding REQ-028 5-second recovery-time objective)*
 
-**Status: PARTIAL (corrected 2026-09-13, Round-6, Codex REQUEST AMENDMENTS item 4).** `StageCatalog`
+**Status: PARTIAL (corrected 2026-09-13, Round-6, Independent review amendments item 4).** `StageCatalog`
 itself exists (`orchestration/StageCatalog.java`) with `handlerFor`/`activationConditionFor`/
 `fallbackFor`, and `StageDefinition`/`WorkflowStepEntity` both carry the two new
 `activationConditionKey`/`fallbackHandlerKey` fields/columns. **`WorkflowEngine` does not yet use any
@@ -524,7 +524,7 @@ later. Implement T039 and T041 instead of this entry; the REQ/SCN/ADR coverage t
 - **Expected artifact**: `WorkflowContext.recordDecision(actor, decision, rationale)`,
   `addArtifact(name, value)`; `WorkflowStepJpaRepository.findByWorkflowIdAndPlanVersionAndName(...)`
   — **corrected by the Task 10 corrective batch** (`data-model.md` Section 3 post-Task-10 note /
-  `codex-recommend.md` Finding #6): `WorkflowStepEntity` must carry a `plan_version` field (default
+  the pre-implementation external review Finding #6): `WorkflowStepEntity` must carry a `plan_version` field (default
   `1` at `submit()`, incremented copies inserted by `replan()`), and uniqueness lookups must be
   scoped to `(workflowId, planVersion, name)`, not `(workflowId, name)` alone — the original
   `findByWorkflowIdAndName(...)` signature is superseded by this corrected one.
@@ -582,7 +582,7 @@ later. Implement T039 and T041 instead of this entry; the REQ/SCN/ADR coverage t
 - **Parallel**: false.
 - **Expected artifact**: `WorkflowEngine.approve(workflowId, stepInstanceId, decision, actor,
   reason)` — **corrected by the Task 10 corrective batch** (`data-model.md` Section 6 post-Task-10
-  note / `codex-recommend.md` Finding #6): `ApprovalEntity` must carry `planVersion` and a
+  note / the pre-implementation external review Finding #6): `ApprovalEntity` must carry `planVersion` and a
   `stepInstanceId` foreign-key-shaped reference to the specific `WorkflowStepEntity` row it
   governs, not only a bare `stepName` string, so a decision made under one plan version cannot be
   read as governing a same-named gate reintroduced by a later replan (ADR-006's own "blocks a
@@ -664,12 +664,12 @@ later. Implement T039 and T041 instead of this entry; the REQ/SCN/ADR coverage t
 - **Parallel**: `true` with T025 (see T025's entry).
 - **Expected artifact**: `GET /workflows/{id}` → state+steps, **including, per the Task 10
   corrective batch's schema correction (`contracts/openapi.yaml` `WorkflowStateResponse`,
-  `codex-recommend.md` Finding #5): the workflow's `correlationId` and `planVersion` at the top
+  the pre-implementation external review Finding #5): the workflow's `correlationId` and `planVersion` at the top
   level, `decisionLineage` (from `context_json.decisions[]`), and each step's `inputs`/`outputs`
   (from `workflow_steps.depends_on`/context artifacts and `workflow_steps.result`
   respectively)** — all read from persisted state, not reconstructed narratively; `GET
   /workflows/{id}/audit` → event list, **including, per the same corrective batch
-  (`AuditEventResponse`, `codex-recommend.md` Finding #10), each event's `workflowId`, a concrete
+  (`AuditEventResponse`, the pre-implementation external review Finding #10), each event's `workflowId`, a concrete
   `actorId` distinct from `actorType`, `affectedArtifact`, and structured `payload`**; `POST
   /workflows/{id}/approvals/{step}` → invokes `WorkflowEngine.approve`.
 - **TDD**: yes.
@@ -695,7 +695,7 @@ later. Implement T039 and T041 instead of this entry; the REQ/SCN/ADR coverage t
 ### T026a: `POST /workflows` — generic Workflow Run creation over HTTP (contract test first)
 
 **Added by the Task 10 corrective batch** (`pre_implementation_analysis.md` Section 7 HIGH-1 /
-`codex-recommend.md` Findings #4, #9): `plan.md` Section 2.1 flagged `POST /workflows` as a
+the pre-implementation external review Findings #4, #9): `plan.md` Section 2.1 flagged `POST /workflows` as a
 plan-level design addition with its own implementation obligation, `contracts/openapi.yaml`
 already defines it (`operationId: createWorkflow`), but no task in the original transcription
 implemented or contract-tested it, and REQ-011's "the system MUST allow a new Workflow Run to be
@@ -960,7 +960,7 @@ not-implemented response.
 - **Human approval**: false.
 
 ### T034a: Fallback subsystem, distinct from retry/compensation/safe-stop *(added post-Task-10,
-Codex round 3: "a mere placeholder is insufficient... add explicit fallback start/success/failure
+independent review round 3: "a mere placeholder is insufficient... add explicit fallback start/success/failure
 audit events, a distinct SUCCEEDED_WITH_FALLBACK outcome, timeout/failure behavior for the fallback
 itself, release-readiness disclosure, safe-stop if both primary and fallback fail")*
 
@@ -1029,7 +1029,7 @@ itself, release-readiness disclosure, safe-stop if both primary and fallback fai
 - **Expected artifact**: `replan(workflowId, fromStage, newStages, actor, reason)` marks reachable
   steps `INVALIDATED`, inserts new `PENDING` steps **stamped with the newly-incremented
   `plan_version`** (corrected by the Task 10 corrective batch, `data-model.md` Section 4/6
-  post-Task-10 note / `codex-recommend.md` Finding #6 — every step row this method inserts must
+  post-Task-10 note / the pre-implementation external review Finding #6 — every step row this method inserts must
   carry the `plan_version` it was created under, and any new `ApprovalEntity` rows this replan's
   downstream gates create must carry both `planVersion` and the new step's `stepInstanceId`, never
   only its `stepName`), increments `instance.planVersion`, records a `"replanned"` event with
@@ -1082,7 +1082,7 @@ itself, release-readiness disclosure, safe-stop if both primary and fallback fai
 ### T036a: Stage-boundary violation test (REQ-031's own named negative evidence)
 
 **Added by the Task 10 corrective batch** (`pre_implementation_analysis.md` Section 7 HIGH-2 /
-`codex-recommend.md` Finding #8): REQ-031's own Evidence line names "a stage-boundary violation
+the pre-implementation external review Finding #8): REQ-031's own Evidence line names "a stage-boundary violation
 test in which an out-of-scope agent action is rejected," restated identically in `plan.md`'s
 traceability table (Section 13) and required as `[MANDATORY]` by `orchestration.md` ORCH-CHK-015
 and `autonomy.md` AUTO-CHK-006 — but no task in the original transcription created this test; T039
@@ -1126,7 +1126,7 @@ release-readiness gate runs.
   summary; no `openapi.yaml`/`data-model.md` change.
 - **Traceability update**: REQ-031 row gains `T036a` as its stage-boundary-violation evidence
   source, closing the gap `pre_implementation_analysis.md` Section 7 HIGH-2 and
-  `codex-recommend.md` Finding #8 both named.
+  the pre-implementation external review Finding #8 both named.
 - **Risk/guardrail**: if this test reveals that no scoping mechanism currently exists to reject an
   out-of-scope write (i.e., any stage handler can already address any `workflow_steps` row), the
   correct fix is a real, minimal scope-enforcement mechanism added in this task — not narrowing
@@ -1162,7 +1162,7 @@ release-readiness gate runs.
   reliability metrics computation"`.
 - **Human approval**: false.
 
-### T037a: Fix `computeReliabilitySummary`'s workflow-scoping bug *(added post-Task-10, Codex round
+### T037a: Fix `computeReliabilitySummary`'s workflow-scoping bug *(added post-Task-10, independent review round
 2: "remove known, intentionally untested metric defects from the delivery plan")*
 
 - **Objective**: Scope `steps` to the requested `workflowId` exactly as `instances` already is, so
@@ -1233,13 +1233,13 @@ no code exists yet, so there is nothing gained by building the placeholder first
   table above).
 - **Files**: Create
   `orchestration/stages/{RequirementIngestionStage,RequirementNormalizationStage,AmbiguityDetectionStage,HumanClarificationStage,DecompositionStage,DesignStage,ImplementationStage,TestingStage,DocumentationStage,SecurityStage,ReleaseReadinessStage,FinalSummaryStage}.java`;
-  no `orchestration/WorkflowEngine.java` change (2026-09-15 correction, Codex Section 18 follow-up
+  no `orchestration/WorkflowEngine.java` change (2026-09-15 correction, independent review Section 18 follow-up
   review: this bullet previously specified seeding `ctx.artifacts().putIfAbsent("feature",
   instance.getFeature())` in `runFrom` — wrong on two counts, `feature` is a short slug never the
   submitted requirement text, and `submit()`/`buildContext` already seed and restore the real
   requirement verbatim under a nested `requirement` artifact — `requirement.text` — with no engine
   change needed; `RequirementIngestionStage` reads that directly, using immutable/defensive
-  extraction per the disclosed nested-mutation limitation in `CODEX-REVIEW-BRIEFING.md` Section 18);
+  extraction per the disclosed nested-mutation limitation in the external review briefing Section 18);
   Modify `scenarios/ScenarioRunner.java`
   (replace T025's placeholder graph with a `StageCatalog`-backed 12-stage graph); Test
   `scenarios/GreenfieldScenarioTest.java`; Create `docs/scenarios/greenfield.md`.
@@ -1609,14 +1609,14 @@ transcribed from the runbook's Phases 2–12.
 
 **Round 1 (Task 10 corrective batch):** three tasks — `T017a`, `T026a`, `T036a` — added to close
 two HIGH findings both Task 10's own `/speckit.analyze` + Independent Reviewer Gate
-(`docs/assessment/pre_implementation_analysis.md` Section 7) and an external Codex review
-(`codex-recommend.md` round 2, Findings #4, #8, #9) independently confirmed: `POST /workflows` and
+(`docs/assessment/pre_implementation_analysis.md` Section 7) and an external independent review
+(the pre-implementation external review round 2, Findings #4, #8, #9) independently confirmed: `POST /workflows` and
 `GET /links/{code}` had no implementing/contract-testing task despite being contract-mandated
 (`T017a`, `T026a`), and REQ-031's own named stage-boundary-violation test had no implementing task
 (`T036a`). Brought the total to 41 tasks.
 
-**Round 2 (post-Codex-round-3, 2026-09-13):** five more tasks — `T020b`, `T020c`, `T034a`, `T037a`,
-`T040a` — added after a third Codex review pass on the corrected repository found the round-1 fixes
+**Round 2 (post-independent review-round-3, 2026-09-13):** five more tasks — `T020b`, `T020c`, `T034a`, `T037a`,
+`T040a` — added after a third independent review review pass on the corrected repository found the round-1 fixes
 sound but flagged real design gaps still open: `spec.md`'s SCN-B requires seven genuinely parallel
 impact-analysis branches, not the single stage originally built (`T040a`); the constitution defines
 a fallback mechanism distinct from retry/rollback/safe-stop that existed nowhere in the design

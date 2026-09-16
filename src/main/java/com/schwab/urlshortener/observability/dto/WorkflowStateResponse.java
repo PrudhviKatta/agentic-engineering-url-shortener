@@ -6,7 +6,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
-// Round-6 correction (Codex REQUEST AMENDMENTS item 3): brought into exact conformance with
+// Round-6 correction (Independent review amendments item 3): brought into exact conformance with
 // openapi.yaml's WorkflowStateResponse schema — correlationId, planVersion, and decisionLineage
 // were missing entirely; each StepView was missing inputs/outputs.
 public record WorkflowStateResponse(

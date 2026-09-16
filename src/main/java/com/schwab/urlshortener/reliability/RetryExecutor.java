@@ -12,7 +12,7 @@ public final class RetryExecutor {
         return withBoundedRetry(handler, maxRetries, backoffMillis, attempt -> { });
     }
 
-    // Codex REQUEST AMENDMENTS item 5: lets a caller (WorkflowEngine) observe each retry as it
+    // Independent review amendments item 5: lets a caller (WorkflowEngine) observe each retry as it
     // happens — e.g. to persist a retry counter — without duplicating this class's retry/backoff
     // logic. Called only when a retry is actually about to occur (never on the final, exhausting
     // failure), matching "retries actually performed" semantics.
@@ -21,7 +21,7 @@ public final class RetryExecutor {
         return withBoundedRetry(handler, maxRetries, backoffMillis, onRetry, RetryExecutor::sleep);
     }
 
-    // Codex REQUEST AMENDMENTS item 5: a pluggable sleep function is the seam that makes backoff
+    // Independent review amendments item 5: a pluggable sleep function is the seam that makes backoff
     // deterministically testable — a test can pass a recording LongConsumer instead of a real
     // Thread.sleep, proving the exact backoff values RetryExecutor computed without any
     // wall-clock-based assertion (which would be inherently flaky under load).

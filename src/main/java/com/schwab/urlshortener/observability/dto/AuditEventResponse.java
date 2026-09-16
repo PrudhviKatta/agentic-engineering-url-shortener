@@ -3,7 +3,7 @@ package com.schwab.urlshortener.observability.dto;
 import java.time.Instant;
 import java.util.Map;
 
-// Round-6 correction (Codex REQUEST AMENDMENTS item 3): brought into exact conformance with
+// Round-6 correction (Independent review amendments item 3): brought into exact conformance with
 // openapi.yaml's AuditEventResponse schema — workflowId, actorId, affectedArtifact, and payload
 // were missing entirely.
 public record AuditEventResponse(

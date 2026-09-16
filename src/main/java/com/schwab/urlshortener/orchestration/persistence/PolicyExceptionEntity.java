@@ -11,7 +11,7 @@ public class PolicyExceptionEntity {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    // Codex REQUEST AMENDMENTS item 4: data-model.md's approved schema marks EVERY column on this
+    // Independent review amendments item 4: data-model.md's approved schema marks EVERY column on this
     // table "No" nullable (unlike approvals' partial nullability) — every field here is required
     // by design, not just by application-level convention.
     @Column(name = "workflow_id", nullable = false)

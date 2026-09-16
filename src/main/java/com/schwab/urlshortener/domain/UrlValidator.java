@@ -46,13 +46,18 @@ public final class UrlValidator {
                         || address.isAnyLocalAddress()) {
                     return true;
                 }
-                if (address instanceof Inet6Address v6 && isDeprecatedIpv4Compatible(v6)) {
-                    byte[] embeddedIpv4 = Arrays.copyOfRange(v6.getAddress(), 12, 16);
-                    InetAddress mapped = InetAddress.getByAddress(embeddedIpv4);
-                    if (mapped.isLoopbackAddress() || mapped.isLinkLocalAddress()
-                            || mapped.isSiteLocalAddress() || mapped.isMulticastAddress()
-                            || mapped.isAnyLocalAddress()) {
+                if (address instanceof Inet6Address v6) {
+                    if (isUniqueLocalAddress(v6)) {
                         return true;
+                    }
+                    if (isDeprecatedIpv4Compatible(v6)) {
+                        byte[] embeddedIpv4 = Arrays.copyOfRange(v6.getAddress(), 12, 16);
+                        InetAddress mapped = InetAddress.getByAddress(embeddedIpv4);
+                        if (mapped.isLoopbackAddress() || mapped.isLinkLocalAddress()
+                                || mapped.isSiteLocalAddress() || mapped.isMulticastAddress()
+                                || mapped.isAnyLocalAddress()) {
+                            return true;
+                        }
                     }
                 }
             }
@@ -60,6 +65,10 @@ public final class UrlValidator {
         } catch (UnknownHostException e) {
             return true; // cannot resolve -> treat as unsafe/invalid
         }
+    }
+
+    private static boolean isUniqueLocalAddress(Inet6Address address) {
+        return (address.getAddress()[0] & 0xfe) == 0xfc;
     }
 
     private static boolean isDeprecatedIpv4Compatible(Inet6Address address) {

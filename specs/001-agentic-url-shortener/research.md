@@ -5,7 +5,7 @@ unchanged by the correction below; it remains a Task 6 deliverable pending whate
 gate `plan.md` itself is pending. This document is the detailed decision record `plan.md` Section
 12 summarizes in table form. It does not itself grant ADR status to anything.
 
-**Corrected by the Task 10 corrective batch** (`codex-recommend.md` Finding #12): when this
+**Corrected by the Task 10 corrective batch** (the pre-implementation external review Finding #12): when this
 document was authored at Task 6, only ADR-001 (language/framework) and ADR-002 (persistence) were
 **Accepted**, and every other decision below (D3–D10) was phrased as a **proposal for Task 7's
 formal ADR Generation Gate**, not an already-settled fact. Task 7 has since run: the human

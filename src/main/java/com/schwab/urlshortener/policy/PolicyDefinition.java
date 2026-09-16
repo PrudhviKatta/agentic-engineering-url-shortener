@@ -6,7 +6,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 public record PolicyDefinition(
         String id, String domain, String stage, boolean mandatory, String description,
         @JsonProperty("check_key") String checkKey,
-        // Codex REQUEST AMENDMENTS item 3: the ONLY legitimate way a matched policy becomes
+        // Independent review amendments item 3: the ONLY legitimate way a matched policy becomes
         // NOT_APPLICABLE. Nullable — most policies apply unconditionally to every run of their
         // stage. When set, evaluate() checks this key in the context (not checkKey): if it's
         // explicitly Boolean.FALSE, the policy doesn't apply to this run at all and checkKey is

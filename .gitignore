@@ -2,11 +2,26 @@ target/
 data/*.mv.db
 data/*.trace.db
 data/*.lock.db
+
+# Local runtime and test output
+*.log
+*.pid
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.py[cod]
+
+# Local environment files
 .env
 .env.*
 !.env.example
+
+# OS and editor files
 .DS_Store
 .idea/
 .vscode/
 *.iml
+
+# Maven wrapper downloads are restored on demand
 .mvn/wrapper/maven-wrapper.jar
